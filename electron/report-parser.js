@@ -45,16 +45,29 @@ function parseSettlementTable({ headerRows, dataRows }) {
   const totalRow = [...dataRows].reverse().find((row) => normalize(row[0]).includes('合计')) || dataRows[0];
   const headers = flattenHeaders(headerRows || []);
   const column = findSettlementColumn(headers, totalRow.length);
+  const agents = dataRows
+    .filter((row) => !normalize(row[0]).includes('合计'))
+    .map((row) => {
+      try {
+        return { name: String(row[0] || '').trim(), value: numericValue(row[column]) };
+      } catch {
+        return null;
+      }
+    })
+    .filter((agent) => agent?.name);
   return {
     value: numericValue(totalRow[column]),
+    agents,
     column,
     header: headers[column] || '上级交收 / 交收金额',
     raw: totalRow[column],
   };
 }
 
-function thresholdMet(value, operator, threshold) {
-  return operator === 'lte' ? value <= threshold : value >= threshold;
+function thresholdBand(value, lowerThreshold, upperThreshold) {
+  if (Number.isFinite(lowerThreshold) && value <= lowerThreshold) return 'lower';
+  if (Number.isFinite(upperThreshold) && value >= upperThreshold) return 'upper';
+  return null;
 }
 
-module.exports = { flattenHeaders, parseSettlementTable, thresholdMet };
+module.exports = { flattenHeaders, parseSettlementTable, thresholdBand };

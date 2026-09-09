@@ -42,11 +42,11 @@
 
         <section id="telegram-view" class="view">
           <div class="settings-card">
-            <div><p class="eyebrow">通知通道</p><h2>Telegram 设置</h2><p>达到条件时，应用会向指定聊天发送一次提醒；金额恢复后自动重新待命。</p></div>
+            <div><p class="eyebrow">通知通道</p><h2>Telegram 设置</h2><p>达到条件时，应用会向指定聊天发送一次提醒；金额恢复后自动重新待命。</p><ol class="setup-steps"><li>在 Telegram 联系 @BotFather，发送 /newbot 创建机器人并复制 Token。</li><li>打开新机器人，点“开始”并给它发送任意一条消息。</li><li>把 Token 粘贴到右边，点击“自动获取 Chat ID”，然后保存并测试。</li></ol></div>
             <form id="telegram-form">
               <label>Bot Token<input name="botToken" type="password" autocomplete="off" placeholder="留空表示保留现有 Token" /></label>
               <label>Chat ID<input name="chatId" autocomplete="off" placeholder="例如 123456789" /></label>
-              <div class="form-actions"><button type="button" id="test-telegram" class="secondary">发送测试消息</button><button class="primary">保存设置</button></div>
+              <div class="form-actions"><button type="button" id="discover-chat" class="secondary">自动获取 Chat ID</button><button type="button" id="test-telegram" class="secondary">发送测试消息</button><button class="primary">保存设置</button></div>
             </form>
           </div>
         </section>
@@ -80,12 +80,12 @@
         <div class="form-grid">
           <label>显示名称<input name="name" required placeholder="例如 一号代理" /></label>
           <label>导航网址<input name="navUrl" required value="https://166.tt" /></label>
-          <label>安全码<input name="securityCode" type="password" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
+          <label>安全码<input name="securityCode" type="text" inputmode="numeric" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
           <label>登录账号<input name="username" required autocomplete="off" /></label>
           <label>登录密码<input name="password" type="password" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
           <label>检查间隔（分钟）<input name="intervalMinutes" type="number" min="1" value="5" required /></label>
-          <label>提醒条件<select name="operator"><option value="gte">大于或等于</option><option value="lte">小于或等于</option></select></label>
-          <label>交收金额阈值<input name="threshold" type="number" step="0.01" required placeholder="例如 35000000" /></label>
+          <label>低于提醒（≤）<input name="lowerThreshold" type="number" step="0.01" placeholder="例如 -100000，可留空" /></label>
+          <label>高于提醒（≥）<input name="upperThreshold" type="number" step="0.01" placeholder="例如 100000，可留空" /></label>
         </div>
         <label class="checkbox"><input name="enabled" type="checkbox" checked /> 保存后立即启用监控</label>
         <div class="form-actions"><button type="button" class="secondary close-dialog">取消</button><button class="primary">保存账号</button></div>

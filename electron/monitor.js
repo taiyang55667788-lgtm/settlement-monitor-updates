@@ -1,8 +1,8 @@
 const path = require('node:path');
-const { BrowserWindow, session } = require('electron');
+const { BrowserWindow } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
-const { parseSettlementTable, thresholdMet } = require('./report-parser');
-const { isRedirectAbort } = require('./navigation');
+const { parseSettlementTable, thresholdBand } = require('./report-parser');
+const { isRedirectAbort, isTransientScriptError } = require('./navigation');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -17,12 +17,21 @@ async function waitUntil(win, test, timeoutMs = 15000) {
     try {
       if (await win.webContents.executeJavaScript(`Boolean(${test})`, true)) return true;
     } catch (error) {
-      lastError = error;
+      if (!isTransientScriptError(error)) lastError = error;
     }
     await sleep(400);
   }
   if (lastError) throw lastError;
   return false;
+}
+
+async function executePageAction(win, script) {
+  try {
+    return await win.webContents.executeJavaScript(script, true);
+  } catch (error) {
+    if (!isTransientScriptError(error)) throw error;
+    return undefined;
+  }
 }
 
 async function load(win, url) {
@@ -72,10 +81,11 @@ class SiteClient {
     await load(this.window, this.account.navUrl);
     const inputFound = await waitUntil(this.window, `document.querySelectorAll('input').length > 0`, 12000);
     if (!inputFound) throw new Error('导航页没有找到安全码输入框');
-    await this.window.webContents.executeJavaScript(`(() => {
+    await executePageAction(this.window, `(() => {
       const input = [...document.querySelectorAll('input')].find(el => !['button','submit','hidden'].includes(el.type));
       if (!input) throw new Error('没有安全码输入框');
-      input.value = ${jsString(this.account.securityCode)};
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, ${jsString(this.account.securityCode)});
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
       const controls = [...document.querySelectorAll('button, input[type=submit], a')];
@@ -147,9 +157,15 @@ class SiteClient {
         await sleep(500);
         continue;
       }
-      await this.window.webContents.executeJavaScript(`(() => {
+      await executePageAction(this.window, `(() => {
         const inputs = [...document.querySelectorAll('input')].filter(el => !['button','submit','hidden'].includes(el.type));
-        const set = (el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+        if (inputs.length < 3) throw new Error('登录表单输入框不足');
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        const set = (el, value) => {
+          setter?.call(el, value);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
         set(inputs[0], ${jsString(this.account.username)});
         set(inputs[1], ${jsString(this.account.password)});
         set(inputs[2], ${jsString(captcha)});
@@ -188,13 +204,13 @@ class SiteClient {
     const reportUrl = await this.reportUrl();
     await load(this.window, reportUrl);
     await waitUntil(this.window, `/本星期/.test(document.body.innerText)`, 12000);
-    await this.window.webContents.executeJavaScript(`(() => {
+    await executePageAction(this.window, `(() => {
       const control = [...document.querySelectorAll('button, input, a')]
         .find(el => /本星期/.test(el.innerText || el.value || ''));
       control?.click();
     })()`, true);
     await sleep(250);
-    await this.window.webContents.executeJavaScript(`(() => {
+    await executePageAction(this.window, `(() => {
       const control = [...document.querySelectorAll('button, input, a')]
         .find(el => /^查询$/.test((el.innerText || el.value || '').trim()));
       if (!control) throw new Error('没有查询按钮');
@@ -221,7 +237,7 @@ class SiteClient {
         .map(row => [...row.cells].map(cell => cell.innerText.trim()));
       return { headerRows, dataRows };
     })()`, true);
-    return parseSettlementTable(tableData).value;
+    return parseSettlementTable(tableData);
   }
 
   async close() {
@@ -250,8 +266,17 @@ class MonitorService {
   }
 
   status(accountId) {
-    if (!this.runtime.has(accountId)) this.runtime.set(accountId, { status: 'waiting', alerted: false });
+    if (!this.runtime.has(accountId)) {
+      this.runtime.set(accountId, { status: 'waiting', alertedBand: null, subagentAlertBands: {}, subagents: [] });
+    }
     return this.runtime.get(accountId);
+  }
+
+  updateSubagentThreshold(accountId, name, lowerThreshold, upperThreshold) {
+    const status = this.status(accountId);
+    const subagent = status.subagents?.find((item) => item.name === name);
+    if (subagent) Object.assign(subagent, { lowerThreshold, upperThreshold, customized: true });
+    delete status.subagentAlertBands[Buffer.from(name).toString('base64url')];
   }
 
   async tick() {
@@ -275,24 +300,50 @@ class MonitorService {
     const client = new SiteClient(account, status);
     try {
       await client.open();
-      const value = await client.readThisWeekSettlement();
-      const met = thresholdMet(value, account.operator, Number(account.threshold));
+      const report = await client.readThisWeekSettlement();
+      const value = report.value;
+      const band = thresholdBand(value, account.lowerThreshold, account.upperThreshold);
+      const configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
+      status.subagents = report.agents.map((agent) => {
+        const custom = configuredSubagents.find((item) => item.name === agent.name);
+        return {
+          ...agent,
+          lowerThreshold: custom ? custom.lowerThreshold : account.lowerThreshold,
+          upperThreshold: custom ? custom.upperThreshold : account.upperThreshold,
+          customized: Boolean(custom),
+        };
+      });
+      status.subagentCount = status.subagents.length;
       status.currentValue = value;
       status.lastCheckedAt = new Date().toISOString();
-      status.status = met ? 'triggered' : 'ok';
-      if (met && !status.alerted) {
-        await this.sendTelegram(account, value);
-        status.alerted = true;
+      let anyTriggered = Boolean(band);
+      if (band && status.alertedBand !== band) {
+        await this.sendTelegram(account, value, band);
+        status.alertedBand = band;
         status.lastAlertAt = new Date().toISOString();
         this.store.addEvent('alert', `${account.name}：交收金额 ${value.toLocaleString('zh-CN')} 已达到提醒条件`, account.id);
-      } else if (!met) {
-        status.alerted = false;
+      } else if (!band) {
+        status.alertedBand = null;
       }
+      for (const subagent of status.subagents) {
+        const subagentBand = thresholdBand(subagent.value, subagent.lowerThreshold, subagent.upperThreshold);
+        const alertKey = Buffer.from(subagent.name).toString('base64url');
+        if (subagentBand) anyTriggered = true;
+        if (subagentBand && status.subagentAlertBands[alertKey] !== subagentBand) {
+          await this.sendTelegram(account, subagent.value, subagentBand, subagent.name, subagent);
+          status.subagentAlertBands[alertKey] = subagentBand;
+          status.lastAlertAt = new Date().toISOString();
+          this.store.addEvent('alert', `${account.name} / ${subagent.name}：交收金额 ${subagent.value.toLocaleString('zh-CN')} 已达到提醒条件`, account.id);
+        } else if (!subagentBand) {
+          delete status.subagentAlertBands[alertKey];
+        }
+      }
+      status.status = anyTriggered ? 'triggered' : 'ok';
     } catch (error) {
       status.status = 'error';
       const detail = error.message || String(error);
-      status.error = /ERR_ABORTED|\(-3\)/i.test(detail)
-        ? '导航跳转尚未完成，程序将在下次检查时自动重试'
+      status.error = isTransientScriptError(error)
+        ? '网页正在跳转，程序将在下次检查时自动重试'
         : detail;
       status.lastCheckedAt = new Date().toISOString();
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
@@ -304,15 +355,23 @@ class MonitorService {
     }
   }
 
-  async sendTelegram(account, value) {
+  async sendTelegram(account, value, band, subagentName = '', thresholds = account) {
     const { botToken, chatId } = this.store.state.telegram;
     if (!botToken || !chatId) throw new Error('请先设置 Telegram Bot Token 和 Chat ID');
-    const comparison = account.operator === 'lte' ? '≤' : '≥';
+    const triggeredCondition = band === 'lower'
+      ? `≤ ${Number(thresholds.lowerThreshold).toLocaleString('zh-CN')}`
+      : `≥ ${Number(thresholds.upperThreshold).toLocaleString('zh-CN')}`;
+    const configuredConditions = [
+      Number.isFinite(thresholds.lowerThreshold) ? `≤ ${thresholds.lowerThreshold.toLocaleString('zh-CN')}` : '',
+      Number.isFinite(thresholds.upperThreshold) ? `≥ ${thresholds.upperThreshold.toLocaleString('zh-CN')}` : '',
+    ].filter(Boolean).join(' 或 ');
     const text = [
       '🔔 交收金额提醒',
       `账号：${account.name}`,
+      ...(subagentName ? [`下级代理：${subagentName}`] : []),
       `本周交收金额：${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      `触发条件：${comparison} ${Number(account.threshold).toLocaleString('zh-CN')}`,
+      `触发条件：${triggeredCondition}`,
+      `全部条件：${configuredConditions}`,
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].join('\n');
     const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -337,6 +396,20 @@ class MonitorService {
     if (!response.ok) throw new Error(`Telegram 测试失败（${response.status}）`);
     this.store.addEvent('success', 'Telegram 测试消息已发送');
     this.onChange();
+  }
+
+  async discoverTelegramChatId(inputToken = '') {
+    const botToken = String(inputToken || this.store.state.telegram.botToken || '').trim();
+    if (!botToken) throw new Error('请先填写 Bot Token');
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`);
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error('Bot Token 无效，无法连接 Telegram');
+    const chats = (payload.result || [])
+      .map((update) => update.message?.chat || update.channel_post?.chat || update.edited_message?.chat)
+      .filter(Boolean);
+    const latest = chats[chats.length - 1];
+    if (!latest?.id) throw new Error('没有找到聊天：请先在 Telegram 给机器人发送一条消息');
+    return String(latest.id);
   }
 }
 

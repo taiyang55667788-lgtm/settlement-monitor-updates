@@ -10,4 +10,9 @@ function isRedirectAbort(error) {
     || /ERR_ABORTED|\(-3\)/i.test(error?.message || '');
 }
 
-module.exports = { normalizeNavigationUrl, isRedirectAbort };
+function isTransientScriptError(error) {
+  return isRedirectAbort(error)
+    || /Script failed to execute|Execution context was destroyed|detached frame|frame was detached/i.test(error?.message || '');
+}
+
+module.exports = { normalizeNavigationUrl, isRedirectAbort, isTransientScriptError };

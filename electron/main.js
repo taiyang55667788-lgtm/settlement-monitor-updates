@@ -10,6 +10,12 @@ let store;
 let monitor;
 let updater;
 
+function optionalAmount(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : NaN;
+}
+
 function state() {
   return { ...store.publicState(monitor.runtime), updater: updater?.runtime };
 }
@@ -58,6 +64,10 @@ app.whenReady().then(() => {
     await monitor.testTelegram();
     return { ok: true };
   });
+  ipcMain.handle('telegram:discover-chat', async (_event, input) => ({
+    ok: true,
+    chatId: await monitor.discoverTelegramChatId(input?.botToken),
+  }));
   ipcMain.handle('update:save', (_event, input) => {
     store.update((data) => {
       data.update = {
@@ -82,13 +92,17 @@ app.whenReady().then(() => {
       name: String(input.name || '').trim(),
       navUrl: normalizeNavigationUrl(input.navUrl),
       username: String(input.username || '').trim(),
-      operator: input.operator === 'lte' ? 'lte' : 'gte',
-      threshold: Number(input.threshold),
+      lowerThreshold: optionalAmount(input.lowerThreshold),
+      upperThreshold: optionalAmount(input.upperThreshold),
       intervalMinutes: Math.max(1, Number(input.intervalMinutes) || 5),
       enabled: input.enabled !== false,
     };
-    if (!clean.name || !clean.navUrl || !clean.username || !Number.isFinite(clean.threshold)) {
-      throw new Error('请完整填写账号名称、导航网址、账号和提醒金额');
+    const invalidThreshold = Number.isNaN(clean.lowerThreshold) || Number.isNaN(clean.upperThreshold);
+    if (!clean.name || !clean.navUrl || !clean.username || invalidThreshold) {
+      throw new Error('请完整填写账号名称、导航网址、账号和有效的提醒金额');
+    }
+    if (clean.lowerThreshold === null && clean.upperThreshold === null) {
+      throw new Error('低于提醒和高于提醒至少填写一个');
     }
     let savedId;
     store.update((data) => {
@@ -101,7 +115,7 @@ app.whenReady().then(() => {
         savedId = existing.id;
       } else {
         if (!input.securityCode || !input.password) throw new Error('安全码和密码不能为空');
-        const created = { ...clean, id: crypto.randomUUID(), securityCode: String(input.securityCode), password: String(input.password) };
+        const created = { ...clean, id: crypto.randomUUID(), securityCode: String(input.securityCode), password: String(input.password), subagentThresholds: [] };
         data.accounts.push(created);
         savedId = created.id;
       }
@@ -110,6 +124,27 @@ app.whenReady().then(() => {
     store.addEvent('success', `${clean.name}：监控配置已保存`, savedId);
     publish();
     return { ok: true, id: savedId };
+  });
+  ipcMain.handle('subagent-threshold:save', (_event, input) => {
+    const lowerThreshold = optionalAmount(input.lowerThreshold);
+    const upperThreshold = optionalAmount(input.upperThreshold);
+    if (Number.isNaN(lowerThreshold) || Number.isNaN(upperThreshold)) throw new Error('请输入有效的提醒金额');
+    const name = String(input.name || '').trim();
+    const accountId = String(input.accountId || '');
+    if (!name) throw new Error('下级代理名称不能为空');
+    store.update((data) => {
+      const account = data.accounts.find((item) => item.id === accountId);
+      if (!account) throw new Error('账号不存在');
+      if (!Array.isArray(account.subagentThresholds)) account.subagentThresholds = [];
+      const existing = account.subagentThresholds.find((item) => item.name === name);
+      const values = { name, lowerThreshold, upperThreshold };
+      if (existing) Object.assign(existing, values);
+      else account.subagentThresholds.push(values);
+    });
+    monitor.updateSubagentThreshold(accountId, name, lowerThreshold, upperThreshold);
+    store.addEvent('success', `${name}：独立提醒条件已保存`, accountId);
+    publish();
+    return { ok: true };
   });
   ipcMain.handle('account:remove', (_event, id) => {
     store.update((data) => { data.accounts = data.accounts.filter((account) => account.id !== id); });

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { flattenHeaders, parseSettlementTable, thresholdMet } = require('../electron/report-parser');
+const { flattenHeaders, parseSettlementTable, thresholdBand } = require('../electron/report-parser');
 
 test('flattens grouped table headers', () => {
   const headers = flattenHeaders([
@@ -28,11 +28,14 @@ test('reads settlement amount from total row', () => {
     ],
   });
   assert.equal(result.value, 33973023.35);
+  assert.deepEqual(result.agents, [{ name: 'abc', value: 12345.67 }]);
 });
 
-test('supports both threshold directions', () => {
-  assert.equal(thresholdMet(100, 'gte', 100), true);
-  assert.equal(thresholdMet(99, 'gte', 100), false);
-  assert.equal(thresholdMet(80, 'lte', 80), true);
-  assert.equal(thresholdMet(81, 'lte', 80), false);
+test('supports simultaneous lower and upper thresholds', () => {
+  assert.equal(thresholdBand(-100, -100, 100), 'lower');
+  assert.equal(thresholdBand(100, -100, 100), 'upper');
+  assert.equal(thresholdBand(0, -100, 100), null);
+  assert.equal(thresholdBand(80, null, 100), null);
+  assert.equal(thresholdBand(101, null, 100), 'upper');
+  assert.equal(thresholdBand(-101, -100, null), 'lower');
 });
