@@ -1,0 +1,64 @@
+{
+  "name": "settlement-monitor",
+  "version": "1.0.2",
+  "private": true,
+  "description": "多账号交收金额监控与 Telegram 提醒",
+  "repository": "https://github.com/taiyang55667788-lgtm/settlement-monitor-updates",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "electron-updater": "^6.6.2",
+    "tesseract.js": "^6.0.1"
+  },
+  "devDependencies": {
+    "electron": "^38.1.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.local.settlement-monitor",
+    "productName": "交收监控",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/tesseract.js-core/**",
+      "node_modules/@tesseract.js-data/eng/**"
+    ],
+    "files": [
+      "electron/**/*",
+      "ui/**/*",
+      "package.json"
+    ],
+    "generateUpdatesFilesForAllChannels": true,
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest/download"
+      }
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.finance",
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}

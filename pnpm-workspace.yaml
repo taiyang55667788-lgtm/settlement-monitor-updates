@@ -1,0 +1,8 @@
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  tesseract.js: true
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+  - tesseract.js

@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.electron-win-*/
+*.log
+.DS_Store

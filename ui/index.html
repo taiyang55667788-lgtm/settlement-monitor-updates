@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self' https://api.telegram.org" />
+    <title>交收监控</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">交</span><div><strong>交收监控</strong><small>Settlement Watch</small></div></div>
+        <nav>
+          <button class="nav-item active" data-view="dashboard"><span>◫</span>监控面板</button>
+          <button class="nav-item" data-view="telegram"><span>↗</span>Telegram</button>
+          <button class="nav-item" data-view="events"><span>≡</span>运行记录</button>
+          <button class="nav-item" data-view="update"><span>⇧</span>软件更新</button>
+        </nav>
+        <div class="security-note"><span>●</span><div><strong>本机加密</strong><small>账号资料不会离开这台电脑</small></div></div>
+      </aside>
+
+      <main>
+        <header>
+          <div><p class="eyebrow">实时监控中心</p><h1 id="page-title">监控面板</h1></div>
+          <button id="add-account" class="primary">＋ 添加账号</button>
+        </header>
+
+        <section id="dashboard-view" class="view active">
+          <div class="summary-grid">
+            <article class="summary"><span>监控账号</span><strong id="total-count">0</strong><small>已配置账号</small></article>
+            <article class="summary"><span>运行正常</span><strong id="ok-count">0</strong><small>最近检查成功</small></article>
+            <article class="summary alert"><span>已达阈值</span><strong id="alert-count">0</strong><small>等待你查看</small></article>
+            <article class="summary"><span>异常账号</span><strong id="error-count">0</strong><small>将自动重试</small></article>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div><h2>账号监控</h2><p>每个账号独立登录、检查和提醒</p></div><span class="live"><i></i>自动运行中</span></div>
+            <div id="accounts" class="accounts"></div>
+            <div id="empty" class="empty"><span>＋</span><h3>还没有监控账号</h3><p>添加第一个账号并设置交收金额提醒条件。</p><button class="primary add-trigger">添加账号</button></div>
+          </div>
+        </section>
+
+        <section id="telegram-view" class="view">
+          <div class="settings-card">
+            <div><p class="eyebrow">通知通道</p><h2>Telegram 设置</h2><p>达到条件时，应用会向指定聊天发送一次提醒；金额恢复后自动重新待命。</p></div>
+            <form id="telegram-form">
+              <label>Bot Token<input name="botToken" type="password" autocomplete="off" placeholder="留空表示保留现有 Token" /></label>
+              <label>Chat ID<input name="chatId" autocomplete="off" placeholder="例如 123456789" /></label>
+              <div class="form-actions"><button type="button" id="test-telegram" class="secondary">发送测试消息</button><button class="primary">保存设置</button></div>
+            </form>
+          </div>
+        </section>
+
+        <section id="events-view" class="view">
+          <div class="panel"><div class="panel-head"><div><h2>运行记录</h2><p>最近 100 条检查、提醒与错误</p></div></div><div id="events" class="events"></div></div>
+        </section>
+
+        <section id="update-view" class="view">
+          <div class="settings-card update-card">
+            <div><p class="eyebrow">应用维护</p><h2>软件更新</h2><p>启动后自动检查新版本并在后台下载。更新准备好后，你可以立即重启安装，也可以在退出应用时自动安装。</p></div>
+            <div>
+              <div class="version-line"><span>当前版本</span><strong id="current-version">—</strong></div>
+              <div class="update-status"><span id="update-dot"></span><div><strong id="update-message">等待检查</strong><small id="update-time">尚未检查</small></div></div>
+              <div id="update-progress" class="progress"><i></i></div>
+              <form id="update-form">
+                <label>更新服务器地址<input name="feedUrl" type="url" placeholder="https://updates.example.com/app" /></label>
+                <label class="checkbox"><input name="autoCheck" type="checkbox" checked /> 启动时及每 6 小时自动检查</label>
+                <div class="form-actions"><button type="button" id="check-update" class="secondary">立即检查</button><button type="button" id="install-update" class="primary" hidden>重启并安装</button><button class="primary">保存设置</button></div>
+              </form>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="account-dialog">
+      <form id="account-form" method="dialog">
+        <div class="dialog-head"><div><p class="eyebrow">账号配置</p><h2 id="dialog-title">添加监控账号</h2></div><button type="button" class="icon-button close-dialog">×</button></div>
+        <input type="hidden" name="id" />
+        <div class="form-grid">
+          <label>显示名称<input name="name" required placeholder="例如 一号代理" /></label>
+          <label>导航网址<input name="navUrl" required value="https://166.tt" /></label>
+          <label>安全码<input name="securityCode" type="password" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
+          <label>登录账号<input name="username" required autocomplete="off" /></label>
+          <label>登录密码<input name="password" type="password" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
+          <label>检查间隔（分钟）<input name="intervalMinutes" type="number" min="1" value="5" required /></label>
+          <label>提醒条件<select name="operator"><option value="gte">大于或等于</option><option value="lte">小于或等于</option></select></label>
+          <label>交收金额阈值<input name="threshold" type="number" step="0.01" required placeholder="例如 35000000" /></label>
+        </div>
+        <label class="checkbox"><input name="enabled" type="checkbox" checked /> 保存后立即启用监控</label>
+        <div class="form-actions"><button type="button" class="secondary close-dialog">取消</button><button class="primary">保存账号</button></div>
+      </form>
+    </dialog>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
