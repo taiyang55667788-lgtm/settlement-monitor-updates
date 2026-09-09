@@ -23,7 +23,7 @@
       <main>
         <header>
           <div><p class="eyebrow">实时监控中心</p><h1 id="page-title">监控面板</h1></div>
-          <button id="add-account" class="primary">＋ 添加账号</button>
+          <div class="header-actions"><span id="header-version" class="version-badge">版本读取中</span><button id="add-account" class="primary">＋ 添加账号</button></div>
         </header>
 
         <section id="dashboard-view" class="view active">
@@ -75,20 +75,34 @@
 
     <dialog id="account-dialog">
       <form id="account-form" method="dialog">
-        <div class="dialog-head"><div><p class="eyebrow">账号配置</p><h2 id="dialog-title">添加监控账号</h2></div><button type="button" class="icon-button close-dialog">×</button></div>
+        <div class="dialog-head"><div><p class="eyebrow">盘口登录配置</p><h2 id="dialog-title">添加监控账号</h2></div><button type="button" class="icon-button close-dialog">×</button></div>
         <input type="hidden" name="id" />
-        <div class="form-grid">
-          <label>显示名称<input name="name" required placeholder="例如 一号代理" /></label>
-          <label>导航网址<input name="navUrl" required value="https://166.tt" /></label>
-          <label>安全码<input name="securityCode" type="text" inputmode="numeric" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
-          <label>登录账号<input name="username" required autocomplete="off" /></label>
-          <label>登录密码<input name="password" type="password" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
-          <label>检查间隔（分钟）<input name="intervalMinutes" type="number" min="1" value="5" required /></label>
-          <label>低于提醒（≤）<input name="lowerThreshold" type="number" step="0.01" placeholder="例如 -100000，可留空" /></label>
-          <label>高于提醒（≥）<input name="upperThreshold" type="number" step="0.01" placeholder="例如 100000，可留空" /></label>
-        </div>
+        <section class="config-section">
+          <div class="config-title"><span>1</span><div><strong>导航与线路识别</strong><small>输入导航、安全码后自动选择最快的代理线路</small></div></div>
+          <div class="form-grid navigation-grid">
+            <label>显示名称<input name="name" required placeholder="例如 一号代理" /></label>
+            <label>导航网址<input name="navUrl" required value="https://166.tt" /></label>
+            <label>安全码（明文显示）<input name="securityCode" type="text" inputmode="numeric" autocomplete="off" placeholder="输入时直接显示；编辑留空不更改" /></label>
+          </div>
+          <div id="route-preview" class="route-preview"><span>保存后将自动测速并显示代理线路</span></div>
+        </section>
+        <section class="config-section">
+          <div class="config-title"><span>2</span><div><strong>盘口账号登录</strong><small>账号密码自动填写，数字验证码自动识别</small></div></div>
+          <div class="form-grid">
+            <label>登录账号<input name="username" required autocomplete="off" /></label>
+            <label>登录密码<input name="password" type="password" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
+          </div>
+        </section>
+        <section class="config-section">
+          <div class="config-title"><span>3</span><div><strong>默认提醒条件</strong><small>下级代理首次读取后可再分别设置独立阈值</small></div></div>
+          <div class="form-grid alert-grid">
+            <label>低于提醒（≤）<input name="lowerThreshold" type="number" step="0.01" placeholder="例如 -100000，可留空" /></label>
+            <label>高于提醒（≥）<input name="upperThreshold" type="number" step="0.01" placeholder="例如 100000，可留空" /></label>
+            <label>检查间隔（分钟）<input name="intervalMinutes" type="number" min="1" value="5" required /></label>
+          </div>
+        </section>
         <label class="checkbox"><input name="enabled" type="checkbox" checked /> 保存后立即启用监控</label>
-        <div class="form-actions"><button type="button" class="secondary close-dialog">取消</button><button class="primary">保存账号</button></div>
+        <div class="form-actions"><button type="button" class="secondary close-dialog">取消</button><button class="primary">保存并开始识别</button></div>
       </form>
     </dialog>
 

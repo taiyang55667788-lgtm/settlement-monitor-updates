@@ -11,6 +11,15 @@ function thresholdText(account) {
   return conditions.join(' 或 ') || '未设置';
 }
 
+function routePreview(account) {
+  if (!account?.routes?.length) return '<span>保存后将自动测速并显示代理线路</span>';
+  return account.routes.map((route, index) => {
+    let host = route.text;
+    try { host = new URL(route.text).host; } catch {}
+    return `<div class="route-item"><code>${escapeHtml(host)}</code><strong>${route.speed < 99999 ? `${route.speed}ms` : '待测速'}${index === 0 ? ' · 最快' : ''}</strong></div>`;
+  }).join('');
+}
+
 function subagentList(account) {
   if (!Number.isFinite(account.subagentCount)) {
     return '<div class="subagent-empty">登录并完成首次检查后，这里会显示下级代理。</div>';
@@ -50,11 +59,12 @@ function render(state) {
   $('#accounts').innerHTML = accounts.map((account) => {
     const value = Number.isFinite(account.currentValue) ? money.format(account.currentValue) : '—';
     const checked = account.lastCheckedAt ? new Date(account.lastCheckedAt).toLocaleString('zh-CN') : '尚未检查';
+    const statusDetail = account.error || (account.status === 'checking' ? account.stage : '') || checked;
     return `<article class="account-row" data-id="${account.id}">
       <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · 下级代理 ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个</small></div></div>
       <div class="metric"><small>本周交收金额</small><strong>${value}</strong></div>
       <div class="threshold"><small>提醒条件</small><strong>${thresholdText(account)}</strong></div>
-      <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(account.error || '')}">${escapeHtml(account.error || checked)}</small></div>
+      <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small></div>
       <div class="actions"><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
       <div class="subagents"><div class="subagents-head"><strong>下级代理与独立提醒</strong><small>每个代理可分别设置低于和高于提醒；留空并保存表示关闭该方向。</small></div>${subagentList(account)}</div>
     </article>`;
@@ -62,6 +72,7 @@ function render(state) {
   $('#events').innerHTML = (state.events || []).map((event) => `<div class="event ${event.type}"><i></i><time>${new Date(event.time).toLocaleString('zh-CN')}</time><span>${escapeHtml(event.message)}</span></div>`).join('') || '<div class="empty show"><p>暂无运行记录</p></div>';
   $('#telegram-form').elements.chatId.value = state.telegram?.chatId || '';
   const updater = state.updater || {};
+  $('#header-version').textContent = updater.currentVersion ? `v${updater.currentVersion}` : '版本未知';
   $('#current-version').textContent = updater.currentVersion ? `v${updater.currentVersion}` : '—';
   $('#update-message').textContent = updater.message || '等待检查';
   $('#update-time').textContent = updater.lastCheckedAt ? `上次检查：${new Date(updater.lastCheckedAt).toLocaleString('zh-CN')}` : '尚未检查';
@@ -84,6 +95,7 @@ function openAccount(account) {
   form.elements.intervalMinutes.value = account?.intervalMinutes || 5;
   form.elements.enabled.checked = account?.enabled !== false;
   for (const key of ['id','name','username','lowerThreshold','upperThreshold']) form.elements[key].value = account?.[key] ?? '';
+  $('#route-preview').innerHTML = routePreview(account);
   $('#dialog-title').textContent = account ? '编辑监控账号' : '添加监控账号';
   $('#account-dialog').showModal();
 }
@@ -105,9 +117,10 @@ $('#account-form').addEventListener('submit', (event) => {
   const account = Object.fromEntries(form.entries());
   account.enabled = event.currentTarget.elements.enabled.checked;
   action(async () => {
-    await window.monitorApi.saveAccount(account);
+    const result = await window.monitorApi.saveAccount(account);
     $('#account-dialog').close();
-  }, '账号已保存');
+    if (account.enabled) await window.monitorApi.checkAccount(result.id);
+  }, '账号已保存，正在识别线路并测试登录');
 });
 
 $('#accounts').addEventListener('click', (event) => {

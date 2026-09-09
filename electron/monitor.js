@@ -2,7 +2,7 @@ const path = require('node:path');
 const { BrowserWindow } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
 const { parseSettlementTable, thresholdBand } = require('./report-parser');
-const { isRedirectAbort, isTransientScriptError } = require('./navigation');
+const { isRedirectAbort, isTransientScriptError, selectFastestRoute, loginSubmissionScript } = require('./navigation');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -78,7 +78,9 @@ class SiteClient {
   }
 
   async discoverAgentUrl() {
+    this.status.stage = '正在打开导航网址';
     await load(this.window, this.account.navUrl);
+    this.status.stage = '正在填写安全码';
     const inputFound = await waitUntil(this.window, `document.querySelectorAll('input').length > 0`, 12000);
     if (!inputFound) throw new Error('导航页没有找到安全码输入框');
     await executePageAction(this.window, `(() => {
@@ -96,22 +98,15 @@ class SiteClient {
     const routeReady = await waitUntil(this.window, `/线路选择|代理线路/.test(document.body.innerText)`, 15000);
     if (!routeReady) throw new Error('安全码未通过或线路页加载超时');
     await waitUntil(this.window, `[...document.querySelectorAll('tr')].some(row => /代理线路/.test(row.innerText) && /\\d+\\s*ms/i.test(row.innerText))`, 15000);
-    const selected = await this.window.webContents.executeJavaScript(`(() => {
-      const rows = [...document.querySelectorAll('tr')]
-        .filter(row => /代理线路/.test(row.innerText))
-        .map(row => {
-          const link = row.querySelector('a');
-          const text = (link?.innerText || '').trim();
-          const speed = Number((row.innerText.match(/(\d+)ms/i) || [])[1] || 99999);
-          return { text, speed };
-        })
-        .filter(item => /^https?:\/\//i.test(item.text));
-      rows.sort((a, b) => a.speed - b.speed);
-      return rows[0] || null;
-    })()`, true);
+    const routeRows = await this.window.webContents.executeJavaScript(`(() => [...document.querySelectorAll('tr')]
+      .filter(row => /代理线路/.test(row.innerText))
+      .map(row => ({ text: (row.querySelector('a')?.innerText || '').trim(), label: row.innerText })))()`, true);
+    const { routes, selected } = selectFastestRoute(routeRows);
     if (!selected?.text) throw new Error('线路页没有可用的代理网址');
+    this.status.routes = routes;
     this.status.routeSpeed = selected.speed < 99999 ? selected.speed : null;
     this.status.routeHost = new URL(selected.text).host;
+    this.status.stage = `已选择最快线路 ${this.status.routeSpeed ?? '—'}ms`;
     return selected.text;
   }
 
@@ -146,36 +141,28 @@ class SiteClient {
   }
 
   async login(agentUrl) {
+    this.status.stage = '正在打开代理登录页';
     await load(this.window, agentUrl);
-    if (await this.isLoggedIn()) return;
+    if (await this.isLoggedIn()) {
+      this.status.stage = '登录状态有效';
+      return;
+    }
     const formReady = await waitUntil(this.window, `document.querySelectorAll('input').length >= 3`, 12000);
     if (!formReady) throw new Error('代理登录页加载失败');
     for (let attempt = 1; attempt <= 3; attempt += 1) {
+      this.status.stage = `正在识别验证码（第 ${attempt}/3 次）`;
       const captcha = await this.readCaptcha();
       if (captcha.length < 4) {
         await this.window.webContents.executeJavaScript(`document.images[document.images.length - 1]?.click()`, true);
         await sleep(500);
         continue;
       }
-      await executePageAction(this.window, `(() => {
-        const inputs = [...document.querySelectorAll('input')].filter(el => !['button','submit','hidden'].includes(el.type));
-        if (inputs.length < 3) throw new Error('登录表单输入框不足');
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-        const set = (el, value) => {
-          setter?.call(el, value);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        };
-        set(inputs[0], ${jsString(this.account.username)});
-        set(inputs[1], ${jsString(this.account.password)});
-        set(inputs[2], ${jsString(captcha)});
-        const controls = [...document.querySelectorAll('button, input[type=submit], a')];
-        const submit = controls.find(el => /^登录$/.test((el.innerText || el.value || '').replace(/\s/g,'')));
-        if (!submit) throw new Error('没有登录按钮');
-        submit.click();
-      })()`, true);
+      await executePageAction(this.window, loginSubmissionScript(this.account.username, this.account.password, captcha));
       const loggedIn = await waitUntil(this.window, `/报表查询/.test(document.body.innerText)`, 10000);
-      if (loggedIn) return;
+      if (loggedIn) {
+        this.status.stage = '账号登录成功';
+        return;
+      }
       await sleep(500);
     }
     throw new Error('连续三次无法通过验证码，请稍后重试');
@@ -202,6 +189,7 @@ class SiteClient {
       await this.login(agentUrl);
     }
     const reportUrl = await this.reportUrl();
+    this.status.stage = '正在查询本周报表';
     await load(this.window, reportUrl);
     await waitUntil(this.window, `/本星期/.test(document.body.innerText)`, 12000);
     await executePageAction(this.window, `(() => {
@@ -237,6 +225,7 @@ class SiteClient {
         .map(row => [...row.cells].map(cell => cell.innerText.trim()));
       return { headerRows, dataRows };
     })()`, true);
+    this.status.stage = '本周报表读取成功';
     return parseSettlementTable(tableData);
   }
 
@@ -296,6 +285,7 @@ class MonitorService {
     status.running = true;
     status.status = 'checking';
     status.error = '';
+    status.stage = '准备检查';
     this.onChange();
     const client = new SiteClient(account, status);
     try {
@@ -344,7 +334,7 @@ class MonitorService {
       const detail = error.message || String(error);
       status.error = isTransientScriptError(error)
         ? '网页正在跳转，程序将在下次检查时自动重试'
-        : detail;
+        : `${status.stage || '检查过程'}：${detail}`;
       status.lastCheckedAt = new Date().toISOString();
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
     } finally {
