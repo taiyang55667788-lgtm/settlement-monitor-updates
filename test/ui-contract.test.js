@@ -23,3 +23,9 @@ test('account form clearly starts recognition after saving', () => {
   assert.match(html, />保存并开始识别</);
   assert.match(html, /id="route-preview"/);
 });
+
+test('offers in-app viewing for manual captcha login', () => {
+  assert.match(html, /id="view-account"[^>]*>盘内查看</);
+  assert.match(client, /data-action="view"/);
+  assert.match(client, /openAccountView/);
+});

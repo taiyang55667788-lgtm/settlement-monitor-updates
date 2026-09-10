@@ -87,7 +87,7 @@
           <div id="route-preview" class="route-preview"><span>保存后将自动测速并显示代理线路</span></div>
         </section>
         <section class="config-section">
-          <div class="config-title"><span>2</span><div><strong>盘口账号登录</strong><small>账号密码自动填写，数字验证码自动识别</small></div></div>
+          <div class="config-title"><span>2</span><div><strong>盘口账号登录</strong><small>账号密码自动填写，验证码多图像识别；失败时可使用盘内查看手动登录</small></div></div>
           <div class="form-grid">
             <label>登录账号<input name="username" required autocomplete="off" /></label>
             <label>登录密码<input name="password" type="password" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
@@ -100,7 +100,7 @@
           </div>
         </section>
         <label class="checkbox"><input name="enabled" type="checkbox" checked /> 保存后立即启用监控</label>
-        <div class="form-actions"><button type="button" class="secondary close-dialog">取消</button><button class="primary">保存并开始识别</button></div>
+        <div class="form-actions"><button type="button" id="view-account" class="secondary" hidden>盘内查看</button><button type="button" class="secondary close-dialog">取消</button><button class="primary">保存并开始识别</button></div>
       </form>
     </dialog>
 

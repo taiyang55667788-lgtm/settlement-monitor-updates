@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('monitorApi', {
   removeAccount: (id) => ipcRenderer.invoke('account:remove', id),
   toggleAccount: (id, enabled) => ipcRenderer.invoke('account:toggle', { id, enabled }),
   checkAccount: (id) => ipcRenderer.invoke('account:check', id),
+  openAccountView: (id) => ipcRenderer.invoke('account:view', id),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('state:changed', listener);

@@ -1,10 +1,42 @@
 const path = require('node:path');
-const { BrowserWindow, session } = require('electron');
+const { BrowserWindow, session, nativeImage } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
 const { splitReportRows, parseSettlementTable, legacyThresholdPair, applySubagentThresholds, evaluateSubagentThresholds } = require('./report-parser');
-const { partitionForAccount, isRedirectAbort, isTransientScriptError, selectFastestRoute, loginSubmissionScript } = require('./navigation');
+const {
+  partitionForAccount,
+  isRedirectAbort,
+  isTransientScriptError,
+  selectFastestRoute,
+  loginSubmissionScript,
+  loginPrefillScript,
+  selectCaptchaCandidate,
+  isCredentialFailure,
+  loginFailureScript,
+} = require('./navigation');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function captchaOcrVariants(image) {
+  const size = image.getSize();
+  const width = Math.max(180, size.width * 4);
+  const height = Math.max(72, size.height * 4);
+  const enlarged = image.resize({ width, height, quality: 'best' });
+  const variants = [enlarged.toPNG()];
+  const bitmap = enlarged.toBitmap();
+  for (const inverted of [false, true]) {
+    const processed = Buffer.from(bitmap);
+    for (let offset = 0; offset + 3 < processed.length; offset += 4) {
+      const brightness = (processed[offset] + processed[offset + 1] + processed[offset + 2]) / 3;
+      const blackOrWhite = brightness < 165 ? 0 : 255;
+      const value = inverted ? 255 - blackOrWhite : blackOrWhite;
+      processed[offset] = value;
+      processed[offset + 1] = value;
+      processed[offset + 2] = value;
+    }
+    variants.push(nativeImage.createFromBitmap(processed, { width, height, scaleFactor: 1 }).toPNG());
+  }
+  return variants;
+}
 
 function jsString(value) {
   return JSON.stringify(String(value));
@@ -115,29 +147,72 @@ class SiteClient {
   }
 
   async readCaptcha() {
-    const rect = await this.window.webContents.executeJavaScript(`(() => {
+    const info = await this.window.webContents.executeJavaScript(`(() => {
       const images = [...document.images];
-      const image = images.find(img => {
+      const sized = img => {
+        const r = img.getBoundingClientRect();
+        return r.width >= 45 && r.width <= 220 && r.height >= 18 && r.height <= 80;
+      };
+      const image = images.find(img => sized(img) && /captcha|verify|checkcode|validcode/i.test([img.src, img.id, img.className, img.alt].join(' ')))
+        || images.find(img => {
         const r = img.getBoundingClientRect();
         const context = img.closest('li, tr, div')?.innerText || '';
         return r.width >= 45 && r.width <= 220 && r.height >= 18 && r.height <= 80 && /验证码/.test(context);
-      }) || images.find(img => {
-        const r = img.getBoundingClientRect();
-        return r.width >= 45 && r.width <= 220 && r.height >= 18 && r.height <= 80;
-      });
+      }) || images.find(sized);
       if (!image) return null;
       const r = image.getBoundingClientRect();
-      return { x: Math.max(0, Math.floor(r.x)), y: Math.max(0, Math.floor(r.y)), width: Math.ceil(r.width), height: Math.ceil(r.height) };
+      const inputs = [...document.querySelectorAll('input')].filter(el => !['button','submit','hidden','password'].includes(el.type));
+      const hint = el => [el.name, el.id, el.placeholder].filter(Boolean).join(' ').toLowerCase();
+      const captchaInput = inputs.find(el => /captcha|verify|checkcode|验证码/.test(hint(el))) || inputs[inputs.length - 1];
+      const expectedLength = Number(captchaInput?.maxLength);
+      return {
+        rect: { x: Math.max(0, Math.floor(r.x)), y: Math.max(0, Math.floor(r.y)), width: Math.ceil(r.width), height: Math.ceil(r.height) },
+        expectedLength: expectedLength >= 4 && expectedLength <= 6 ? expectedLength : 0,
+      };
     })()`, true);
-    if (!rect) throw new Error('找不到验证码图片');
-    const image = await this.window.webContents.capturePage(rect);
+    if (!info?.rect) throw new Error('找不到验证码图片');
+    const image = await this.window.webContents.capturePage(info.rect);
     if (!this.ocr) {
       const langPath = path.dirname(require.resolve('@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz'));
       this.ocr = await createWorker('eng', 1, { langPath, gzip: true, logger: () => {} });
       await this.ocr.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: PSM.SINGLE_WORD });
     }
-    const result = await this.ocr.recognize(image.toPNG());
-    return String(result.data.text || '').replace(/\D/g, '').slice(0, 6);
+    const candidates = [];
+    for (const variant of captchaOcrVariants(image)) {
+      const result = await this.ocr.recognize(variant);
+      candidates.push({ text: result.data.text, confidence: result.data.confidence });
+    }
+    return selectCaptchaCandidate(candidates, info.expectedLength);
+  }
+
+  async refreshCaptcha() {
+    await executePageAction(this.window, `(() => {
+      const images = [...document.images];
+      const sized = img => {
+        const r = img.getBoundingClientRect();
+        return r.width >= 45 && r.width <= 220 && r.height >= 18 && r.height <= 80;
+      };
+      const image = images.find(img => sized(img) && /captcha|verify|checkcode|validcode/i.test([img.src, img.id, img.className, img.alt].join(' ')))
+        || images.find(img => sized(img) && /验证码/.test(img.closest('li, tr, div')?.innerText || ''))
+        || images.find(sized);
+      image?.click();
+    })()`);
+    await sleep(800);
+  }
+
+  async readLoginFailure() {
+    return this.window.webContents.executeJavaScript(loginFailureScript(), true).catch(() => '');
+  }
+
+  async waitForLoginOutcome(timeoutMs = 10000, ignoredFailure = '') {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await this.isLoggedIn().catch(() => false)) return { loggedIn: true, failure: '' };
+      const failure = await this.readLoginFailure();
+      if (failure && failure !== ignoredFailure) return { loggedIn: false, failure };
+      await sleep(350);
+    }
+    return { loggedIn: false, failure: '' };
   }
 
   async login(agentUrl) {
@@ -149,23 +224,28 @@ class SiteClient {
     }
     const formReady = await waitUntil(this.window, `document.querySelectorAll('input').length >= 3`, 12000);
     if (!formReady) throw new Error('代理登录页加载失败');
+    let lastFailure = '';
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       this.status.stage = `正在识别验证码（第 ${attempt}/3 次）`;
       const captcha = await this.readCaptcha();
       if (captcha.length < 4) {
-        await this.window.webContents.executeJavaScript(`document.images[document.images.length - 1]?.click()`, true);
-        await sleep(500);
+        lastFailure = '验证码图片无法识别';
+        await this.refreshCaptcha();
         continue;
       }
+      const baselineFailure = await this.readLoginFailure();
       await executePageAction(this.window, loginSubmissionScript(this.account.username, this.account.password, captcha));
-      const loggedIn = await waitUntil(this.window, `/报表查询/.test(document.body.innerText)`, 10000);
-      if (loggedIn) {
+      const outcome = await this.waitForLoginOutcome(10000, baselineFailure);
+      if (outcome.loggedIn) {
         this.status.stage = '账号登录成功';
         return;
       }
-      await sleep(500);
+      lastFailure = outcome.failure || '网站未进入报表页面';
+      if (isCredentialFailure(lastFailure)) throw new Error(`网站提示：${lastFailure}`);
+      this.status.stage = `验证码未通过，正在更换（第 ${attempt}/3 次）`;
+      await this.refreshCaptcha();
     }
-    throw new Error('连续三次无法通过验证码，请稍后重试');
+    throw new Error(`验证码自动识别连续三次未通过${lastFailure ? `（${lastFailure}）` : ''}；请点击“盘内查看”手动输入验证码并登录`);
   }
 
   async reportUrl() {
@@ -237,6 +317,8 @@ class MonitorService {
     this.revisions = new Map();
     this.resetRequested = new Set();
     this.rerunRequested = new Set();
+    this.viewWindows = new Map();
+    this.openingViews = new Set();
     this.timer = null;
   }
 
@@ -249,6 +331,82 @@ class MonitorService {
   stop() {
     clearInterval(this.timer);
     this.timer = null;
+    const windows = [...this.viewWindows.values()];
+    this.viewWindows.clear();
+    this.openingViews.clear();
+    for (const win of windows) {
+      if (!win.isDestroyed()) win.destroy();
+    }
+  }
+
+  async openAccountView(accountId) {
+    const account = this.store.state.accounts.find((item) => item.id === accountId);
+    if (!account) throw new Error('账号不存在');
+    const existing = this.viewWindows.get(accountId);
+    if (existing && !existing.isDestroyed()) {
+      existing.show();
+      existing.focus();
+      return;
+    }
+    if (this.inFlight.has(accountId)) throw new Error('账号正在自动检查，请等待本次检查完成后再打开盘内查看');
+    if (this.openingViews.has(accountId)) throw new Error('正在打开盘内查看，请稍候');
+    const viewRevision = this.revisions.get(accountId) || 0;
+    this.openingViews.add(accountId);
+    try {
+      const status = this.status(accountId);
+      let targetUrl = status.agentUrl;
+      if (!targetUrl) {
+        const resolver = new SiteClient(structuredClone(account), status);
+        try {
+          await resolver.open();
+          targetUrl = await resolver.discoverAgentUrl();
+          status.agentUrl = targetUrl;
+        } finally {
+          await resolver.close();
+        }
+      }
+      if (!this.store.state.accounts.some((item) => item.id === accountId) || (this.revisions.get(accountId) || 0) !== viewRevision) {
+        throw new Error('账号配置已经变化，请重新打开盘内查看');
+      }
+      const win = new BrowserWindow({
+        show: false,
+        width: 1280,
+        height: 900,
+        title: `${account.name} - 盘内查看`,
+        webPreferences: {
+          partition: partitionForAccount(accountId),
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      });
+      this.viewWindows.set(accountId, win);
+      win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      win.on('closed', () => {
+        const wasCurrent = this.viewWindows.get(accountId) === win;
+        if (wasCurrent) this.viewWindows.delete(accountId);
+        const current = this.store.state.accounts.find((item) => item.id === accountId);
+        if (wasCurrent && current?.enabled) setImmediate(() => void this.check(accountId));
+      });
+      try {
+        await load(win, targetUrl);
+        if (!await win.webContents.executeJavaScript(`/报表查询/.test(document.body.innerText) && !/管理员登录/.test(document.body.innerText)`, true)) {
+          const ready = await waitUntil(win, `document.querySelectorAll('input').length >= 3`, 12000);
+          if (!ready) throw new Error('盘内登录页加载失败');
+          await executePageAction(win, loginPrefillScript(account.username, account.password));
+        }
+        win.show();
+        win.focus();
+        status.stage = '盘内查看已打开；可手动输入验证码';
+        this.onChange();
+      } catch (error) {
+        this.viewWindows.delete(accountId);
+        if (!win.isDestroyed()) win.destroy();
+        throw error;
+      }
+    } finally {
+      this.openingViews.delete(accountId);
+    }
   }
 
   status(accountId) {
@@ -271,6 +429,10 @@ class MonitorService {
   }
 
   async invalidateAccount(accountId) {
+    const view = this.viewWindows.get(accountId);
+    this.viewWindows.delete(accountId);
+    this.openingViews.delete(accountId);
+    if (view && !view.isDestroyed()) view.destroy();
     this.revisions.set(accountId, (this.revisions.get(accountId) || 0) + 1);
     if (this.inFlight.has(accountId)) {
       this.resetRequested.add(accountId);
@@ -299,7 +461,7 @@ class MonitorService {
     const now = Date.now();
     const due = this.store.state.accounts.filter((account) => {
       const status = this.status(account.id);
-      return account.enabled && !status.running && (!status.nextCheckAt || Date.parse(status.nextCheckAt) <= now);
+      return account.enabled && !this.viewWindows.has(account.id) && !this.openingViews.has(account.id) && !status.running && (!status.nextCheckAt || Date.parse(status.nextCheckAt) <= now);
     });
     await Promise.allSettled(due.map((account) => this.check(account.id)));
   }
@@ -308,6 +470,7 @@ class MonitorService {
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     if (!storedAccount) throw new Error('账号不存在');
     if (!storedAccount.enabled) return;
+    if (this.viewWindows.has(accountId) || this.openingViews.has(accountId)) return;
     if (this.inFlight.has(accountId)) return;
     this.inFlight.add(accountId);
     const revision = this.revisions.get(accountId) || 0;

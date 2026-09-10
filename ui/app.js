@@ -102,7 +102,7 @@ function render(state) {
       <div class="metric"><small>下级代理数量</small><strong>${Number.isFinite(account.subagentCount) ? account.subagentCount : '—'}</strong></div>
       <div class="threshold"><small>已设置提醒</small><strong>${configuredCount} 个代理</strong></div>
       <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small></div>
-      <div class="actions"><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
+      <div class="actions"><button data-action="view" title="打开盘口；验证码失败时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
       <div class="subagents"><div class="subagents-head"><strong>下级代理与独立提醒</strong><small>只监控这些下级代理；每个代理分别设置低于和高于提醒。</small></div>${subagentList(account)}</div>
     </article>`;
   }).join('');
@@ -135,6 +135,7 @@ function openAccount(account) {
   for (const key of ['id','name','username']) form.elements[key].value = account?.[key] ?? '';
   $('#route-preview').innerHTML = routePreview(account);
   $('#dialog-title').textContent = account ? '编辑监控账号' : '添加监控账号';
+  $('#view-account').hidden = !account;
   $('#account-dialog').showModal();
 }
 
@@ -182,9 +183,17 @@ $('#accounts').addEventListener('click', (event) => {
     return;
   }
   if (button.dataset.action === 'edit') openAccount(account);
+  if (button.dataset.action === 'view') action(() => window.monitorApi.openAccountView(account.id), '正在打开盘内查看');
   if (button.dataset.action === 'check') action(() => window.monitorApi.checkAccount(account.id), '已开始检查');
   if (button.dataset.action === 'toggle') action(() => window.monitorApi.toggleAccount(account.id, !account.enabled));
   if (button.dataset.action === 'remove' && confirm(`确定删除“${account.name}”吗？`)) action(() => window.monitorApi.removeAccount(account.id), '账号已删除');
+});
+
+$('#view-account').addEventListener('click', () => {
+  const id = $('#account-form').elements.id.value;
+  if (!id) return;
+  $('#account-dialog').close();
+  action(() => window.monitorApi.openAccountView(id), '正在打开盘内查看');
 });
 
 $('#accounts').addEventListener('input', (event) => {

@@ -163,6 +163,10 @@ app.whenReady().then(() => {
     void monitor.check(id);
     return { ok: true };
   });
+  ipcMain.handle('account:view', async (_event, id) => {
+    await monitor.openAccountView(id);
+    return { ok: true };
+  });
 });
 
 app.on('window-all-closed', () => {
