@@ -4,6 +4,10 @@ function normalizeNavigationUrl(input) {
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 }
 
+function partitionForAccount(accountId) {
+  return `persist:settlement-monitor-${String(accountId)}`;
+}
+
 function isRedirectAbort(error) {
   return error?.code === 'ERR_ABORTED'
     || error?.errno === -3
@@ -47,4 +51,4 @@ function loginSubmissionScript(username, password, captcha) {
   })()`;
 }
 
-module.exports = { normalizeNavigationUrl, isRedirectAbort, isTransientScriptError, selectFastestRoute, loginSubmissionScript };
+module.exports = { normalizeNavigationUrl, partitionForAccount, isRedirectAbort, isTransientScriptError, selectFastestRoute, loginSubmissionScript };

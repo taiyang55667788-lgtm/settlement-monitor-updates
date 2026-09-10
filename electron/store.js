@@ -31,17 +31,10 @@ class SecureStore {
         update: { ...EMPTY_STATE.update, ...(saved.update || {}) },
       };
       if (!this.state.update.feedUrl) this.state.update.feedUrl = EMPTY_STATE.update.feedUrl;
-      this.state.accounts = this.state.accounts.map((account) => {
-        const migrated = (account.lowerThreshold !== undefined || account.upperThreshold !== undefined) ? account : {
-          ...account,
-          lowerThreshold: account.operator === 'lte' ? Number(account.threshold) : null,
-          upperThreshold: account.operator === 'lte' ? null : Number(account.threshold),
-        };
-        return {
-          ...migrated,
-          subagentThresholds: Array.isArray(migrated.subagentThresholds) ? migrated.subagentThresholds : [],
-        };
-      });
+      this.state.accounts = this.state.accounts.map((account) => ({
+        ...account,
+        subagentThresholds: Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [],
+      }));
     } catch (error) {
       const backup = `${this.filePath}.unreadable-${Date.now()}`;
       fs.copyFileSync(this.filePath, backup);
@@ -86,8 +79,6 @@ class SecureStore {
         name: account.name,
         navUrl: account.navUrl,
         username: account.username,
-        lowerThreshold: Number.isFinite(account.lowerThreshold) ? account.lowerThreshold : null,
-        upperThreshold: Number.isFinite(account.upperThreshold) ? account.upperThreshold : null,
         subagentThresholds: (account.subagentThresholds || []).map((item) => ({
           name: item.name,
           lowerThreshold: Number.isFinite(item.lowerThreshold) ? item.lowerThreshold : null,

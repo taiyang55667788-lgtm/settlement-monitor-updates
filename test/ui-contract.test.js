@@ -4,12 +4,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'ui', 'index.html'), 'utf8');
+const client = fs.readFileSync(path.join(__dirname, '..', 'ui', 'app.js'), 'utf8');
 
-test('security code is visibly entered and both threshold directions are present', () => {
+test('security code is visibly entered', () => {
   assert.match(html, /name="securityCode" type="text"/);
   assert.doesNotMatch(html, /name="securityCode" type="password"/);
-  assert.match(html, /name="lowerThreshold"/);
-  assert.match(html, /name="upperThreshold"/);
+});
+
+test('threshold inputs exist only on discovered subagents', () => {
+  assert.doesNotMatch(html, /name="lowerThreshold"/);
+  assert.doesNotMatch(html, /name="upperThreshold"/);
+  assert.match(client, /data-field="lowerThreshold"/);
+  assert.match(client, /data-field="upperThreshold"/);
+  assert.match(html, /只读取本级账户下的代理/);
 });
 
 test('account form clearly starts recognition after saving', () => {

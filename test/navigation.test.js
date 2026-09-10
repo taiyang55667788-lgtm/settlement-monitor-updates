@@ -1,10 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeNavigationUrl, isRedirectAbort, isTransientScriptError, selectFastestRoute, loginSubmissionScript } = require('../electron/navigation');
+const { normalizeNavigationUrl, partitionForAccount, isRedirectAbort, isTransientScriptError, selectFastestRoute, loginSubmissionScript } = require('../electron/navigation');
 
 test('adds https to a bare navigation domain', () => {
   assert.equal(normalizeNavigationUrl('166.tt'), 'https://166.tt');
   assert.equal(normalizeNavigationUrl(' http://example.test/path '), 'http://example.test/path');
+});
+
+test('gives every main account an isolated persistent browser session', () => {
+  assert.equal(partitionForAccount('account-a'), 'persist:settlement-monitor-account-a');
+  assert.notEqual(partitionForAccount('account-a'), partitionForAccount('account-b'));
 });
 
 test('recognizes page navigation script interruptions', () => {

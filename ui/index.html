@@ -28,13 +28,13 @@
 
         <section id="dashboard-view" class="view active">
           <div class="summary-grid">
-            <article class="summary"><span>监控账号</span><strong id="total-count">0</strong><small>已配置账号</small></article>
+            <article class="summary"><span>本级账号</span><strong id="total-count">0</strong><small>可同时独立登录</small></article>
             <article class="summary"><span>运行正常</span><strong id="ok-count">0</strong><small>最近检查成功</small></article>
-            <article class="summary alert"><span>已达阈值</span><strong id="alert-count">0</strong><small>等待你查看</small></article>
+            <article class="summary alert"><span>下级已达阈值</span><strong id="alert-count">0</strong><small>等待你查看</small></article>
             <article class="summary"><span>异常账号</span><strong id="error-count">0</strong><small>将自动重试</small></article>
           </div>
           <div class="panel">
-            <div class="panel-head"><div><h2>账号监控</h2><p>每个账号独立登录、检查和提醒</p></div><span class="live"><i></i>自动运行中</span></div>
+            <div class="panel-head"><div><h2>本级账号监控</h2><p>多个本级账号同时独立登录，只监控各自的下级代理</p></div><span class="live"><i></i>自动运行中</span></div>
             <div id="accounts" class="accounts"></div>
             <div id="empty" class="empty"><span>＋</span><h3>还没有监控账号</h3><p>添加第一个账号并设置交收金额提醒条件。</p><button class="primary add-trigger">添加账号</button></div>
           </div>
@@ -94,10 +94,8 @@
           </div>
         </section>
         <section class="config-section">
-          <div class="config-title"><span>3</span><div><strong>默认提醒条件</strong><small>下级代理首次读取后可再分别设置独立阈值</small></div></div>
-          <div class="form-grid alert-grid">
-            <label>低于提醒（≤）<input name="lowerThreshold" type="number" step="0.01" placeholder="例如 -100000，可留空" /></label>
-            <label>高于提醒（≥）<input name="upperThreshold" type="number" step="0.01" placeholder="例如 100000，可留空" /></label>
+          <div class="config-title"><span>3</span><div><strong>下级代理监控</strong><small>只读取本级账户下的代理；登录成功后给每个代理分别设置阈值</small></div></div>
+          <div class="form-grid monitor-grid">
             <label>检查间隔（分钟）<input name="intervalMinutes" type="number" min="1" value="5" required /></label>
           </div>
         </section>

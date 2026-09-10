@@ -4,6 +4,7 @@ const { SecureStore } = require('./store');
 const { MonitorService } = require('./monitor');
 const { UpdateService } = require('./updater');
 const { normalizeNavigationUrl } = require('./navigation');
+const { isValidThresholdRange } = require('./report-parser');
 
 let mainWindow;
 let store;
@@ -87,22 +88,16 @@ app.whenReady().then(() => {
     updater.install();
     return { ok: true };
   });
-  ipcMain.handle('account:save', (_event, input) => {
+  ipcMain.handle('account:save', async (_event, input) => {
     const clean = {
       name: String(input.name || '').trim(),
       navUrl: normalizeNavigationUrl(input.navUrl),
       username: String(input.username || '').trim(),
-      lowerThreshold: optionalAmount(input.lowerThreshold),
-      upperThreshold: optionalAmount(input.upperThreshold),
       intervalMinutes: Math.max(1, Number(input.intervalMinutes) || 5),
       enabled: input.enabled !== false,
     };
-    const invalidThreshold = Number.isNaN(clean.lowerThreshold) || Number.isNaN(clean.upperThreshold);
-    if (!clean.name || !clean.navUrl || !clean.username || invalidThreshold) {
-      throw new Error('请完整填写账号名称、导航网址、账号和有效的提醒金额');
-    }
-    if (clean.lowerThreshold === null && clean.upperThreshold === null) {
-      throw new Error('低于提醒和高于提醒至少填写一个');
+    if (!clean.name || !clean.navUrl || !clean.username) {
+      throw new Error('请完整填写账号名称、导航网址和登录账号');
     }
     let savedId;
     store.update((data) => {
@@ -120,7 +115,7 @@ app.whenReady().then(() => {
         savedId = created.id;
       }
     });
-    monitor.runtime.delete(savedId);
+    await monitor.invalidateAccount(savedId);
     store.addEvent('success', `${clean.name}：监控配置已保存`, savedId);
     publish();
     return { ok: true, id: savedId };
@@ -129,6 +124,7 @@ app.whenReady().then(() => {
     const lowerThreshold = optionalAmount(input.lowerThreshold);
     const upperThreshold = optionalAmount(input.upperThreshold);
     if (Number.isNaN(lowerThreshold) || Number.isNaN(upperThreshold)) throw new Error('请输入有效的提醒金额');
+    if (!isValidThresholdRange(lowerThreshold, upperThreshold)) throw new Error('低于提醒必须小于高于提醒');
     const name = String(input.name || '').trim();
     const accountId = String(input.accountId || '');
     if (!name) throw new Error('下级代理名称不能为空');
@@ -142,21 +138,24 @@ app.whenReady().then(() => {
       else account.subagentThresholds.push(values);
     });
     monitor.updateSubagentThreshold(accountId, name, lowerThreshold, upperThreshold);
+    monitor.requestRecheck(accountId);
     store.addEvent('success', `${name}：独立提醒条件已保存`, accountId);
     publish();
     return { ok: true };
   });
-  ipcMain.handle('account:remove', (_event, id) => {
+  ipcMain.handle('account:remove', async (_event, id) => {
     store.update((data) => { data.accounts = data.accounts.filter((account) => account.id !== id); });
-    monitor.runtime.delete(id);
+    await monitor.invalidateAccount(id);
     publish();
     return { ok: true };
   });
-  ipcMain.handle('account:toggle', (_event, { id, enabled }) => {
+  ipcMain.handle('account:toggle', async (_event, { id, enabled }) => {
     store.update((data) => {
       const account = data.accounts.find((item) => item.id === id);
       if (account) account.enabled = Boolean(enabled);
     });
+    if (enabled) void monitor.check(id);
+    else await monitor.invalidateAccount(id);
     publish();
     return { ok: true };
   });

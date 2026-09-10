@@ -1,8 +1,8 @@
 const path = require('node:path');
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, session } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
-const { parseSettlementTable, thresholdBand } = require('./report-parser');
-const { isRedirectAbort, isTransientScriptError, selectFastestRoute, loginSubmissionScript } = require('./navigation');
+const { splitReportRows, parseSettlementTable, legacyThresholdPair, applySubagentThresholds, evaluateSubagentThresholds } = require('./report-parser');
+const { partitionForAccount, isRedirectAbort, isTransientScriptError, selectFastestRoute, loginSubmissionScript } = require('./navigation');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -62,7 +62,7 @@ class SiteClient {
   }
 
   async open() {
-    const partition = `persist:settlement-monitor-${this.account.id}`;
+    const partition = partitionForAccount(this.account.id);
     this.window = new BrowserWindow({
       show: false,
       width: 1280,
@@ -206,27 +206,20 @@ class SiteClient {
     })()`, true);
     const ready = await waitUntil(this.window, `[...document.querySelectorAll('tr')].some(row => /合计/.test(row.innerText))`, 15000);
     if (!ready) throw new Error('本周报表加载超时');
-    const tableData = await this.window.webContents.executeJavaScript(`(() => {
+    const rawRows = await this.window.webContents.executeJavaScript(`(() => {
       const tables = [...document.querySelectorAll('table')];
       const table = tables.find(t => /交收|上级交收/.test(t.innerText) && /合计/.test(t.innerText))
         || tables.sort((a,b) => b.querySelectorAll('td').length - a.querySelectorAll('td').length)[0];
       if (!table) throw new Error('没有报表表格');
       const rows = [...table.querySelectorAll('tr')];
-      const firstData = rows.findIndex(row => {
-        const first = row.cells[0]?.innerText?.trim() || '';
-        return /^合计/.test(first) || (/^[a-zA-Z0-9_-]+$/.test(first) && row.cells.length > 8);
-      });
-      const headerRows = rows.slice(0, Math.max(1, firstData)).map(row => [...row.cells].map(cell => ({
+      return rows.map(row => [...row.cells].map(cell => ({
         text: cell.innerText,
         colspan: cell.colSpan,
         rowspan: cell.rowSpan,
       })));
-      const dataRows = rows.slice(Math.max(0, firstData)).filter(row => row.cells.length > 8)
-        .map(row => [...row.cells].map(cell => cell.innerText.trim()));
-      return { headerRows, dataRows };
     })()`, true);
     this.status.stage = '本周报表读取成功';
-    return parseSettlementTable(tableData);
+    return parseSettlementTable(splitReportRows(rawRows));
   }
 
   async close() {
@@ -240,6 +233,10 @@ class MonitorService {
     this.store = store;
     this.onChange = onChange;
     this.runtime = new Map();
+    this.inFlight = new Set();
+    this.revisions = new Map();
+    this.resetRequested = new Set();
+    this.rerunRequested = new Set();
     this.timer = null;
   }
 
@@ -256,7 +253,7 @@ class MonitorService {
 
   status(accountId) {
     if (!this.runtime.has(accountId)) {
-      this.runtime.set(accountId, { status: 'waiting', alertedBand: null, subagentAlertBands: {}, subagents: [] });
+      this.runtime.set(accountId, { status: 'waiting', subagentAlertBands: {}, subagents: [] });
     }
     return this.runtime.get(accountId);
   }
@@ -266,6 +263,36 @@ class MonitorService {
     const subagent = status.subagents?.find((item) => item.name === name);
     if (subagent) Object.assign(subagent, { lowerThreshold, upperThreshold, customized: true });
     delete status.subagentAlertBands[Buffer.from(name).toString('base64url')];
+  }
+
+  async clearAccountSession(accountId) {
+    const partition = partitionForAccount(accountId);
+    await session.fromPartition(partition).clearStorageData();
+  }
+
+  async invalidateAccount(accountId) {
+    this.revisions.set(accountId, (this.revisions.get(accountId) || 0) + 1);
+    if (this.inFlight.has(accountId)) {
+      this.resetRequested.add(accountId);
+      return;
+    }
+    await this.clearAccountSession(accountId).catch(() => {});
+    this.runtime.delete(accountId);
+  }
+
+  requestRecheck(accountId) {
+    this.revisions.set(accountId, (this.revisions.get(accountId) || 0) + 1);
+    if (this.inFlight.has(accountId)) {
+      this.rerunRequested.add(accountId);
+      return;
+    }
+    const current = this.store.state.accounts.find((item) => item.id === accountId);
+    if (current?.enabled) setImmediate(() => void this.check(accountId));
+  }
+
+  isCurrentCheck(accountId, revision) {
+    const current = this.store.state.accounts.find((item) => item.id === accountId);
+    return Boolean(current?.enabled) && (this.revisions.get(accountId) || 0) === revision;
   }
 
   async tick() {
@@ -278,10 +305,14 @@ class MonitorService {
   }
 
   async check(accountId) {
-    const account = this.store.state.accounts.find((item) => item.id === accountId);
-    if (!account) throw new Error('账号不存在');
+    const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
+    if (!storedAccount) throw new Error('账号不存在');
+    if (!storedAccount.enabled) return;
+    if (this.inFlight.has(accountId)) return;
+    this.inFlight.add(accountId);
+    const revision = this.revisions.get(accountId) || 0;
+    const account = structuredClone(storedAccount);
     const status = this.status(accountId);
-    if (status.running) return;
     status.running = true;
     status.status = 'checking';
     status.error = '';
@@ -291,44 +322,46 @@ class MonitorService {
     try {
       await client.open();
       const report = await client.readThisWeekSettlement();
-      const value = report.value;
-      const band = thresholdBand(value, account.lowerThreshold, account.upperThreshold);
-      const configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
-      status.subagents = report.agents.map((agent) => {
-        const custom = configuredSubagents.find((item) => item.name === agent.name);
-        return {
-          ...agent,
-          lowerThreshold: custom ? custom.lowerThreshold : account.lowerThreshold,
-          upperThreshold: custom ? custom.upperThreshold : account.upperThreshold,
-          customized: Boolean(custom),
-        };
-      });
-      status.subagentCount = status.subagents.length;
-      status.currentValue = value;
-      status.lastCheckedAt = new Date().toISOString();
-      let anyTriggered = Boolean(band);
-      if (band && status.alertedBand !== band) {
-        await this.sendTelegram(account, value, band);
-        status.alertedBand = band;
-        status.lastAlertAt = new Date().toISOString();
-        this.store.addEvent('alert', `${account.name}：交收金额 ${value.toLocaleString('zh-CN')} 已达到提醒条件`, account.id);
-      } else if (!band) {
-        status.alertedBand = null;
+      if (!this.isCurrentCheck(accountId, revision)) return;
+      let configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
+      const legacy = legacyThresholdPair(account);
+      if (!configuredSubagents.length && report.agents.length && (legacy.lowerThreshold !== null || legacy.upperThreshold !== null)) {
+        configuredSubagents = report.agents.map((agent) => ({ name: agent.name, ...legacy }));
+        account.subagentThresholds = configuredSubagents;
+        this.store.update((data) => {
+          const stored = data.accounts.find((item) => item.id === account.id);
+          if (stored && !(stored.subagentThresholds || []).length) stored.subagentThresholds = configuredSubagents;
+        });
+        this.store.addEvent('success', `${account.name}：旧版提醒条件已迁移到 ${configuredSubagents.length} 个下级代理`, account.id);
       }
-      for (const subagent of status.subagents) {
-        const subagentBand = thresholdBand(subagent.value, subagent.lowerThreshold, subagent.upperThreshold);
+      status.subagents = applySubagentThresholds(report.agents, configuredSubagents);
+      status.subagentCount = status.subagents.length;
+      status.totalValue = report.value;
+      status.lastCheckedAt = new Date().toISOString();
+      let anyTriggered = false;
+      const notificationFailures = [];
+      for (const { subagent, band: subagentBand } of evaluateSubagentThresholds(status.subagents)) {
+        if (!this.isCurrentCheck(accountId, revision)) return;
         const alertKey = Buffer.from(subagent.name).toString('base64url');
         if (subagentBand) anyTriggered = true;
         if (subagentBand && status.subagentAlertBands[alertKey] !== subagentBand) {
-          await this.sendTelegram(account, subagent.value, subagentBand, subagent.name, subagent);
-          status.subagentAlertBands[alertKey] = subagentBand;
-          status.lastAlertAt = new Date().toISOString();
-          this.store.addEvent('alert', `${account.name} / ${subagent.name}：交收金额 ${subagent.value.toLocaleString('zh-CN')} 已达到提醒条件`, account.id);
+          try {
+            await this.sendTelegram(account, subagent.value, subagentBand, subagent.name, subagent);
+            if (!this.isCurrentCheck(accountId, revision)) return;
+            status.subagentAlertBands[alertKey] = subagentBand;
+            status.lastAlertAt = new Date().toISOString();
+            this.store.addEvent('alert', `${account.name} / ${subagent.name}：交收金额 ${subagent.value.toLocaleString('zh-CN')} 已达到提醒条件`, account.id);
+          } catch (error) {
+            const message = `${subagent.name}：${error.message || String(error)}`;
+            notificationFailures.push(message);
+            this.store.addEvent('error', `${account.name} / ${message}`, account.id);
+          }
         } else if (!subagentBand) {
           delete status.subagentAlertBands[alertKey];
         }
       }
       status.status = anyTriggered ? 'triggered' : 'ok';
+      status.error = notificationFailures.length ? `Telegram 提醒失败：${notificationFailures.join('；')}` : '';
     } catch (error) {
       status.status = 'error';
       const detail = error.message || String(error);
@@ -339,15 +372,37 @@ class MonitorService {
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
     } finally {
       await client.close();
+      const shouldReset = this.resetRequested.has(accountId);
+      if (shouldReset) {
+        do {
+          this.resetRequested.delete(accountId);
+          await this.clearAccountSession(accountId).catch(() => {});
+        } while (this.resetRequested.has(accountId));
+        this.rerunRequested.delete(accountId);
+        this.runtime.delete(accountId);
+      }
       status.running = false;
-      status.nextCheckAt = new Date(Date.now() + Math.max(1, Number(account.intervalMinutes)) * 60000).toISOString();
-      this.onChange();
+      this.inFlight.delete(accountId);
+      if (shouldReset) {
+        this.onChange();
+        const current = this.store.state.accounts.find((item) => item.id === accountId);
+        if (current?.enabled) setImmediate(() => void this.check(accountId));
+      } else if (this.rerunRequested.delete(accountId)) {
+        status.nextCheckAt = null;
+        this.onChange();
+        const current = this.store.state.accounts.find((item) => item.id === accountId);
+        if (current?.enabled) setImmediate(() => void this.check(accountId));
+      } else {
+        status.nextCheckAt = new Date(Date.now() + Math.max(1, Number(account.intervalMinutes)) * 60000).toISOString();
+        this.onChange();
+      }
     }
   }
 
-  async sendTelegram(account, value, band, subagentName = '', thresholds = account) {
+  async sendTelegram(account, value, band, subagentName, thresholds) {
     const { botToken, chatId } = this.store.state.telegram;
     if (!botToken || !chatId) throw new Error('请先设置 Telegram Bot Token 和 Chat ID');
+    if (!subagentName || !thresholds) throw new Error('下级代理提醒资料不完整');
     const triggeredCondition = band === 'lower'
       ? `≤ ${Number(thresholds.lowerThreshold).toLocaleString('zh-CN')}`
       : `≥ ${Number(thresholds.upperThreshold).toLocaleString('zh-CN')}`;
@@ -358,7 +413,7 @@ class MonitorService {
     const text = [
       '🔔 交收金额提醒',
       `账号：${account.name}`,
-      ...(subagentName ? [`下级代理：${subagentName}`] : []),
+      `下级代理：${subagentName}`,
       `本周交收金额：${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       `触发条件：${triggeredCondition}`,
       `全部条件：${configuredConditions}`,
@@ -368,6 +423,7 @@ class MonitorService {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text }),
+      signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {
       const detail = await response.text();
@@ -382,6 +438,7 @@ class MonitorService {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text: '✅ 交收监控：Telegram 通知测试成功' }),
+      signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) throw new Error(`Telegram 测试失败（${response.status}）`);
     this.store.addEvent('success', 'Telegram 测试消息已发送');
@@ -391,7 +448,7 @@ class MonitorService {
   async discoverTelegramChatId(inputToken = '') {
     const botToken = String(inputToken || this.store.state.telegram.botToken || '').trim();
     if (!botToken) throw new Error('请先填写 Bot Token');
-    const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`);
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`, { signal: AbortSignal.timeout(15000) });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) throw new Error('Bot Token 无效，无法连接 Telegram');
     const chats = (payload.result || [])
