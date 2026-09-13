@@ -61,9 +61,37 @@ async function executePageAction(win, script) {
   try {
     return await win.webContents.executeJavaScript(script, true);
   } catch (error) {
-    if (!isTransientScriptError(error)) throw error;
-    return undefined;
+    if (isTransientScriptError(error)) return undefined;
+    if (/Script failed to execute/i.test(error?.message || '') && win.webContents.isLoading()) return undefined;
+    throw error;
   }
+}
+
+function liveFrames(win) {
+  const mainFrame = win.webContents.mainFrame;
+  return (mainFrame?.framesInSubtree || [mainFrame]).filter((frame) => frame && !frame.isDestroyed());
+}
+
+async function executeInFrames(win, script, accept = Boolean) {
+  for (const frame of liveFrames(win)) {
+    try {
+      const result = await frame.executeJavaScript(script, true);
+      if (accept(result)) return result;
+    } catch (error) {
+      if (!isTransientScriptError(error) && !frame.isDestroyed()) throw error;
+    }
+  }
+  return undefined;
+}
+
+async function waitUntilAnyFrame(win, test, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = await executeInFrames(win, `Boolean(${test})`).catch(() => false);
+    if (found) return true;
+    await sleep(400);
+  }
+  return false;
 }
 
 async function load(win, url) {
@@ -268,36 +296,54 @@ class SiteClient {
       this.status.agentUrl = agentUrl;
       await this.login(agentUrl);
     }
-    const reportUrl = await this.reportUrl();
-    this.status.stage = '正在查询本周报表';
-    await load(this.window, reportUrl);
-    await waitUntil(this.window, `/本星期/.test(document.body.innerText)`, 12000);
+    this.status.stage = '正在打开报表查询';
     await executePageAction(this.window, `(() => {
+      const link = [...document.querySelectorAll('a')].find(el => /报表查询/.test(el.innerText));
+      if (!link) throw new Error('登录后没有找到报表查询入口');
+      const frame = document.querySelector('iframe#frame, iframe[name=frame]');
+      if (frame) frame.src = link.href;
+      else link.click();
+    })()`);
+    const reportReady = await waitUntilAnyFrame(
+      this.window,
+      `[...document.querySelectorAll('button, input, a')].some(el => /本星期/.test(el.innerText || el.value || ''))`,
+      15000,
+    );
+    if (!reportReady) throw new Error('报表查询页面加载超时');
+    this.status.stage = '正在查询本周报表';
+    const weekSelected = await executeInFrames(this.window, `(() => {
       const control = [...document.querySelectorAll('button, input, a')]
         .find(el => /本星期/.test(el.innerText || el.value || ''));
-      control?.click();
-    })()`, true);
-    await sleep(250);
-    await executePageAction(this.window, `(() => {
-      const control = [...document.querySelectorAll('button, input, a')]
-        .find(el => /^查询$/.test((el.innerText || el.value || '').trim()));
-      if (!control) throw new Error('没有查询按钮');
+      if (!control) return false;
       control.click();
-    })()`, true);
-    const ready = await waitUntil(this.window, `[...document.querySelectorAll('tr')].some(row => /合计/.test(row.innerText))`, 15000);
+      return true;
+    })()`);
+    if (!weekSelected) throw new Error('没有本星期按钮');
+    await sleep(250);
+    const querySubmitted = await executeInFrames(this.window, `(() => {
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const control = [...document.querySelectorAll('button, input, a')]
+        .find(el => compact(el.innerText || el.value) === '查询');
+      if (!control) return false;
+      control.click();
+      return true;
+    })()`);
+    if (!querySubmitted) throw new Error('没有查询按钮');
+    const ready = await waitUntilAnyFrame(this.window, `[...document.querySelectorAll('tr')].some(row => /合计/.test(row.innerText))`, 15000);
     if (!ready) throw new Error('本周报表加载超时');
-    const rawRows = await this.window.webContents.executeJavaScript(`(() => {
+    const rawRows = await executeInFrames(this.window, `(() => {
       const tables = [...document.querySelectorAll('table')];
       const table = tables.find(t => /交收|上级交收/.test(t.innerText) && /合计/.test(t.innerText))
         || tables.sort((a,b) => b.querySelectorAll('td').length - a.querySelectorAll('td').length)[0];
-      if (!table) throw new Error('没有报表表格');
+      if (!table) return null;
       const rows = [...table.querySelectorAll('tr')];
       return rows.map(row => [...row.cells].map(cell => ({
         text: cell.innerText,
         colspan: cell.colSpan,
         rowspan: cell.rowSpan,
       })));
-    })()`, true);
+    })()`, Array.isArray);
+    if (!rawRows) throw new Error('没有报表表格');
     this.status.stage = '本周报表读取成功';
     return parseSettlementTable(splitReportRows(rawRows));
   }

@@ -20,7 +20,11 @@ function splitReportRows(rows, minColumns = 9) {
     headerRows: source.slice(0, Math.max(1, firstData)),
     dataRows: source.slice(firstData)
       .filter((row) => row.length >= minColumns)
-      .map((row) => row.map((cell) => String(cell.text || '').trim())),
+      .map((row) => row.flatMap((cell) => {
+        const values = [String(cell.text || '').trim()];
+        const colspan = Math.max(1, Number(cell.colspan || 1));
+        return values.concat(Array.from({ length: colspan - 1 }, () => ''));
+      })),
   };
 }
 

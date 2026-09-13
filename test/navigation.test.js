@@ -24,7 +24,7 @@ test('gives every main account an isolated persistent browser session', () => {
 });
 
 test('recognizes page navigation script interruptions', () => {
-  assert.equal(isTransientScriptError(new Error('Script failed to execute, this normally means an error was thrown')), true);
+  assert.equal(isTransientScriptError(new Error('Script failed to execute, this normally means an error was thrown')), false);
   assert.equal(isTransientScriptError(new Error('Execution context was destroyed')), true);
   assert.equal(isTransientScriptError(new Error('real selector error')), false);
 });
@@ -63,6 +63,27 @@ test('fills the three login fields and recognizes a spaced login button', () => 
   const run = new Function('document', 'window', 'HTMLInputElement', 'Event', `return ${loginSubmissionScript('agent01', 'pass01', '4821')};`);
   run(document, fakeWindow, MockInput, FakeEvent);
   assert.deepEqual(inputs.map((input) => input.value), ['4821', 'pass01', 'agent01']);
+  assert.equal(clicked, true);
+});
+
+test('submits through the real input type=button login control', () => {
+  class MockInput {
+    constructor(type, name, value = '') { this.type = type; this.name = name; this.value = value; }
+    dispatchEvent() {}
+    getAttribute() { return ''; }
+  }
+  const inputs = [new MockInput('text', 'account'), new MockInput('password', 'password'), new MockInput('text', 'code')];
+  let clicked = false;
+  const login = { type: 'button', value: '登 录', innerText: '', click: () => { clicked = true; } };
+  const document = {
+    querySelectorAll: (selector) => {
+      if (selector === 'input') return inputs;
+      assert.match(selector, /input\[type=button\]/);
+      return [login];
+    },
+  };
+  const run = new Function('document', 'window', 'HTMLInputElement', 'Event', `return ${loginSubmissionScript('agent01', 'pass01', '4821')};`);
+  run(document, {}, MockInput, class {});
   assert.equal(clicked, true);
 });
 

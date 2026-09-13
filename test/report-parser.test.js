@@ -58,6 +58,24 @@ test('prefers upper-level settlement when more than one settlement amount exists
   assert.deepEqual(result.agents, [{ name: '中文代理', value: 123 }]);
 });
 
+test('keeps the real colspan total row aligned with the upper-level settlement column', () => {
+  const cell = (text, colspan = 1, rowspan = 1) => ({ text, colspan, rowspan });
+  const table = splitReportRows([
+    [
+      cell('代理账号', 1, 2), cell('名称', 1, 2), cell('笔数', 1, 2), cell('会员数', 1, 2),
+      cell('下注金额', 1, 2), cell('有效金额', 1, 2), cell('会员输赢', 3), cell('代理 输赢', 9),
+      cell('上交货量', 1, 2), cell('上级交收', 1, 2),
+    ],
+    ['输赢', '退水', '盈亏结果', '应收下线', '占成', '实占金额', '实占结果', '实占退水', '赚水', '赚赔', '占货比', '盈亏结果'].map((text) => cell(text)),
+    ['agent01', '代理一', '1', '2', '3', '4', '5', '6', '7', '8', '5%', '10', '11', '12', '13', '14', '100%', '15', '16', '-1234.56'].map((text) => cell(text)),
+    [cell('合计：1行', 2), ...['1', '2', '3', '4', '5', '6', '7', '8', '', '10', '11', '12', '13', '14', '100%', '15', '16', '-1234.56'].map((text) => cell(text))],
+  ]);
+  const result = parseSettlementTable(table);
+  assert.equal(result.column, 19);
+  assert.equal(result.value, -1234.56);
+  assert.deepEqual(result.agents, [{ name: 'agent01', value: -1234.56 }]);
+});
+
 test('supports simultaneous lower and upper thresholds', () => {
   assert.equal(thresholdBand(-100, -100, 100), 'lower');
   assert.equal(thresholdBand(100, -100, 100), 'upper');

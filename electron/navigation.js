@@ -16,7 +16,7 @@ function isRedirectAbort(error) {
 
 function isTransientScriptError(error) {
   return isRedirectAbort(error)
-    || /Script failed to execute|Execution context was destroyed|detached frame|frame was detached/i.test(error?.message || '');
+    || /Execution context was destroyed|detached frame|frame was detached/i.test(error?.message || '');
 }
 
 function selectFastestRoute(rows) {
@@ -60,7 +60,7 @@ function loginFormScript(username, password, captcha, submitForm) {
     }
     window.__settlementMonitorLoginError = '';
     window.alert = message => { window.__settlementMonitorLoginError = String(message || '登录失败'); };
-    const controls = [...document.querySelectorAll('button, input[type=submit], a')];
+    const controls = [...document.querySelectorAll('button, input[type=button], input[type=submit], a')];
     const submit = controls.find(el => [...(el.innerText || el.value || '')].filter(char => char.trim()).join('') === '登录');
     if (!submit) throw new Error('没有登录按钮');
     submit.click();
