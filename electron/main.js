@@ -61,8 +61,8 @@ app.whenReady().then(() => {
     publish();
     return { ok: true };
   });
-  ipcMain.handle('telegram:test', async () => {
-    await monitor.testTelegram();
+  ipcMain.handle('telegram:test', async (_event, input) => {
+    await monitor.testTelegram(input);
     return { ok: true };
   });
   ipcMain.handle('telegram:discover-chat', async (_event, input) => ({

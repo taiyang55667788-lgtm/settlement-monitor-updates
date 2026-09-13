@@ -214,7 +214,10 @@ $('#telegram-form').addEventListener('submit', (event) => {
   const values = Object.fromEntries(new FormData(event.currentTarget).entries());
   action(() => window.monitorApi.saveTelegram(values), 'Telegram 设置已保存');
 });
-$('#test-telegram').addEventListener('click', () => action(() => window.monitorApi.testTelegram(), '测试消息已发送'));
+$('#test-telegram').addEventListener('click', () => {
+  const values = Object.fromEntries(new FormData($('#telegram-form')).entries());
+  action(() => window.monitorApi.testTelegram(values), '测试消息已发送');
+});
 $('#discover-chat').addEventListener('click', () => action(async () => {
   const form = $('#telegram-form');
   const result = await window.monitorApi.discoverTelegramChatId(form.elements.botToken.value);

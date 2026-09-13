@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { BrowserWindow, session, nativeImage } = require('electron');
+const { BrowserWindow, session, nativeImage, net } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
 const { splitReportRows, parseSettlementTable, legacyThresholdPair, applySubagentThresholds, evaluateSubagentThresholds } = require('./report-parser');
 const {
@@ -355,9 +355,11 @@ class SiteClient {
 }
 
 class MonitorService {
-  constructor(store, onChange) {
+  constructor(store, onChange, network = {}) {
     this.store = store;
     this.onChange = onChange;
+    this.telegramFetch = network.fetch || ((...args) => net.fetch(...args));
+    this.resolveTelegramProxy = network.resolveProxy || ((url) => session.defaultSession.resolveProxy(url));
     this.runtime = new Map();
     this.inFlight = new Set();
     this.revisions = new Map();
@@ -366,6 +368,37 @@ class MonitorService {
     this.viewWindows = new Map();
     this.openingViews = new Set();
     this.timer = null;
+  }
+
+  async telegramRequest(botToken, method, init = {}) {
+    const token = String(botToken || '').trim();
+    if (!token) throw new Error('请先填写 Bot Token');
+    try {
+      return await this.telegramFetch(`https://api.telegram.org/bot${token}/${method}`, {
+        ...init,
+        signal: AbortSignal.timeout(20000),
+      });
+    } catch (error) {
+      let proxy = '';
+      try {
+        proxy = String(await this.resolveTelegramProxy('https://api.telegram.org') || '');
+      } catch {}
+      const proxyHint = !proxy || /^DIRECT$/i.test(proxy)
+        ? '当前为网络直连；如果服务器无法访问 Telegram，请在 Clash Verge 开启“系统代理”后重试'
+        : `已使用 Windows 系统代理（${proxy}），请确认代理程序正在运行`;
+      const code = error?.cause?.code || error?.code;
+      throw new Error(`Telegram 网络连接失败：${proxyHint}${code ? `（${code}）` : ''}`);
+    }
+  }
+
+  async telegramJson(botToken, method, init = {}) {
+    const response = await this.telegramRequest(botToken, method, init);
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      const description = String(payload?.description || '').trim();
+      throw new Error(`Telegram 请求失败（${response.status}）${description ? `：${description}` : ''}`);
+    }
+    return payload;
   }
 
   start() {
@@ -628,28 +661,22 @@ class MonitorService {
       `全部条件：${configuredConditions}`,
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].join('\n');
-    const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    await this.telegramJson(botToken, 'sendMessage', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text }),
-      signal: AbortSignal.timeout(15000),
     });
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`Telegram 发送失败（${response.status}）：${detail.slice(0, 160)}`);
-    }
   }
 
-  async testTelegram() {
-    const { botToken, chatId } = this.store.state.telegram;
+  async testTelegram(input = {}) {
+    const botToken = String(input.botToken || this.store.state.telegram.botToken || '').trim();
+    const chatId = String(input.chatId || this.store.state.telegram.chatId || '').trim();
     if (!botToken || !chatId) throw new Error('请先填写 Bot Token 和 Chat ID');
-    const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    await this.telegramJson(botToken, 'sendMessage', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text: '✅ 交收监控：Telegram 通知测试成功' }),
-      signal: AbortSignal.timeout(15000),
     });
-    if (!response.ok) throw new Error(`Telegram 测试失败（${response.status}）`);
     this.store.addEvent('success', 'Telegram 测试消息已发送');
     this.onChange();
   }
@@ -657,9 +684,7 @@ class MonitorService {
   async discoverTelegramChatId(inputToken = '') {
     const botToken = String(inputToken || this.store.state.telegram.botToken || '').trim();
     if (!botToken) throw new Error('请先填写 Bot Token');
-    const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`, { signal: AbortSignal.timeout(15000) });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) throw new Error('Bot Token 无效，无法连接 Telegram');
+    const payload = await this.telegramJson(botToken, 'getUpdates?offset=-1&limit=1&timeout=0');
     const chats = (payload.result || [])
       .map((update) => update.message?.chat || update.channel_post?.chat || update.edited_message?.chat)
       .filter(Boolean);

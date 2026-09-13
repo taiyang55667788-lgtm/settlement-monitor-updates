@@ -42,7 +42,7 @@
 
         <section id="telegram-view" class="view">
           <div class="settings-card">
-            <div><p class="eyebrow">通知通道</p><h2>Telegram 设置</h2><p>达到条件时，应用会向指定聊天发送一次提醒；金额恢复后自动重新待命。</p><ol class="setup-steps"><li>在 Telegram 联系 @BotFather，发送 /newbot 创建机器人并复制 Token。</li><li>打开新机器人，点“开始”并给它发送任意一条消息。</li><li>把 Token 粘贴到右边，点击“自动获取 Chat ID”，然后保存并测试。</li></ol></div>
+            <div><p class="eyebrow">通知通道</p><h2>Telegram 设置</h2><p>达到条件时，应用会向指定聊天发送一次提醒；金额恢复后自动重新待命。Telegram 连接会自动跟随 Windows 系统代理。</p><ol class="setup-steps"><li>在 Telegram 联系 @BotFather，发送 /newbot 创建机器人并复制 Token。</li><li>打开新机器人，点“开始”并给它发送任意一条消息。</li><li>把 Token 粘贴到右边，点击“自动获取 Chat ID”，然后保存并测试。</li><li>远程服务器无法直连时，请在 Clash Verge 打开“系统代理”。</li></ol></div>
             <form id="telegram-form">
               <label>Bot Token<input name="botToken" type="password" autocomplete="off" placeholder="留空表示保留现有 Token" /></label>
               <label>Chat ID<input name="chatId" autocomplete="off" placeholder="例如 123456789" /></label>
