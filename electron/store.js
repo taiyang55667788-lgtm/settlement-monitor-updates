@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { safeStorage } = require('electron');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
+const { alertStepFromLegacy } = require('./report-parser');
 
 const EMPTY_STATE = {
   telegram: { botToken: '', chatId: '' },
@@ -34,7 +35,9 @@ class SecureStore {
       this.state.update.feedUrl = migrateUpdateFeedUrl(this.state.update.feedUrl);
       this.state.accounts = this.state.accounts.map((account) => ({
         ...account,
-        subagentThresholds: Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [],
+        subagentThresholds: Array.isArray(account.subagentThresholds)
+          ? account.subagentThresholds.map((item) => ({ name: item.name, alertStep: alertStepFromLegacy(item) }))
+          : [],
       }));
     } catch (error) {
       const backup = `${this.filePath}.unreadable-${Date.now()}`;
@@ -82,8 +85,7 @@ class SecureStore {
         username: account.username,
         subagentThresholds: (account.subagentThresholds || []).map((item) => ({
           name: item.name,
-          lowerThreshold: Number.isFinite(item.lowerThreshold) ? item.lowerThreshold : null,
-          upperThreshold: Number.isFinite(item.upperThreshold) ? item.upperThreshold : null,
+          alertStep: Number.isFinite(item.alertStep) && item.alertStep > 0 ? item.alertStep : null,
         })),
         intervalMinutes: account.intervalMinutes,
         enabled: account.enabled,

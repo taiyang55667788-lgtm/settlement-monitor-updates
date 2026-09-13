@@ -86,44 +86,53 @@ function parseSettlementTable({ headerRows, dataRows }) {
   };
 }
 
-function thresholdBand(value, lowerThreshold, upperThreshold) {
-  if (Number.isFinite(lowerThreshold) && value <= lowerThreshold) return 'lower';
-  if (Number.isFinite(upperThreshold) && value >= upperThreshold) return 'upper';
-  return null;
+function alertStepFromLegacy(configuration) {
+  if (Number.isFinite(configuration?.alertStep) && configuration.alertStep > 0) return configuration.alertStep;
+  const candidates = [configuration?.lowerThreshold, configuration?.upperThreshold, configuration?.threshold]
+    .filter(Number.isFinite)
+    .map(Math.abs)
+    .filter((value) => value > 0);
+  return candidates.length ? Math.min(...candidates) : null;
 }
 
-function isValidThresholdRange(lowerThreshold, upperThreshold) {
-  return !Number.isFinite(lowerThreshold) || !Number.isFinite(upperThreshold) || lowerThreshold < upperThreshold;
+function alertLevel(value, alertStep) {
+  if (!Number.isFinite(value) || !Number.isFinite(alertStep) || alertStep <= 0) return 0;
+  const level = Math.trunc(value / alertStep);
+  return Object.is(level, -0) ? 0 : level;
 }
 
-function legacyThresholdPair(account) {
-  const directLower = Number.isFinite(account?.lowerThreshold) ? account.lowerThreshold : null;
-  const directUpper = Number.isFinite(account?.upperThreshold) ? account.upperThreshold : null;
-  if (directLower !== null || directUpper !== null) return { lowerThreshold: directLower, upperThreshold: directUpper };
-  if (!Number.isFinite(account?.threshold)) return { lowerThreshold: null, upperThreshold: null };
-  return account.operator === 'lte'
-    ? { lowerThreshold: account.threshold, upperThreshold: null }
-    : { lowerThreshold: null, upperThreshold: account.threshold };
+function alertTransition(previousLevel, currentLevel) {
+  const previous = Number.isInteger(previousLevel) ? previousLevel : 0;
+  const current = Number.isInteger(currentLevel) ? currentLevel : 0;
+  return {
+    previousLevel: previous,
+    currentLevel: current,
+    crossedCount: Math.abs(current - previous),
+    shouldNotify: current !== 0 && current !== previous,
+  };
 }
 
-function applySubagentThresholds(agents, configurations) {
+function legacyAlertStep(account) {
+  return alertStepFromLegacy(account);
+}
+
+function applySubagentAlertSteps(agents, configurations) {
   const configured = Array.isArray(configurations) ? configurations : [];
   return (agents || []).map((agent) => {
     const custom = configured.find((item) => item.name === agent.name);
     return {
       ...agent,
-      lowerThreshold: custom?.lowerThreshold ?? null,
-      upperThreshold: custom?.upperThreshold ?? null,
+      alertStep: alertStepFromLegacy(custom),
       customized: Boolean(custom),
     };
   });
 }
 
-function evaluateSubagentThresholds(subagents) {
+function evaluateSubagentAlertLevels(subagents) {
   return (subagents || []).map((subagent) => ({
     subagent,
-    band: thresholdBand(subagent.value, subagent.lowerThreshold, subagent.upperThreshold),
+    level: alertLevel(subagent.value, subagent.alertStep),
   }));
 }
 
-module.exports = { splitReportRows, flattenHeaders, parseSettlementTable, thresholdBand, isValidThresholdRange, legacyThresholdPair, applySubagentThresholds, evaluateSubagentThresholds };
+module.exports = { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, alertTransition, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels };

@@ -8,8 +8,7 @@ const thresholdDrafts = new Map();
 const thresholdDraftKey = (accountId, subagentName) => `${accountId}\u0000${subagentName}`;
 
 function isSubagentTriggered(subagent) {
-  return (Number.isFinite(subagent.lowerThreshold) && subagent.value <= subagent.lowerThreshold)
-    || (Number.isFinite(subagent.upperThreshold) && subagent.value >= subagent.upperThreshold);
+  return Number.isFinite(subagent.alertStep) && subagent.alertStep > 0 && Math.abs(subagent.value) >= subagent.alertStep;
 }
 
 function routePreview(account) {
@@ -28,14 +27,12 @@ function subagentList(account) {
   if (!account.subagents?.length) return '<div class="subagent-empty">本级账号下暂未发现代理。</div>';
   return account.subagents.map((subagent, index) => {
     const draft = thresholdDrafts.get(thresholdDraftKey(account.id, subagent.name));
-    const lowerThreshold = draft ? draft.lowerThreshold : (Number.isFinite(subagent.lowerThreshold) ? subagent.lowerThreshold : '');
-    const upperThreshold = draft ? draft.upperThreshold : (Number.isFinite(subagent.upperThreshold) ? subagent.upperThreshold : '');
+    const alertStep = draft ? draft.alertStep : (Number.isFinite(subagent.alertStep) ? subagent.alertStep : '');
     return `
     <div class="subagent-row" data-subagent-index="${index}">
-      <div><strong>${escapeHtml(subagent.name)}</strong><small>${subagent.customized ? ((Number.isFinite(subagent.lowerThreshold) || Number.isFinite(subagent.upperThreshold)) ? '独立阈值' : '提醒已关闭') : '尚未设置提醒'}</small></div>
+      <div><strong>${escapeHtml(subagent.name)}</strong><small>${subagent.customized ? (Number.isFinite(subagent.alertStep) ? `每 ${money.format(subagent.alertStep)} 一档` : '提醒已关闭') : '尚未设置提醒'}</small></div>
       <div class="subagent-value"><small>本周交收金额</small><strong>${money.format(subagent.value)}</strong></div>
-      <label>低于提醒（≤）<input data-field="lowerThreshold" type="number" step="0.01" value="${lowerThreshold}" placeholder="关闭" /></label>
-      <label>高于提醒（≥）<input data-field="upperThreshold" type="number" step="0.01" value="${upperThreshold}" placeholder="关闭" /></label>
+      <label>提醒间隔（从 0 起，正负均提醒）<input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" /></label>
       <button class="secondary" data-action="save-subagent">保存</button>
     </div>`;
   }).join('');
@@ -66,8 +63,7 @@ function captureThresholdDraft() {
     accountId: account.id,
     subagentName: subagent.name,
     focusedField: active.dataset.field,
-    lowerThreshold: subagentRow.querySelector('[data-field="lowerThreshold"]').value,
-    upperThreshold: subagentRow.querySelector('[data-field="upperThreshold"]').value,
+    alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
   };
 }
 
@@ -79,8 +75,7 @@ function restoreThresholdDraft(draft, state) {
   const accountRow = [...document.querySelectorAll('.account-row')].find((row) => row.dataset.id === draft.accountId);
   const subagentRow = accountRow?.querySelector(`[data-subagent-index="${index}"]`);
   if (!subagentRow) return;
-  subagentRow.querySelector('[data-field="lowerThreshold"]').value = draft.lowerThreshold;
-  subagentRow.querySelector('[data-field="upperThreshold"]').value = draft.upperThreshold;
+  subagentRow.querySelector('[data-field="alertStep"]').value = draft.alertStep;
   subagentRow.querySelector(`[data-field="${draft.focusedField}"]`)?.focus();
 }
 
@@ -96,14 +91,14 @@ function render(state) {
   $('#accounts').innerHTML = accounts.map((account) => {
     const checked = account.lastCheckedAt ? new Date(account.lastCheckedAt).toLocaleString('zh-CN') : '尚未检查';
     const statusDetail = account.error || (account.status === 'checking' ? account.stage : '') || checked;
-    const configuredCount = (account.subagents || []).filter((subagent) => subagent.customized && (Number.isFinite(subagent.lowerThreshold) || Number.isFinite(subagent.upperThreshold))).length;
+    const configuredCount = (account.subagents || []).filter((subagent) => subagent.customized && Number.isFinite(subagent.alertStep)).length;
     return `<article class="account-row" data-id="${account.id}">
       <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · 下级代理 ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个</small></div></div>
       <div class="metric"><small>下级代理数量</small><strong>${Number.isFinite(account.subagentCount) ? account.subagentCount : '—'}</strong></div>
       <div class="threshold"><small>已设置提醒</small><strong>${configuredCount} 个代理</strong></div>
       <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；验证码失败时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>下级代理与独立提醒</strong><small>只监控这些下级代理；每个代理分别设置低于和高于提醒。</small></div>${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>下级代理与独立提醒</strong><small>每个代理单独设置间隔；以 0 为起点，正负每跨一档提醒。</small></div>${subagentList(account)}</div>
     </article>`;
   }).join('');
   restoreThresholdDraft(thresholdDraft, state);
@@ -173,8 +168,7 @@ $('#accounts').addEventListener('click', (event) => {
     const settings = {
       accountId: account.id,
       name: subagent.name,
-      lowerThreshold: subagentRow.querySelector('[data-field="lowerThreshold"]').value,
-      upperThreshold: subagentRow.querySelector('[data-field="upperThreshold"]').value,
+      alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
     };
     action(async () => {
       await window.monitorApi.saveSubagentThreshold(settings);
@@ -204,8 +198,7 @@ $('#accounts').addEventListener('input', (event) => {
   const subagent = account?.subagents?.[Number(subagentRow?.dataset.subagentIndex)];
   if (!account || !subagent) return;
   thresholdDrafts.set(thresholdDraftKey(account.id, subagent.name), {
-    lowerThreshold: subagentRow.querySelector('[data-field="lowerThreshold"]').value,
-    upperThreshold: subagentRow.querySelector('[data-field="upperThreshold"]').value,
+    alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
   });
 });
 

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { splitReportRows, flattenHeaders, parseSettlementTable, thresholdBand, isValidThresholdRange, legacyThresholdPair, applySubagentThresholds, evaluateSubagentThresholds } = require('../electron/report-parser');
+const { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, alertTransition, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('../electron/report-parser');
 
 test('flattens grouped table headers', () => {
   const headers = flattenHeaders([
@@ -76,44 +76,53 @@ test('keeps the real colspan total row aligned with the upper-level settlement c
   assert.deepEqual(result.agents, [{ name: 'agent01', value: -1234.56 }]);
 });
 
-test('supports simultaneous lower and upper thresholds', () => {
-  assert.equal(thresholdBand(-100, -100, 100), 'lower');
-  assert.equal(thresholdBand(100, -100, 100), 'upper');
-  assert.equal(thresholdBand(0, -100, 100), null);
-  assert.equal(thresholdBand(80, null, 100), null);
-  assert.equal(thresholdBand(101, null, 100), 'upper');
-  assert.equal(thresholdBand(-101, -100, null), 'lower');
-  assert.equal(isValidThresholdRange(-100, 100), true);
-  assert.equal(isValidThresholdRange(100, 100), false);
-  assert.equal(isValidThresholdRange(0, null), true);
+test('calculates positive and negative alert levels from zero', () => {
+  assert.equal(alertLevel(0, 100), 0);
+  assert.equal(alertLevel(99.99, 100), 0);
+  assert.equal(alertLevel(100, 100), 1);
+  assert.equal(alertLevel(299, 100), 2);
+  assert.equal(alertLevel(-99.99, 100), 0);
+  assert.equal(alertLevel(-100, 100), -1);
+  assert.equal(alertLevel(-399, 100), -3);
+  assert.equal(alertLevel(1000, null), 0);
 });
 
-test('only configured subagents receive thresholds', () => {
-  const agents = applySubagentThresholds(
+test('notifies once whenever the amount enters a different non-zero level', () => {
+  assert.deepEqual(alertTransition(0, 1), { previousLevel: 0, currentLevel: 1, crossedCount: 1, shouldNotify: true });
+  assert.equal(alertTransition(1, 2).shouldNotify, true);
+  assert.equal(alertTransition(2, 2).shouldNotify, false);
+  assert.equal(alertTransition(3, 1).shouldNotify, true);
+  assert.equal(alertTransition(1, 0).shouldNotify, false);
+  assert.equal(alertTransition(0, -1).shouldNotify, true);
+  assert.equal(alertTransition(-1, -3).crossedCount, 2);
+});
+
+test('only configured subagents receive alert steps', () => {
+  const agents = applySubagentAlertSteps(
     [{ name: 'agent-a', value: 20 }, { name: 'agent-b', value: 30 }],
-    [{ name: 'agent-b', lowerThreshold: -100, upperThreshold: 100 }],
+    [{ name: 'agent-b', alertStep: 100 }],
   );
   assert.deepEqual(agents, [
-    { name: 'agent-a', value: 20, lowerThreshold: null, upperThreshold: null, customized: false },
-    { name: 'agent-b', value: 30, lowerThreshold: -100, upperThreshold: 100, customized: true },
+    { name: 'agent-a', value: 20, alertStep: null, customized: false },
+    { name: 'agent-b', value: 30, alertStep: 100, customized: true },
   ]);
-  assert.equal(thresholdBand(1000, agents[0].lowerThreshold, agents[0].upperThreshold), null);
-  assert.deepEqual(evaluateSubagentThresholds(agents).map((item) => item.band), [null, null]);
+  assert.deepEqual(evaluateSubagentAlertLevels(agents).map((item) => item.level), [0, 0]);
 });
 
-test('converts old account-level thresholds for one-time subagent migration', () => {
-  assert.deepEqual(legacyThresholdPair({ operator: 'gte', threshold: 88 }), { lowerThreshold: null, upperThreshold: 88 });
-  assert.deepEqual(legacyThresholdPair({ operator: 'lte', threshold: -50 }), { lowerThreshold: -50, upperThreshold: null });
-  assert.deepEqual(legacyThresholdPair({ lowerThreshold: -10, upperThreshold: 10 }), { lowerThreshold: -10, upperThreshold: 10 });
+test('converts old thresholds into a positive from-zero alert step', () => {
+  assert.equal(legacyAlertStep({ operator: 'gte', threshold: 88 }), 88);
+  assert.equal(legacyAlertStep({ operator: 'lte', threshold: -50 }), 50);
+  assert.equal(alertStepFromLegacy({ lowerThreshold: -100, upperThreshold: 100 }), 100);
+  assert.equal(alertStepFromLegacy({ alertStep: 25, lowerThreshold: -100 }), 25);
 });
 
 test('evaluates each subagent independently', () => {
-  const evaluated = evaluateSubagentThresholds([
-    { name: 'agent-a', value: -20, lowerThreshold: -10, upperThreshold: 10 },
-    { name: 'agent-b', value: 5, lowerThreshold: 0, upperThreshold: 20 },
-    { name: 'agent-c', value: 30, lowerThreshold: null, upperThreshold: 25 },
+  const evaluated = evaluateSubagentAlertLevels([
+    { name: 'agent-a', value: -220, alertStep: 100 },
+    { name: 'agent-b', value: 5, alertStep: 20 },
+    { name: 'agent-c', value: 330, alertStep: 100 },
   ]);
-  assert.deepEqual(evaluated.map(({ subagent, band }) => [subagent.name, band]), [
-    ['agent-a', 'lower'], ['agent-b', null], ['agent-c', 'upper'],
+  assert.deepEqual(evaluated.map(({ subagent, level }) => [subagent.name, level]), [
+    ['agent-a', -2], ['agent-b', 0], ['agent-c', 3],
   ]);
 });

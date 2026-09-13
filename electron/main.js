@@ -4,7 +4,6 @@ const { SecureStore } = require('./store');
 const { MonitorService } = require('./monitor');
 const { UpdateService } = require('./updater');
 const { normalizeNavigationUrl } = require('./navigation');
-const { isValidThresholdRange } = require('./report-parser');
 
 let mainWindow;
 let store;
@@ -121,10 +120,8 @@ app.whenReady().then(() => {
     return { ok: true, id: savedId };
   });
   ipcMain.handle('subagent-threshold:save', (_event, input) => {
-    const lowerThreshold = optionalAmount(input.lowerThreshold);
-    const upperThreshold = optionalAmount(input.upperThreshold);
-    if (Number.isNaN(lowerThreshold) || Number.isNaN(upperThreshold)) throw new Error('请输入有效的提醒金额');
-    if (!isValidThresholdRange(lowerThreshold, upperThreshold)) throw new Error('低于提醒必须小于高于提醒');
+    const alertStep = optionalAmount(input.alertStep);
+    if (Number.isNaN(alertStep) || (alertStep !== null && alertStep <= 0)) throw new Error('提醒间隔必须是大于 0 的金额，留空表示关闭');
     const name = String(input.name || '').trim();
     const accountId = String(input.accountId || '');
     if (!name) throw new Error('下级代理名称不能为空');
@@ -133,13 +130,17 @@ app.whenReady().then(() => {
       if (!account) throw new Error('账号不存在');
       if (!Array.isArray(account.subagentThresholds)) account.subagentThresholds = [];
       const existing = account.subagentThresholds.find((item) => item.name === name);
-      const values = { name, lowerThreshold, upperThreshold };
-      if (existing) Object.assign(existing, values);
+      const values = { name, alertStep };
+      if (existing) {
+        Object.assign(existing, values);
+        delete existing.lowerThreshold;
+        delete existing.upperThreshold;
+      }
       else account.subagentThresholds.push(values);
     });
-    monitor.updateSubagentThreshold(accountId, name, lowerThreshold, upperThreshold);
+    monitor.updateSubagentAlertStep(accountId, name, alertStep);
     monitor.requestRecheck(accountId);
-    store.addEvent('success', `${name}：独立提醒条件已保存`, accountId);
+    store.addEvent('success', `${name}：每档提醒金额已保存`, accountId);
     publish();
     return { ok: true };
   });

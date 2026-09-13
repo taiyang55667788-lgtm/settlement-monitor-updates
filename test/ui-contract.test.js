@@ -11,11 +11,13 @@ test('security code is visibly entered', () => {
   assert.doesNotMatch(html, /name="securityCode" type="password"/);
 });
 
-test('threshold inputs exist only on discovered subagents', () => {
+test('from-zero interval inputs exist only on discovered subagents', () => {
   assert.doesNotMatch(html, /name="lowerThreshold"/);
   assert.doesNotMatch(html, /name="upperThreshold"/);
-  assert.match(client, /data-field="lowerThreshold"/);
-  assert.match(client, /data-field="upperThreshold"/);
+  assert.doesNotMatch(client, /data-field="lowerThreshold"/);
+  assert.doesNotMatch(client, /data-field="upperThreshold"/);
+  assert.match(client, /data-field="alertStep"/);
+  assert.match(client, /从 0 起，正负均提醒/);
   assert.match(html, /只读取本级账户下的代理/);
 });
 

@@ -1,7 +1,7 @@
 const path = require('node:path');
 const { BrowserWindow, session, nativeImage, net } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
-const { splitReportRows, parseSettlementTable, legacyThresholdPair, applySubagentThresholds, evaluateSubagentThresholds } = require('./report-parser');
+const { splitReportRows, parseSettlementTable, alertTransition, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -490,16 +490,16 @@ class MonitorService {
 
   status(accountId) {
     if (!this.runtime.has(accountId)) {
-      this.runtime.set(accountId, { status: 'waiting', subagentAlertBands: {}, subagents: [] });
+      this.runtime.set(accountId, { status: 'waiting', subagentAlertLevels: {}, subagents: [] });
     }
     return this.runtime.get(accountId);
   }
 
-  updateSubagentThreshold(accountId, name, lowerThreshold, upperThreshold) {
+  updateSubagentAlertStep(accountId, name, alertStep) {
     const status = this.status(accountId);
     const subagent = status.subagents?.find((item) => item.name === name);
-    if (subagent) Object.assign(subagent, { lowerThreshold, upperThreshold, customized: true });
-    delete status.subagentAlertBands[Buffer.from(name).toString('base64url')];
+    if (subagent) Object.assign(subagent, { alertStep, customized: true });
+    delete status.subagentAlertLevels[Buffer.from(name).toString('base64url')];
   }
 
   async clearAccountSession(accountId) {
@@ -566,9 +566,9 @@ class MonitorService {
       const report = await client.readThisWeekSettlement();
       if (!this.isCurrentCheck(accountId, revision)) return;
       let configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
-      const legacy = legacyThresholdPair(account);
-      if (!configuredSubagents.length && report.agents.length && (legacy.lowerThreshold !== null || legacy.upperThreshold !== null)) {
-        configuredSubagents = report.agents.map((agent) => ({ name: agent.name, ...legacy }));
+      const legacyStep = legacyAlertStep(account);
+      if (!configuredSubagents.length && report.agents.length && legacyStep !== null) {
+        configuredSubagents = report.agents.map((agent) => ({ name: agent.name, alertStep: legacyStep }));
         account.subagentThresholds = configuredSubagents;
         this.store.update((data) => {
           const stored = data.accounts.find((item) => item.id === account.id);
@@ -576,30 +576,32 @@ class MonitorService {
         });
         this.store.addEvent('success', `${account.name}：旧版提醒条件已迁移到 ${configuredSubagents.length} 个下级代理`, account.id);
       }
-      status.subagents = applySubagentThresholds(report.agents, configuredSubagents);
+      status.subagents = applySubagentAlertSteps(report.agents, configuredSubagents);
       status.subagentCount = status.subagents.length;
       status.totalValue = report.value;
       status.lastCheckedAt = new Date().toISOString();
       let anyTriggered = false;
       const notificationFailures = [];
-      for (const { subagent, band: subagentBand } of evaluateSubagentThresholds(status.subagents)) {
+      for (const { subagent, level } of evaluateSubagentAlertLevels(status.subagents)) {
         if (!this.isCurrentCheck(accountId, revision)) return;
         const alertKey = Buffer.from(subagent.name).toString('base64url');
-        if (subagentBand) anyTriggered = true;
-        if (subagentBand && status.subagentAlertBands[alertKey] !== subagentBand) {
+        const previousLevel = Number(status.subagentAlertLevels[alertKey] || 0);
+        const transition = alertTransition(previousLevel, level);
+        if (level !== 0) anyTriggered = true;
+        if (transition.shouldNotify) {
           try {
-            await this.sendTelegram(account, subagent.value, subagentBand, subagent.name, subagent);
+            await this.sendTelegram(account, subagent.value, level, previousLevel, subagent.name, subagent.alertStep);
             if (!this.isCurrentCheck(accountId, revision)) return;
-            status.subagentAlertBands[alertKey] = subagentBand;
+            status.subagentAlertLevels[alertKey] = level;
             status.lastAlertAt = new Date().toISOString();
-            this.store.addEvent('alert', `${account.name} / ${subagent.name}：交收金额 ${subagent.value.toLocaleString('zh-CN')} 已达到提醒条件`, account.id);
+            this.store.addEvent('alert', `${account.name} / ${subagent.name}：交收金额进入 ${level > 0 ? '+' : ''}${(level * subagent.alertStep).toLocaleString('zh-CN')} 档位`, account.id);
           } catch (error) {
             const message = `${subagent.name}：${error.message || String(error)}`;
             notificationFailures.push(message);
             this.store.addEvent('error', `${account.name} / ${message}`, account.id);
           }
-        } else if (!subagentBand) {
-          delete status.subagentAlertBands[alertKey];
+        } else if (level === 0) {
+          status.subagentAlertLevels[alertKey] = 0;
         }
       }
       status.status = anyTriggered ? 'triggered' : 'ok';
@@ -641,26 +643,24 @@ class MonitorService {
     }
   }
 
-  async sendTelegram(account, value, band, subagentName, thresholds) {
+  async sendTelegram(account, value, level, previousLevel, subagentName, alertStep) {
     const { botToken, chatId } = this.store.state.telegram;
     if (!botToken || !chatId) throw new Error('请先设置 Telegram Bot Token 和 Chat ID');
-    if (!subagentName || !thresholds) throw new Error('下级代理提醒资料不完整');
-    const triggeredCondition = band === 'lower'
-      ? `≤ ${Number(thresholds.lowerThreshold).toLocaleString('zh-CN')}`
-      : `≥ ${Number(thresholds.upperThreshold).toLocaleString('zh-CN')}`;
-    const configuredConditions = [
-      Number.isFinite(thresholds.lowerThreshold) ? `≤ ${thresholds.lowerThreshold.toLocaleString('zh-CN')}` : '',
-      Number.isFinite(thresholds.upperThreshold) ? `≥ ${thresholds.upperThreshold.toLocaleString('zh-CN')}` : '',
-    ].filter(Boolean).join(' 或 ');
+    if (!subagentName || !Number.isFinite(alertStep) || alertStep <= 0) throw new Error('下级代理提醒资料不完整');
+    const milestone = level * alertStep;
+    const previousMilestone = previousLevel * alertStep;
+    const crossedCount = Math.abs(level - previousLevel);
     const text = [
       '🔔 交收金额提醒',
       `账号：${account.name}`,
       `下级代理：${subagentName}`,
       `本周交收金额：${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      `触发条件：${triggeredCondition}`,
-      `全部条件：${configuredConditions}`,
+      `当前档位：${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}（从 0 起）`,
+      `提醒间隔：每 ${alertStep.toLocaleString('zh-CN')} 一档`,
+      previousLevel ? `上次档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上次档位：0',
+      crossedCount > 1 ? `本次跨越：${crossedCount} 个档位` : '',
       `时间：${new Date().toLocaleString('zh-CN')}`,
-    ].join('\n');
+    ].filter(Boolean).join('\n');
     await this.telegramJson(botToken, 'sendMessage', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
