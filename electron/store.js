@@ -1,11 +1,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeStorage } = require('electron');
+const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
 
 const EMPTY_STATE = {
   telegram: { botToken: '', chatId: '' },
   update: {
-    feedUrl: 'https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest/download',
+    feedUrl: DEFAULT_UPDATE_FEED_URL,
     autoCheck: true,
   },
   accounts: [],
@@ -30,7 +31,7 @@ class SecureStore {
         telegram: { ...EMPTY_STATE.telegram, ...(saved.telegram || {}) },
         update: { ...EMPTY_STATE.update, ...(saved.update || {}) },
       };
-      if (!this.state.update.feedUrl) this.state.update.feedUrl = EMPTY_STATE.update.feedUrl;
+      this.state.update.feedUrl = migrateUpdateFeedUrl(this.state.update.feedUrl);
       this.state.accounts = this.state.accounts.map((account) => ({
         ...account,
         subagentThresholds: Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [],

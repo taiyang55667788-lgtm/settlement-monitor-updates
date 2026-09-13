@@ -1,6 +1,6 @@
 {
   "name": "settlement-monitor",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "private": true,
   "description": "多账号交收金额监控与 Telegram 提醒",
   "repository": "https://github.com/taiyang55667788-lgtm/settlement-monitor-updates",
@@ -20,6 +20,7 @@
     "tesseract.js": "^6.0.1"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3.1131.0",
     "electron": "^38.1.0",
     "electron-builder": "^26.0.12"
   },
@@ -40,7 +41,7 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest/download"
+        "url": "https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev"
       }
     ],
     "directories": {
@@ -48,13 +49,21 @@
     },
     "mac": {
       "category": "public.app-category.finance",
-      "target": ["dmg", "zip"]
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "linux": {
-      "target": ["AppImage"]
+      "target": [
+        "AppImage"
+      ]
     },
     "nsis": {
       "artifactName": "Settlement-Monitor-Setup-${version}-${arch}.${ext}",

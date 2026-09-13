@@ -20,7 +20,8 @@ for (const assetName of new Set(assetNames)) {
   if (!/^[\x20-\x7E]+$/.test(assetName)) {
     throw new Error(`Update asset name must be ASCII-safe for GitHub Releases: ${assetName}`);
   }
-  if (!fs.existsSync(path.join(distDir, assetName))) {
+  const localName = /^https:\/\//i.test(assetName) ? path.basename(new URL(assetName).pathname) : assetName;
+  if (!fs.existsSync(path.join(distDir, localName))) {
     throw new Error(`latest.yml references a missing release asset: ${assetName}`);
   }
 }
