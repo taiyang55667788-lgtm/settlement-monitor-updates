@@ -35,6 +35,9 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      - name: Verify desktop report and agent-table flows
+        run: pnpm test:desktop
+
       - name: Build Windows installer and portable app
         run: pnpm exec electron-builder --win --x64 --publish never
 

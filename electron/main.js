@@ -4,6 +4,7 @@ const { SecureStore } = require('./store');
 const { MonitorService } = require('./monitor');
 const { UpdateService } = require('./updater');
 const { normalizeNavigationUrl } = require('./navigation');
+const { agentPathKey } = require('./report-parser');
 
 let mainWindow;
 let store;
@@ -135,15 +136,18 @@ app.whenReady().then(() => {
   ipcMain.handle('subagent-threshold:save', (_event, input) => {
     const alertStep = optionalAmount(input.alertStep);
     if (Number.isNaN(alertStep) || (alertStep !== null && alertStep <= 0)) throw new Error('提醒间隔必须是大于 0 的金额，留空表示关闭');
-    const name = String(input.name || '').trim();
+    const path = Array.isArray(input.path) ? input.path.map((part) => String(part).trim()) : [String(input.name || '').trim()];
+    if (!path.length || path.some((part) => !part) || path.length > 2) throw new Error('只支持往下两级代理');
+    const name = path.at(-1);
+    const remark = String(input.remark || '').trim();
+    if (remark.length > 100) throw new Error('备注最多 100 个字');
     const accountId = String(input.accountId || '');
-    if (!name) throw new Error('下级代理名称不能为空');
     store.update((data) => {
       const account = data.accounts.find((item) => item.id === accountId);
       if (!account) throw new Error('账号不存在');
       if (!Array.isArray(account.subagentThresholds)) account.subagentThresholds = [];
-      const existing = account.subagentThresholds.find((item) => item.name === name);
-      const values = { name, alertStep };
+      const existing = account.subagentThresholds.find((item) => agentPathKey(item.path || [item.name]) === agentPathKey(path));
+      const values = { name, path, remark, alertStep };
       if (existing) {
         Object.assign(existing, values);
         delete existing.lowerThreshold;
@@ -151,9 +155,24 @@ app.whenReady().then(() => {
       }
       else account.subagentThresholds.push(values);
     });
-    monitor.updateSubagentAlertStep(accountId, name, alertStep);
+    monitor.updateSubagentAlertStep(accountId, path, alertStep, remark);
     monitor.requestRecheck(accountId);
-    store.addEvent('success', `${name}：每档提醒金额已保存`, accountId);
+    store.addEvent('success', `${path.join(' / ')}：备注和提醒设置已保存`, accountId);
+    publish();
+    return { ok: true };
+  });
+  ipcMain.handle('subagent:expand', (_event, input) => {
+    const accountId = String(input.accountId || '');
+    const path = Array.isArray(input.path) ? input.path.map((part) => String(part).trim()) : [];
+    if (path.length !== 1 || path.some((part) => !part)) throw new Error('只能展开直属代理，读取第二级代理');
+    const known = monitor.status(accountId).subagents?.some((item) => agentPathKey(item.path) === agentPathKey(path));
+    if (!known) throw new Error('请先刷新报表，再查看该代理的下级');
+    store.update((data) => {
+      const account = data.accounts.find((item) => item.id === accountId);
+      if (!account) throw new Error('账号不存在');
+      if (!Array.isArray(account.expandedAgentPaths)) account.expandedAgentPaths = [];
+      if (!account.expandedAgentPaths.some((item) => agentPathKey(item) === agentPathKey(path))) account.expandedAgentPaths.push(path);
+    });
     publish();
     return { ok: true };
   });

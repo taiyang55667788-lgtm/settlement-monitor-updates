@@ -18,7 +18,11 @@ test('from-zero interval inputs exist only on discovered subagents', () => {
   assert.doesNotMatch(client, /data-field="upperThreshold"/);
   assert.match(client, /data-field="alertStep"/);
   assert.match(client, /从 0 起，正负均提醒/);
-  assert.match(html, /只读取本级账户下的代理/);
+  assert.match(html, /读取直属代理及直属代理的下级/);
+  assert.match(client, /data-field="remark"/);
+  assert.match(client, /data-action="expand-subagent"/);
+  assert.match(client, /<table class="agent-table">/);
+  assert.match(client, /<tbody class="child-group"/);
 });
 
 test('account form clearly starts recognition after saving', () => {

@@ -1,7 +1,7 @@
 const path = require('node:path');
 const { BrowserWindow, session, nativeImage, net } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
-const { splitReportRows, parseSettlementTable, alertTransition, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
+const { splitReportRows, parseSettlementTable, alertTransition, legacyAlertStep, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
 const { PairingClient } = require('./pairing');
 const {
   partitionForAccount,
@@ -297,6 +297,13 @@ class SiteClient {
       this.status.agentUrl = agentUrl;
       await this.login(agentUrl);
     }
+    await this.openThisWeekReport();
+    this.status.stage = '本周报表读取成功';
+    return this.readCurrentSettlement();
+  }
+
+  async openThisWeekReport() {
+    this.previousReportText = '';
     this.status.stage = '正在打开报表查询';
     await executePageAction(this.window, `(() => {
       const link = [...document.querySelectorAll('a')].find(el => /报表查询/.test(el.innerText));
@@ -332,10 +339,15 @@ class SiteClient {
     if (!querySubmitted) throw new Error('没有查询按钮');
     const ready = await waitUntilAnyFrame(this.window, `[...document.querySelectorAll('tr')].some(row => /合计/.test(row.innerText))`, 15000);
     if (!ready) throw new Error('本周报表加载超时');
+  }
+
+  async readCurrentSettlement() {
+    const priorText = this.previousReportText || '';
     const rawRows = await executeInFrames(this.window, `(() => {
       const tables = [...document.querySelectorAll('table')];
-      const table = tables.find(t => /交收|上级交收/.test(t.innerText) && /合计/.test(t.innerText))
-        || tables.sort((a,b) => b.querySelectorAll('td').length - a.querySelectorAll('td').length)[0];
+      const table = [document.querySelector('#mytable'), ...tables].filter(Boolean)
+        .find(t => /交收|上级交收/.test(t.innerText) && /合计/.test(t.innerText) && (!${Boolean(priorText)} || t.innerText !== ${jsString(priorText)}))
+        || (!${Boolean(priorText)} ? tables.sort((a,b) => b.querySelectorAll('td').length - a.querySelectorAll('td').length)[0] : null);
       if (!table) return null;
       const rows = [...table.querySelectorAll('tr')];
       return rows.map(row => [...row.cells].map(cell => ({
@@ -345,8 +357,45 @@ class SiteClient {
       })));
     })()`, Array.isArray);
     if (!rawRows) throw new Error('没有报表表格');
-    this.status.stage = '本周报表读取成功';
     return parseSettlementTable(splitReportRows(rawRows));
+  }
+
+  async drillIntoAgent(name) {
+    const target = jsString(name);
+    const clicked = await executeInFrames(this.window, `(() => {
+      const tables = [...document.querySelectorAll('table')];
+      const table = [document.querySelector('#mytable'), ...tables].filter(Boolean)
+        .find(t => /交收|上级交收/.test(t.innerText) && /合计/.test(t.innerText));
+      if (!table) return null;
+      const row = [...table.querySelectorAll('tr')].find(tr => tr.cells?.[0]?.innerText?.trim() === ${target});
+      if (!row) return null;
+      const first = row.cells[0];
+      const control = first.querySelector('a,button,[role="button"]')
+        || (first.hasAttribute('onclick') ? first : null)
+        || (row.hasAttribute('onclick') ? row : null);
+      if (!control) return { error: '该代理在报表中没有可点击的下级入口' };
+      const before = table.innerText;
+      control.click();
+      return { before };
+    })()`, (result) => result !== null && result !== undefined);
+    if (!clicked) throw new Error(`报表中找不到代理“${name}”`);
+    if (clicked.error) throw new Error(clicked.error);
+    const changed = await waitUntilAnyFrame(this.window, `(() => {
+      const table = [document.querySelector('#mytable'), ...document.querySelectorAll('table')].filter(Boolean)
+        .find(t => /交收|上级交收/.test(t.innerText) && /合计/.test(t.innerText));
+      return Boolean(table && table.innerText !== ${jsString(clicked.before)});
+    })()`, 12000);
+    if (!changed) throw new Error('点击代理后报表没有切换到下级；请提供点击前后的盘口截图');
+    this.previousReportText = clicked.before;
+  }
+
+  async readDescendantSettlement(path) {
+    await this.openThisWeekReport();
+    for (const name of path) {
+      this.status.stage = `正在读取 ${path.join(' / ')} 的下级`;
+      await this.drillIntoAgent(name);
+    }
+    return this.readCurrentSettlement();
   }
 
   async close() {
@@ -558,11 +607,12 @@ class MonitorService {
     return this.runtime.get(accountId);
   }
 
-  updateSubagentAlertStep(accountId, name, alertStep) {
+  updateSubagentAlertStep(accountId, path, alertStep, remark = '') {
     const status = this.status(accountId);
-    const subagent = status.subagents?.find((item) => item.name === name);
-    if (subagent) Object.assign(subagent, { alertStep, customized: true });
-    delete status.subagentAlertLevels[Buffer.from(name).toString('base64url')];
+    const key = agentPathKey(path);
+    const subagent = status.subagents?.find((item) => agentPathKey(item.path) === key);
+    if (subagent) Object.assign(subagent, { alertStep, remark, customized: true });
+    delete status.subagentAlertLevels[Buffer.from(path.length === 1 ? path[0] : key).toString('base64url')];
   }
 
   async clearAccountSession(accountId) {
@@ -628,6 +678,29 @@ class MonitorService {
       await client.open();
       const report = await client.readThisWeekSettlement();
       if (!this.isCurrentCheck(accountId, revision)) return;
+      const agents = report.agents.map((agent) => ({ ...agent, path: [agent.name] }));
+      const childErrors = [];
+      const branches = report.agents.map((agent) => [agent.name]);
+      for (const path of branches) {
+        if (!this.isCurrentCheck(accountId, revision)) return;
+        const parent = agents.find((agent) => agentPathKey(agent.path) === agentPathKey(path));
+        if (!parent) continue;
+        status.stage = `正在读取 ${path[0]} 的下级代理`;
+        this.onChange();
+        try {
+          const childReport = await client.readDescendantSettlement(path);
+          if (!this.isCurrentCheck(accountId, revision)) return;
+          parent.childCount = childReport.agents.length;
+          for (const child of childReport.agents) {
+            const childPath = [...path, child.name];
+            if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(childPath))) agents.push({ ...child, path: childPath });
+          }
+        } catch (error) {
+          parent.childError = error.message || String(error);
+          childErrors.push(`${path.join(' / ')}：${parent.childError}`);
+        }
+      }
+      status.stage = '两级代理报表读取完成';
       let configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
       const legacyStep = legacyAlertStep(account);
       if (!configuredSubagents.length && report.agents.length && legacyStep !== null) {
@@ -639,25 +712,25 @@ class MonitorService {
         });
         this.store.addEvent('success', `${account.name}：旧版提醒条件已迁移到 ${configuredSubagents.length} 个下级代理`, account.id);
       }
-      status.subagents = applySubagentAlertSteps(report.agents, configuredSubagents);
-      status.subagentCount = status.subagents.length;
+      status.subagents = applySubagentAlertSteps(agents, configuredSubagents);
+      status.subagentCount = report.agents.length;
       status.totalValue = report.value;
       status.lastCheckedAt = new Date().toISOString();
       let anyTriggered = false;
       const notificationFailures = [];
       for (const { subagent, level } of evaluateSubagentAlertLevels(status.subagents)) {
         if (!this.isCurrentCheck(accountId, revision)) return;
-        const alertKey = Buffer.from(subagent.name).toString('base64url');
+        const alertKey = Buffer.from(subagent.path.length === 1 ? subagent.name : agentPathKey(subagent.path)).toString('base64url');
         const previousLevel = Number(status.subagentAlertLevels[alertKey] || 0);
         const transition = alertTransition(previousLevel, level);
         if (level !== 0) anyTriggered = true;
         if (transition.shouldNotify) {
           try {
-            await this.sendTelegram(account, subagent.value, level, previousLevel, subagent.name, subagent.alertStep);
+            await this.sendTelegram(account, subagent.value, level, previousLevel, subagent.name, subagent.alertStep, subagent.remark, subagent.path);
             if (!this.isCurrentCheck(accountId, revision)) return;
             status.subagentAlertLevels[alertKey] = level;
             status.lastAlertAt = new Date().toISOString();
-            this.store.addEvent('alert', `${account.name} / ${subagent.name}：交收金额进入 ${level > 0 ? '+' : ''}${(level * subagent.alertStep).toLocaleString('zh-CN')} 档位`, account.id);
+            this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}${subagent.remark ? `（${subagent.remark}）` : ''}：交收金额进入 ${level > 0 ? '+' : ''}${(level * subagent.alertStep).toLocaleString('zh-CN')} 档位`, account.id);
           } catch (error) {
             const message = `${subagent.name}：${error.message || String(error)}`;
             notificationFailures.push(message);
@@ -667,8 +740,11 @@ class MonitorService {
           status.subagentAlertLevels[alertKey] = 0;
         }
       }
-      status.status = anyTriggered ? 'triggered' : 'ok';
-      status.error = notificationFailures.length ? `Telegram 提醒失败：${notificationFailures.join('；')}` : '';
+      status.status = childErrors.length ? 'error' : anyTriggered ? 'triggered' : 'ok';
+      status.error = [
+        childErrors.length ? `部分下级代理读取失败：${childErrors.slice(0, 3).join('；')}${childErrors.length > 3 ? `；共 ${childErrors.length} 个代理失败` : ''}` : '',
+        notificationFailures.length ? `Telegram 提醒失败：${notificationFailures.join('；')}` : '',
+      ].filter(Boolean).join('；');
     } catch (error) {
       status.status = 'error';
       const detail = error.message || String(error);
@@ -706,7 +782,7 @@ class MonitorService {
     }
   }
 
-  async sendTelegram(account, value, level, previousLevel, subagentName, alertStep) {
+  async sendTelegram(account, value, level, previousLevel, subagentName, alertStep, remark = '', path = [subagentName]) {
     const { botToken, chatId, mode, pairing } = this.store.state.telegram;
     if (mode === 'pairing' && !pairing?.paired) throw new Error('Telegram 配对尚未完成');
     if (mode !== 'pairing' && (!botToken || !chatId || mode !== 'legacy')) throw new Error('请先绑定 Telegram');
@@ -717,7 +793,8 @@ class MonitorService {
     const text = [
       '🔔 交收金额提醒',
       `账号：${account.name}`,
-      `下级代理：${subagentName}`,
+      `代理层级：${path.join(' / ')}`,
+      remark ? `备注：${remark}` : '',
       `本周交收金额：${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       `当前档位：${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}（从 0 起）`,
       `提醒间隔：每 ${alertStep.toLocaleString('zh-CN')} 一档`,
@@ -767,4 +844,4 @@ class MonitorService {
   }
 }
 
-module.exports = { MonitorService };
+module.exports = { MonitorService, SiteClient };

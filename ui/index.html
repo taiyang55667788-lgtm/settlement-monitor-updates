@@ -34,7 +34,7 @@
             <article class="summary"><span>异常账号</span><strong id="error-count">0</strong><small>将自动重试</small></article>
           </div>
           <div class="panel">
-            <div class="panel-head"><div><h2>本级账号监控</h2><p>多个本级账号同时独立登录；每个下级代理按从 0 起的正负等距档位提醒</p></div><span class="live"><i></i>自动运行中</span></div>
+            <div class="panel-head"><div><h2>本级账号监控</h2><p>多个账号同时登录；两级代理以层级表格显示，各行独立设备注和提醒间隔</p></div><span class="live"><i></i>自动运行中</span></div>
             <div id="accounts" class="accounts"></div>
             <div id="empty" class="empty"><span>＋</span><h3>还没有监控账号</h3><p>添加第一个账号并设置交收金额提醒条件。</p><button class="primary add-trigger">添加账号</button></div>
           </div>
@@ -104,7 +104,7 @@
           </div>
         </section>
         <section class="config-section">
-          <div class="config-title"><span>3</span><div><strong>下级代理监控</strong><small>只读取本级账户下的代理；登录成功后给每个代理分别设置阈值</small></div></div>
+          <div class="config-title"><span>3</span><div><strong>两级代理监控</strong><small>读取直属代理及直属代理的下级；在层级表格中展开并分别设备注和提醒间隔</small></div></div>
           <div class="form-grid monitor-grid">
             <label>检查间隔（分钟）<input name="intervalMinutes" type="number" min="1" value="5" required /></label>
           </div>

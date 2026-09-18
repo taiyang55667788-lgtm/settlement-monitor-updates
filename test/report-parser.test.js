@@ -103,10 +103,28 @@ test('only configured subagents receive alert steps', () => {
     [{ name: 'agent-b', alertStep: 100 }],
   );
   assert.deepEqual(agents, [
-    { name: 'agent-a', value: 20, alertStep: null, customized: false },
-    { name: 'agent-b', value: 30, alertStep: 100, customized: true },
+    { name: 'agent-a', value: 20, path: ['agent-a'], remark: '', alertStep: null, customized: false },
+    { name: 'agent-b', value: 30, path: ['agent-b'], remark: '', alertStep: 100, customized: true },
   ]);
   assert.deepEqual(evaluateSubagentAlertLevels(agents).map((item) => item.level), [0, 0]);
+});
+
+test('same-named second-level agents keep independent remarks and alert steps', () => {
+  const agents = applySubagentAlertSteps(
+    [
+      { name: 'child', path: ['parent-a', 'child'], value: 120 },
+      { name: 'child', path: ['parent-b', 'child'], value: -220 },
+    ],
+    [
+      { name: 'child', path: ['parent-a', 'child'], remark: '东区', alertStep: 100 },
+      { name: 'child', path: ['parent-b', 'child'], remark: '西区', alertStep: 200 },
+    ],
+  );
+  assert.deepEqual(agents.map(({ path, remark, alertStep }) => [path, remark, alertStep]), [
+    [['parent-a', 'child'], '东区', 100],
+    [['parent-b', 'child'], '西区', 200],
+  ]);
+  assert.deepEqual(evaluateSubagentAlertLevels(agents).map(({ level }) => level), [1, -1]);
 });
 
 test('converts old thresholds into a positive from-zero alert step', () => {

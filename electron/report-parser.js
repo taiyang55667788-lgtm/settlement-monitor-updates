@@ -116,12 +116,24 @@ function legacyAlertStep(account) {
   return alertStepFromLegacy(account);
 }
 
+function agentPath(agent) {
+  if (Array.isArray(agent?.path) && agent.path.length) return agent.path.map((part) => String(part).trim()).filter(Boolean);
+  return agent?.name ? [String(agent.name).trim()] : [];
+}
+
+function agentPathKey(path) {
+  return JSON.stringify(path);
+}
+
 function applySubagentAlertSteps(agents, configurations) {
   const configured = Array.isArray(configurations) ? configurations : [];
   return (agents || []).map((agent) => {
-    const custom = configured.find((item) => item.name === agent.name);
+    const path = agentPath(agent);
+    const custom = configured.find((item) => agentPathKey(agentPath(item)) === agentPathKey(path));
     return {
       ...agent,
+      path,
+      remark: String(custom?.remark || '').trim(),
       alertStep: alertStepFromLegacy(custom),
       customized: Boolean(custom),
     };
@@ -135,4 +147,4 @@ function evaluateSubagentAlertLevels(subagents) {
   }));
 }
 
-module.exports = { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, alertTransition, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels };
+module.exports = { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, alertTransition, legacyAlertStep, agentPath, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels };

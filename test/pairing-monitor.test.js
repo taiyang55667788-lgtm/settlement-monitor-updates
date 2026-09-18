@@ -30,10 +30,12 @@ test('pairing activates only after Telegram confirms, and routes alerts through 
   assert.deepEqual(await service.checkTelegramPairing(), { paired: true });
   assert.equal(store.state.telegram.mode, 'pairing');
   await service.testTelegram();
-  await service.sendTelegram({ name: '主账号' }, -200, -2, -1, '下级代理', 100);
+  await service.sendTelegram({ name: '主账号' }, -200, -2, -1, '下级代理', 100, '西区重点', ['直属代理', '下级代理']);
   assert.deepEqual(calls.slice(0, 2), [['status', 'device-token'], ['test', 'device-token']]);
   assert.equal(calls[2][0], 'send');
   assert.match(calls[2][2], /当前档位：-200/);
+  assert.match(calls[2][2], /代理层级：直属代理 \/ 下级代理/);
+  assert.match(calls[2][2], /备注：西区重点/);
 });
 
 test('unlink turns notifications off even when old manual credentials remain', async () => {

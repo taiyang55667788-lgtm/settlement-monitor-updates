@@ -4,8 +4,10 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const statusNames = { waiting: '等待首次检查', checking: '正在检查', ok: '运行正常', triggered: '已达阈值', error: '检查失败' };
 const thresholdDrafts = new Map();
+const collapsedAgentPaths = new Set();
 
-const thresholdDraftKey = (accountId, subagentName) => `${accountId}\u0000${subagentName}`;
+const pathKey = (path) => JSON.stringify(path);
+const thresholdDraftKey = (accountId, path) => `${accountId}\u0000${pathKey(path)}`;
 
 function isSubagentTriggered(subagent) {
   return Number.isFinite(subagent.alertStep) && subagent.alertStep > 0 && Math.abs(subagent.value) >= subagent.alertStep;
@@ -25,17 +27,33 @@ function subagentList(account) {
     return '<div class="subagent-empty">登录并完成首次检查后，这里会显示下级代理。</div>';
   }
   if (!account.subagents?.length) return '<div class="subagent-empty">本级账号下暂未发现代理。</div>';
-  return account.subagents.map((subagent, index) => {
-    const draft = thresholdDrafts.get(thresholdDraftKey(account.id, subagent.name));
+  const indexed = account.subagents.map((subagent, index) => ({ subagent, index }));
+  const renderRow = ({ subagent, index }, depth, expanded = false) => {
+    const path = subagent.path || [subagent.name];
+    const draft = thresholdDrafts.get(thresholdDraftKey(account.id, path));
     const alertStep = draft ? draft.alertStep : (Number.isFinite(subagent.alertStep) ? subagent.alertStep : '');
-    return `
-    <div class="subagent-row" data-subagent-index="${index}">
-      <div><strong>${escapeHtml(subagent.name)}</strong><small>${subagent.customized ? (Number.isFinite(subagent.alertStep) ? `每 ${money.format(subagent.alertStep)} 一档` : '提醒已关闭') : '尚未设置提醒'}</small></div>
-      <div class="subagent-value"><small>本周交收金额</small><strong>${money.format(subagent.value)}</strong></div>
-      <label>提醒间隔（从 0 起，正负均提醒）<input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" /></label>
-      <button class="secondary" data-action="save-subagent">保存</button>
-    </div>`;
+    const remark = draft ? draft.remark : (subagent.remark || '');
+    return `<tr class="subagent-row ${depth ? 'second-level' : 'first-level'}" data-subagent-index="${index}">
+      <td><div class="subagent-name">${depth === 0 ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : '<span class="tree-leaf" aria-hidden="true">↳</span>'}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${depth ? `二级代理 · 上级 ${escapeHtml(path[0])}` : `直属代理${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}`}</small>${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
+      <td class="subagent-value ${subagent.value < 0 ? 'negative' : ''}">${money.format(subagent.value)}</td>
+      <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(subagent.name)} 的备注" /></td>
+      <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" aria-label="${escapeHtml(subagent.name)} 的提醒间隔" /></td>
+      <td><button class="secondary" data-action="save-subagent">保存</button></td>
+    </tr>`;
+  };
+  const branches = indexed.filter(({ subagent }) => (subagent.path || [subagent.name]).length === 1).map((parent) => {
+    const parentPath = parent.subagent.path || [parent.subagent.name];
+    const expanded = (account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(parentPath))
+      && !collapsedAgentPaths.has(thresholdDraftKey(account.id, parentPath));
+    const children = indexed.filter(({ subagent }) => {
+      const path = subagent.path || [subagent.name];
+      return path.length === 2 && path[0] === parentPath[0];
+    });
+    const childContent = children.length ? children.map((child) => renderRow(child, 1)).join('')
+      : `<tr class="child-placeholder"><td colspan="5">${parent.subagent.childError ? '下级读取失败，请刷新重试' : Number.isFinite(parent.subagent.childCount) ? '暂无下级代理' : '正在读取下级代理…'}</td></tr>`;
+    return `<tbody class="agent-branch">${renderRow(parent, 0, expanded)}</tbody><tbody class="child-group" ${expanded ? '' : 'hidden'}>${childContent}</tbody>`;
   }).join('');
+  return `<div class="agent-table-scroll"><table class="agent-table"><thead><tr><th scope="col">代理层级</th><th scope="col">本周交收金额</th><th scope="col">备注（同步通知）</th><th scope="col">提醒间隔（从 0 起，正负均提醒）</th><th scope="col">操作</th></tr></thead>${branches}</table></div>`;
 }
 
 function toast(message) {
@@ -61,21 +79,23 @@ function captureThresholdDraft() {
   if (!account || !subagent) return null;
   return {
     accountId: account.id,
-    subagentName: subagent.name,
+    path: subagent.path || [subagent.name],
     focusedField: active.dataset.field,
     alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
+    remark: subagentRow.querySelector('[data-field="remark"]').value,
   };
 }
 
 function restoreThresholdDraft(draft, state) {
   if (!draft) return;
   const account = state.accounts?.find((item) => item.id === draft.accountId);
-  const index = account?.subagents?.findIndex((item) => item.name === draft.subagentName);
+  const index = account?.subagents?.findIndex((item) => pathKey(item.path || [item.name]) === pathKey(draft.path));
   if (index < 0) return;
   const accountRow = [...document.querySelectorAll('.account-row')].find((row) => row.dataset.id === draft.accountId);
   const subagentRow = accountRow?.querySelector(`[data-subagent-index="${index}"]`);
   if (!subagentRow) return;
   subagentRow.querySelector('[data-field="alertStep"]').value = draft.alertStep;
+  subagentRow.querySelector('[data-field="remark"]').value = draft.remark;
   subagentRow.querySelector(`[data-field="${draft.focusedField}"]`)?.focus();
 }
 
@@ -93,12 +113,12 @@ function render(state) {
     const statusDetail = account.error || (account.status === 'checking' ? account.stage : '') || checked;
     const configuredCount = (account.subagents || []).filter((subagent) => subagent.customized && Number.isFinite(subagent.alertStep)).length;
     return `<article class="account-row" data-id="${account.id}">
-      <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · 下级代理 ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个</small></div></div>
-      <div class="metric"><small>下级代理数量</small><strong>${Number.isFinite(account.subagentCount) ? account.subagentCount : '—'}</strong></div>
+      <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · 直属代理 ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个</small></div></div>
+      <div class="metric"><small>直属代理数量</small><strong>${Number.isFinite(account.subagentCount) ? account.subagentCount : '—'}</strong></div>
       <div class="threshold"><small>已设置提醒</small><strong>${configuredCount} 个代理</strong></div>
       <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；验证码失败时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>下级代理与独立提醒</strong><small>每个代理单独设置间隔；以 0 为起点，正负每跨一档提醒。</small></div>${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>两级代理交收表</strong><small>点击直属代理展开下级；各行独立设置备注和提醒间隔。</small></div>${subagentList(account)}</div>
     </article>`;
   }).join('');
   restoreThresholdDraft(thresholdDraft, state);
@@ -183,13 +203,28 @@ $('#accounts').addEventListener('click', (event) => {
     const subagent = account.subagents[Number(subagentRow.dataset.subagentIndex)];
     const settings = {
       accountId: account.id,
-      name: subagent.name,
+      path: subagent.path || [subagent.name],
+      remark: subagentRow.querySelector('[data-field="remark"]').value,
       alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
     };
     action(async () => {
       await window.monitorApi.saveSubagentThreshold(settings);
-      thresholdDrafts.delete(thresholdDraftKey(account.id, subagent.name));
-    }, `${subagent.name} 的提醒条件已保存`);
+      thresholdDrafts.delete(thresholdDraftKey(account.id, settings.path));
+    }, `${subagent.name} 的备注和提醒已保存`);
+    return;
+  }
+  if (button.dataset.action === 'expand-subagent') {
+    const subagentRow = button.closest('[data-subagent-index]');
+    const subagent = account.subagents[Number(subagentRow.dataset.subagentIndex)];
+    const path = subagent.path || [subagent.name];
+    const branchKey = thresholdDraftKey(account.id, path);
+    if ((account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(path))) {
+      if (collapsedAgentPaths.has(branchKey)) collapsedAgentPaths.delete(branchKey);
+      else collapsedAgentPaths.add(branchKey);
+      render(appState);
+    } else {
+      action(() => window.monitorApi.expandSubagent(account.id, path));
+    }
     return;
   }
   if (button.dataset.action === 'edit') openAccount(account);
@@ -213,8 +248,9 @@ $('#accounts').addEventListener('input', (event) => {
   const account = appState.accounts.find((item) => item.id === accountRow?.dataset.id);
   const subagent = account?.subagents?.[Number(subagentRow?.dataset.subagentIndex)];
   if (!account || !subagent) return;
-  thresholdDrafts.set(thresholdDraftKey(account.id, subagent.name), {
+  thresholdDrafts.set(thresholdDraftKey(account.id, subagent.path || [subagent.name]), {
     alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
+    remark: subagentRow.querySelector('[data-field="remark"]').value,
   });
 });
 

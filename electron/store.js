@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { safeStorage } = require('electron');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
-const { alertStepFromLegacy } = require('./report-parser');
+const { alertStepFromLegacy, agentPath } = require('./report-parser');
 
 const EMPTY_STATE = {
   telegram: { botToken: '', chatId: '', mode: '', pairing: null },
@@ -39,8 +39,9 @@ class SecureStore {
       this.state.accounts = this.state.accounts.map((account) => ({
         ...account,
         subagentThresholds: Array.isArray(account.subagentThresholds)
-          ? account.subagentThresholds.map((item) => ({ name: item.name, alertStep: alertStepFromLegacy(item) }))
+          ? account.subagentThresholds.map((item) => ({ name: item.name, path: agentPath(item), remark: String(item.remark || '').trim(), alertStep: alertStepFromLegacy(item) }))
           : [],
+        expandedAgentPaths: Array.isArray(account.expandedAgentPaths) ? account.expandedAgentPaths.filter(Array.isArray) : [],
       }));
     } catch (error) {
       const backup = `${this.filePath}.unreadable-${Date.now()}`;
@@ -95,8 +96,11 @@ class SecureStore {
         username: account.username,
         subagentThresholds: (account.subagentThresholds || []).map((item) => ({
           name: item.name,
+          path: agentPath(item),
+          remark: String(item.remark || ''),
           alertStep: Number.isFinite(item.alertStep) && item.alertStep > 0 ? item.alertStep : null,
         })),
+        expandedAgentPaths: account.expandedAgentPaths || [],
         intervalMinutes: account.intervalMinutes,
         enabled: account.enabled,
         hasSecurityCode: Boolean(account.securityCode),
