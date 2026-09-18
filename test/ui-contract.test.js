@@ -23,6 +23,7 @@ test('from-zero interval inputs exist only on discovered subagents', () => {
   assert.match(client, /data-action="expand-subagent"/);
   assert.match(client, /<table class="agent-table">/);
   assert.match(client, /<tbody class="child-group"/);
+  assert.match(client, /getAccountSecurityCode\(account\.id\)/);
 });
 
 test('account form clearly starts recognition after saving', () => {

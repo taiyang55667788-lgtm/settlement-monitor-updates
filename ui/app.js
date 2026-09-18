@@ -112,13 +112,16 @@ function render(state) {
     const checked = account.lastCheckedAt ? new Date(account.lastCheckedAt).toLocaleString('zh-CN') : '尚未检查';
     const statusDetail = account.error || (account.status === 'checking' ? account.stage : '') || checked;
     const configuredCount = (account.subagents || []).filter((subagent) => subagent.customized && Number.isFinite(subagent.alertStep)).length;
+    const period = account.reportPeriod;
+    const periodText = period?.start && period?.end ? `${period.start}—${period.end}` : '待读取';
+    const periodLabel = !period?.start ? '报表日期' : ['ok', 'triggered'].includes(account.status) ? '已核对本周日期' : '上次报表日期';
     return `<article class="account-row" data-id="${account.id}">
       <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · 直属代理 ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个</small></div></div>
       <div class="metric"><small>直属代理数量</small><strong>${Number.isFinite(account.subagentCount) ? account.subagentCount : '—'}</strong></div>
       <div class="threshold"><small>已设置提醒</small><strong>${configuredCount} 个代理</strong></div>
       <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；验证码失败时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>两级代理交收表</strong><small>点击直属代理展开下级；各行独立设置备注和提醒间隔。</small></div>${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>两级代理交收表</strong><small>${periodLabel}：${escapeHtml(periodText)} · 每档每周只提醒一次；点击直属代理展开下级。</small></div>${subagentList(account)}</div>
     </article>`;
   }).join('');
   restoreThresholdDraft(thresholdDraft, state);
@@ -157,7 +160,9 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[char]));
 }
 
-function openAccount(account) {
+let accountDialogGeneration = 0;
+async function openAccount(account) {
+  const generation = ++accountDialogGeneration;
   const form = $('#account-form');
   form.reset();
   form.elements.navUrl.value = account?.navUrl || 'https://166.tt';
@@ -167,6 +172,17 @@ function openAccount(account) {
   $('#route-preview').innerHTML = routePreview(account);
   $('#dialog-title').textContent = account ? '编辑监控账号' : '添加监控账号';
   $('#view-account').hidden = !account;
+  if (account) {
+    try {
+      const details = await window.monitorApi.getAccountSecurityCode(account.id);
+      if (generation !== accountDialogGeneration) return;
+      form.elements.securityCode.value = details.securityCode || '';
+    } catch (error) {
+      toast(`读取安全码失败：${error.message || error}`);
+      return;
+    }
+  }
+  if (generation !== accountDialogGeneration) return;
   $('#account-dialog').showModal();
 }
 
@@ -179,7 +195,7 @@ $$('.nav-item').forEach((button) => button.addEventListener('click', () => {
 
 $('#add-account').addEventListener('click', () => openAccount());
 $$('.add-trigger').forEach((button) => button.addEventListener('click', () => openAccount()));
-$$('.close-dialog').forEach((button) => button.addEventListener('click', () => $('#account-dialog').close()));
+$$('.close-dialog').forEach((button) => button.addEventListener('click', () => { accountDialogGeneration += 1; $('#account-dialog').close(); }));
 
 $('#account-form').addEventListener('submit', (event) => {
   event.preventDefault();

@@ -101,17 +101,6 @@ function alertLevel(value, alertStep) {
   return Object.is(level, -0) ? 0 : level;
 }
 
-function alertTransition(previousLevel, currentLevel) {
-  const previous = Number.isInteger(previousLevel) ? previousLevel : 0;
-  const current = Number.isInteger(currentLevel) ? currentLevel : 0;
-  return {
-    previousLevel: previous,
-    currentLevel: current,
-    crossedCount: Math.abs(current - previous),
-    shouldNotify: current !== 0 && current !== previous,
-  };
-}
-
 function legacyAlertStep(account) {
   return alertStepFromLegacy(account);
 }
@@ -147,4 +136,4 @@ function evaluateSubagentAlertLevels(subagents) {
   }));
 }
 
-module.exports = { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, alertTransition, legacyAlertStep, agentPath, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels };
+module.exports = { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, legacyAlertStep, agentPath, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels };

@@ -81,10 +81,11 @@ test('amount alerts describe the from-zero interval and crossed levels', async (
     return jsonResponse({ ok: true, result: { message_id: 2 } });
   });
 
-  await service.sendTelegram({ name: 'main-account' }, 350, 3, 1, 'subagent-a', 100);
+  await service.sendTelegram({ name: 'main-account' }, 350, 3, 1, 'subagent-a', 100, '', ['subagent-a'], { start: '2026-09-14', end: '2026-09-20' });
 
   assert.match(message, /当前档位：\+300（从 0 起）/);
   assert.match(message, /提醒间隔：每 100 一档/);
-  assert.match(message, /上次档位：\+100/);
-  assert.match(message, /本次跨越：2 个档位/);
+  assert.match(message, /上次已提醒档位：\+100/);
+  assert.match(message, /首次跨越：\+200 至 \+300，共 2 档/);
+  assert.match(message, /报表区间：2026-09-14—2026-09-20/);
 });

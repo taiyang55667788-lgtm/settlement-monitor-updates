@@ -53,6 +53,16 @@ app.whenReady().then(async () => {
     assert.deepEqual(settings.path, ['parent-01', 'child-01']);
     assert.equal(settings.remark, '西区');
     assert.equal(settings.alertStep, '300');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-action="edit"]').click()`);
+    const editCode = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const deadline = Date.now() + 3000;
+      const poll = () => document.querySelector('#account-dialog').open
+        ? resolve(document.querySelector('#account-form').elements.securityCode.value)
+        : Date.now() > deadline ? reject(new Error('编辑弹窗未打开')) : setTimeout(poll, 20);
+      poll();
+    })`);
+    assert.equal(editCode, '75454');
+    await win.webContents.executeJavaScript(`document.querySelector('.close-dialog').click()`);
     process.stdout.write('Two-level UI smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

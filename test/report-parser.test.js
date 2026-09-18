@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, alertTransition, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('../electron/report-parser');
+const { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('../electron/report-parser');
 
 test('flattens grouped table headers', () => {
   const headers = flattenHeaders([
@@ -85,16 +85,6 @@ test('calculates positive and negative alert levels from zero', () => {
   assert.equal(alertLevel(-100, 100), -1);
   assert.equal(alertLevel(-399, 100), -3);
   assert.equal(alertLevel(1000, null), 0);
-});
-
-test('notifies once whenever the amount enters a different non-zero level', () => {
-  assert.deepEqual(alertTransition(0, 1), { previousLevel: 0, currentLevel: 1, crossedCount: 1, shouldNotify: true });
-  assert.equal(alertTransition(1, 2).shouldNotify, true);
-  assert.equal(alertTransition(2, 2).shouldNotify, false);
-  assert.equal(alertTransition(3, 1).shouldNotify, true);
-  assert.equal(alertTransition(1, 0).shouldNotify, false);
-  assert.equal(alertTransition(0, -1).shouldNotify, true);
-  assert.equal(alertTransition(-1, -3).crossedCount, 2);
 });
 
 test('only configured subagents receive alert steps', () => {

@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('monitorApi', {
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   saveAccount: (account) => ipcRenderer.invoke('account:save', account),
+  getAccountSecurityCode: (id) => ipcRenderer.invoke('account:security-code', id),
   saveSubagentThreshold: (settings) => ipcRenderer.invoke('subagent-threshold:save', settings),
   expandSubagent: (accountId, path) => ipcRenderer.invoke('subagent:expand', { accountId, path }),
   removeAccount: (id) => ipcRenderer.invoke('account:remove', id),

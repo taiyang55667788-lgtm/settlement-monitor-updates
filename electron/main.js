@@ -133,6 +133,12 @@ app.whenReady().then(() => {
     publish();
     return { ok: true, id: savedId };
   });
+  ipcMain.handle('account:security-code', (event, id) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权读取账号资料');
+    const account = store.state.accounts.find((item) => item.id === String(id || ''));
+    if (!account) throw new Error('账号不存在');
+    return { securityCode: account.securityCode || '' };
+  });
   ipcMain.handle('subagent-threshold:save', (_event, input) => {
     const alertStep = optionalAmount(input.alertStep);
     if (Number.isNaN(alertStep) || (alertStep !== null && alertStep <= 0)) throw new Error('提醒间隔必须是大于 0 的金额，留空表示关闭');
