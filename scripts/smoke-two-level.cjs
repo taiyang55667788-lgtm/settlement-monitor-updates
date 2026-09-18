@@ -12,11 +12,13 @@ const deadline = setTimeout(() => {
 
 function row(name, value, clickable = false) {
   const cellAction = clickable ? ` class="account" onclick="showChildren('${name}')" style="cursor:pointer"` : '';
-  return `<tr><td${cellAction}>${name}</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>${value}</td><td>7</td><td>8</td></tr>`;
+  const agentCells = name === '合计' ? '<td colspan="2">合计</td>' : `<td${cellAction}>${name}</td><td>代理</td>`;
+  const otherCells = [...Array(4).fill('1'), ...Array(3).fill('2'), value, ...Array(8).fill('3'), '4', '999999'];
+  return `<tr>${agentCells}${otherCells.map((cell) => `<td>${cell}</td>`).join('')}</tr>`;
 }
 
 function table(rows) {
-  return `<table id="mytable"><tr><th>代理账号</th><th>投注</th><th>有效</th><th>输赢</th><th>本级</th><th>结果</th><th>上级交收 交收金额</th><th>盈亏</th><th>备注</th></tr>${rows}</table>`;
+  return `<table id="mytable"><tr><th rowspan="2">代理账号</th><th rowspan="2">名称</th><th rowspan="2">笔数</th><th rowspan="2">会员数</th><th rowspan="2">下注金额</th><th rowspan="2">有效金额</th><th colspan="4">会员输赢</th><th colspan="8">代理 输赢</th><th rowspan="2">上交货量</th><th rowspan="2">上级交收</th></tr><tr>${['输赢','退水','盈亏结果','应收下线','占成','实占金额','实占结果','实占退水','赚水','赚赔','占货比','盈亏结果'].map((label) => `<th>${label}</th>`).join('')}</tr>${rows}</table>`;
 }
 
 app.whenReady().then(async () => {

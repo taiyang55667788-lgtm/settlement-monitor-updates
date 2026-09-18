@@ -1,8 +1,8 @@
 {
   "name": "settlement-monitor",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "private": true,
-  "description": "多账号交收金额监控与 Telegram 提醒",
+  "description": "多账号本周应收下线监控与 Telegram 提醒",
   "repository": "https://github.com/taiyang55667788-lgtm/settlement-monitor-updates",
   "main": "electron/main.js",
   "scripts": {

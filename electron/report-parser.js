@@ -51,22 +51,19 @@ function flattenHeaders(headerRows) {
   });
 }
 
-function findSettlementColumn(headers, dataWidth) {
-  let index = headers.findIndex((header) => header.includes('上级交收') && header.includes('交收金额'));
-  if (index >= 0) return index;
-  index = headers.findIndex((header) => header.includes('交收金额'));
-  if (index >= 0) return index;
-  index = headers.findIndex((header) => header.includes('上级交收') && !header.endsWith('盈亏结果'));
-  if (index >= 0) return index;
-  if (dataWidth >= 2) return dataWidth - 2;
-  throw new Error('报表里没有找到“交收金额”列');
+function findReceivableColumn(headers) {
+  const matches = headers.flatMap((header, index) =>
+    header.split('/').at(-1).trim() === '应收下线' ? [index] : []);
+  if (matches.length !== 1) throw new Error('本周报表未找到唯一的“应收下线”列，已停止提醒以免误取其他金额');
+  return matches[0];
 }
 
 function parseSettlementTable({ headerRows, dataRows }) {
   if (!dataRows?.length) throw new Error('本周报表没有数据');
   const totalRow = [...dataRows].reverse().find((row) => normalize(row[0]).includes('合计')) || dataRows[0];
   const headers = flattenHeaders(headerRows || []);
-  const column = findSettlementColumn(headers, totalRow.length);
+  const column = findReceivableColumn(headers);
+  if (column >= totalRow.length) throw new Error('“应收下线”列与报表数据不对齐，已停止提醒');
   const agents = dataRows
     .filter((row) => !normalize(row[0]).includes('合计'))
     .map((row) => {
@@ -81,7 +78,7 @@ function parseSettlementTable({ headerRows, dataRows }) {
     value: numericValue(totalRow[column]),
     agents,
     column,
-    header: headers[column] || '上级交收 / 交收金额',
+    header: headers[column],
     raw: totalRow[column],
   };
 }

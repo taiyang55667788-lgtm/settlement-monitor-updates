@@ -5,6 +5,7 @@ const { MonitorService } = require('./monitor');
 const { UpdateService } = require('./updater');
 const { normalizeNavigationUrl } = require('./navigation');
 const { agentPathKey } = require('./report-parser');
+const { ALERT_METRIC } = require('./alert-ledger');
 
 let mainWindow;
 let store;
@@ -55,6 +56,12 @@ app.whenReady().then(() => {
   updater.start();
 
   ipcMain.handle('state:get', () => state());
+  ipcMain.handle('appearance:theme', (_event, theme) => {
+    if (!['ocean', 'graphite', 'light', 'contrast'].includes(theme)) throw new Error('不支持的主题');
+    store.update((data) => { data.appearance = { theme }; });
+    publish();
+    return { ok: true };
+  });
   ipcMain.handle('telegram:save', (_event, input) => {
     store.update((data) => {
       data.telegram.chatId = String(input.chatId || '').trim();
@@ -123,7 +130,7 @@ app.whenReady().then(() => {
         savedId = existing.id;
       } else {
         if (!input.securityCode || !input.password) throw new Error('安全码和密码不能为空');
-        const created = { ...clean, id: crypto.randomUUID(), securityCode: String(input.securityCode), password: String(input.password), subagentThresholds: [] };
+        const created = { ...clean, id: crypto.randomUUID(), securityCode: String(input.securityCode), password: String(input.password), subagentThresholds: [], alertMetricVersion: ALERT_METRIC };
         data.accounts.push(created);
         savedId = created.id;
       }

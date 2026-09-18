@@ -8,11 +8,12 @@ function fixture(state) {
     period: { start: '2026-09-14', end: '2026-09-20' },
     parentValue: 250,
     childValue: -350,
+    childFailure: false,
   };
   const store = {
     state: state || {
       accounts: [{
-        id: 'account-1', name: '本级', enabled: true, intervalMinutes: 5,
+        id: 'account-1', name: '本级', enabled: true, intervalMinutes: 5, alertMetricVersion: 'weekly-receivable-downline-v1',
         subagentThresholds: [
           { name: 'parent', path: ['parent'], alertStep: 100, remark: '' },
           { name: 'child', path: ['parent', 'child'], alertStep: 100, remark: '' },
@@ -29,7 +30,10 @@ function fixture(state) {
         get reportPeriod() { return context.period; },
         async open() {},
         async readThisWeekSettlement() { return { value: context.parentValue, agents: [{ name: 'parent', value: context.parentValue }] }; },
-        async readDescendantSettlement() { return { value: context.childValue, agents: [{ name: 'child', value: context.childValue }] }; },
+        async readDescendantSettlement() {
+          if (context.childFailure) throw new Error('下级报表加载失败');
+          return { value: context.childValue, agents: [{ name: 'child', value: context.childValue }] };
+        },
         async close() {},
       }),
     });
@@ -82,4 +86,47 @@ test('failed delivery retries only unsent tiers', async () => {
   assert.equal(service.status('account-1').status, 'error');
   await service.check('account-1');
   assert.deepEqual(alerts.filter(([path]) => path === 'parent'), [['parent', 1], ['parent', 2]]);
+});
+
+test('metric change archives old tiers and sends one initial summary per agent', async () => {
+  const { alerts, store, makeService } = fixture();
+  delete store.state.accounts[0].alertMetricVersion;
+  store.state.accounts[0].alertHistory = {
+    period: '2026-09-14/2026-09-20',
+    agents: { old: { positiveMax: 100, negativeMax: 100 } },
+  };
+  const service = makeService();
+  await service.check('account-1');
+  assert.deepEqual(alerts, [['parent', 2], ['parent/child', -3]]);
+  assert.equal(store.state.accounts[0].alertHistoryArchive[0].metric, 'upper-level-settlement-v1');
+  assert.equal(store.state.accounts[0].alertHistory.migrationPending, false);
+  assert.equal(store.state.accounts[0].alertMetricVersion, 'weekly-receivable-downline-v1');
+  assert.equal(service.status('account-1').subagents.every((agent) => Boolean(agent.readAt)), true);
+  assert.equal(store.state.accounts[0].agentSnapshot.agents.length, 2);
+  const restored = fixture(structuredClone(store.state)).makeService();
+  assert.equal(restored.status('account-1').subagents.every((agent) => agent.stale), true);
+  assert.equal(restored.status('account-1').subagents.every((agent) => Boolean(agent.readAt)), true);
+});
+
+test('an older account with no alert history still receives only one initial summary', async () => {
+  const { alerts, store, makeService } = fixture();
+  delete store.state.accounts[0].alertMetricVersion;
+  await makeService().check('account-1');
+  assert.deepEqual(alerts, [['parent', 2], ['parent/child', -3]]);
+  assert.equal(store.state.accounts[0].alertHistory.migrationPending, false);
+});
+
+test('failed descendant read retains its last successful value but does not alert on stale data', async () => {
+  const { alerts, context, makeService } = fixture();
+  const service = makeService();
+  await service.check('account-1');
+  const childReadAt = service.status('account-1').subagents.find((agent) => agent.name === 'child').readAt;
+  context.childFailure = true;
+  context.childValue = -550;
+  await service.check('account-1');
+  const child = service.status('account-1').subagents.find((agent) => agent.name === 'child');
+  assert.equal(child.stale, true);
+  assert.equal(child.readAt, childReadAt);
+  assert.equal(child.value, -350);
+  assert.equal(alerts.length, 5);
 });

@@ -22,11 +22,18 @@ app.whenReady().then(async () => {
       headings: [...document.querySelectorAll('.agent-table th')].map(cell => cell.textContent.trim()),
       visible: [...document.querySelectorAll('.subagent-row')].map(row => getComputedStyle(row).display !== 'none'),
       remarks: [...document.querySelectorAll('.subagent-row [data-field="remark"]')].map(input => input.value),
+      tiers: [...document.querySelectorAll('.subagent-row .notified-tiers')].map(cell => cell.textContent.trim()),
+      readTimes: [...document.querySelectorAll('.subagent-row .subagent-name')].map(cell => cell.textContent),
+      valueColors: [...document.querySelectorAll('.subagent-value')].map(cell => getComputedStyle(cell).color),
     })`);
     assert.equal(initial.tableCount, 1);
-    assert.deepEqual(initial.headings, ['代理层级', '本周交收金额', '备注（同步通知）', '提醒间隔（从 0 起，正负均提醒）', '操作']);
+    assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '本周已提醒档位', '备注（同步通知）', '提醒间隔（正负）', '操作']);
     assert.deepEqual(initial.visible, [true, true]);
     assert.deepEqual(initial.remarks, ['直属备注', '二级备注']);
+    assert.match(initial.tiers[0], /\+100～\+500（5 档）/);
+    assert.match(initial.tiers[1], /−200（1 档）/);
+    assert.equal(initial.readTimes.every((text) => text.includes('最后成功读取：')), true);
+    assert.notEqual(initial.valueColors[0], initial.valueColors[1]);
     if (process.env.SMOKE_SCREENSHOT) {
       await win.webContents.executeJavaScript(`new Promise(resolve => {
         document.querySelector('.subagents').scrollIntoView({ block: 'start' });
@@ -34,6 +41,29 @@ app.whenReady().then(async () => {
       })`);
       fs.writeFileSync(process.env.SMOKE_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
     }
+    await win.webContents.executeJavaScript(`(() => {
+      const select = document.querySelector('#theme-select');
+      select.value = 'light';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    const light = await win.webContents.executeJavaScript(`({
+      theme: document.documentElement.dataset.theme,
+      background: getComputedStyle(document.body).backgroundColor,
+      valueColors: [...document.querySelectorAll('.subagent-value')].map(cell => getComputedStyle(cell).color),
+    })`);
+    assert.equal(light.theme, 'light');
+    assert.equal(light.background, 'rgb(243, 247, 252)');
+    assert.notEqual(light.valueColors[0], light.valueColors[1]);
+    await win.webContents.executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    if (process.env.SMOKE_SCREENSHOT_LIGHT) fs.writeFileSync(process.env.SMOKE_SCREENSHOT_LIGHT, (await win.webContents.capturePage()).toPNG());
+    const otherThemes = await win.webContents.executeJavaScript(`(() => ['graphite','contrast'].map(theme => {
+      document.documentElement.dataset.theme = theme;
+      return { theme, background: getComputedStyle(document.body).backgroundColor,
+        positive: getComputedStyle(document.querySelector('.subagent-value.positive')).color,
+        negative: getComputedStyle(document.querySelector('.subagent-value.negative')).color };
+    }))()`);
+    assert.deepEqual(otherThemes.map((item) => item.background), ['rgb(16, 17, 20)', 'rgb(0, 0, 0)']);
+    assert.equal(otherThemes.every((item) => item.positive !== item.negative), true);
     await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').click()`);
     const collapsed = await win.webContents.executeJavaScript(`document.querySelector('.child-group').hidden`);
     assert.equal(collapsed, true);

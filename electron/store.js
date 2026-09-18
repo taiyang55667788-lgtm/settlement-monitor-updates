@@ -3,9 +3,11 @@ const path = require('node:path');
 const { safeStorage } = require('electron');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
 const { alertStepFromLegacy, agentPath } = require('./report-parser');
+const { ALERT_METRIC, alertLedgerKey } = require('./alert-ledger');
 
 const EMPTY_STATE = {
   telegram: { botToken: '', chatId: '', mode: '', pairing: null },
+  appearance: { theme: 'ocean' },
   update: {
     feedUrl: DEFAULT_UPDATE_FEED_URL,
     autoCheck: true,
@@ -30,6 +32,7 @@ class SecureStore {
         ...structuredClone(EMPTY_STATE),
         ...saved,
         telegram: { ...EMPTY_STATE.telegram, ...(saved.telegram || {}) },
+        appearance: { ...EMPTY_STATE.appearance, ...(saved.appearance || {}) },
         update: { ...EMPTY_STATE.update, ...(saved.update || {}) },
       };
       if (!Object.hasOwn(saved.telegram || {}, 'mode') && this.state.telegram.botToken && this.state.telegram.chatId) {
@@ -89,24 +92,42 @@ class SecureStore {
         feedUrl: this.state.update?.feedUrl || '',
         autoCheck: this.state.update?.autoCheck !== false,
       },
-      accounts: this.state.accounts.map((account) => ({
-        id: account.id,
-        name: account.name,
-        navUrl: account.navUrl,
-        username: account.username,
-        subagentThresholds: (account.subagentThresholds || []).map((item) => ({
-          name: item.name,
-          path: agentPath(item),
-          remark: String(item.remark || ''),
-          alertStep: Number.isFinite(item.alertStep) && item.alertStep > 0 ? item.alertStep : null,
-        })),
-        expandedAgentPaths: account.expandedAgentPaths || [],
-        intervalMinutes: account.intervalMinutes,
-        enabled: account.enabled,
-        hasSecurityCode: Boolean(account.securityCode),
-        hasPassword: Boolean(account.password),
-        ...(runtime.get(account.id) || {}),
-      })),
+      appearance: { theme: this.state.appearance?.theme || 'ocean' },
+      accounts: this.state.accounts.map((account) => {
+        const live = runtime.get(account.id) || {};
+        const period = live.reportPeriod || account.agentSnapshot?.period;
+        const periodKey = period?.start && period?.end ? `${period.start}/${period.end}` : '';
+        const history = account.alertHistory?.metric === ALERT_METRIC && account.alertHistory?.period === periodKey
+          ? account.alertHistory : null;
+        const subagents = (live.subagents || []).map((agent) => {
+          const entry = history?.agents?.[alertLedgerKey(agent.path, agent.alertStep)];
+          return {
+            ...agent,
+            alertedPositiveMax: entry?.positiveMax || 0,
+            alertedNegativeMax: entry?.negativeMax || 0,
+            lastAlertAt: entry?.lastSentAt || '',
+          };
+        });
+        return {
+          id: account.id,
+          name: account.name,
+          navUrl: account.navUrl,
+          username: account.username,
+          subagentThresholds: (account.subagentThresholds || []).map((item) => ({
+            name: item.name,
+            path: agentPath(item),
+            remark: String(item.remark || ''),
+            alertStep: Number.isFinite(item.alertStep) && item.alertStep > 0 ? item.alertStep : null,
+          })),
+          expandedAgentPaths: account.expandedAgentPaths || [],
+          intervalMinutes: account.intervalMinutes,
+          enabled: account.enabled,
+          hasSecurityCode: Boolean(account.securityCode),
+          hasPassword: Boolean(account.password),
+          ...live,
+          subagents,
+        };
+      }),
       events: this.state.events.slice(0, 100),
     };
   }

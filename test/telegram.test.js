@@ -84,8 +84,23 @@ test('amount alerts describe the from-zero interval and crossed levels', async (
   await service.sendTelegram({ name: 'main-account' }, 350, 3, 1, 'subagent-a', 100, '', ['subagent-a'], { start: '2026-09-14', end: '2026-09-20' });
 
   assert.match(message, /当前档位：\+300（从 0 起）/);
+  assert.match(message, /🔵 本周应收下线提醒/);
+  assert.match(message, /🔵 本周应收下线：\+350\.00/);
   assert.match(message, /提醒间隔：每 100 一档/);
   assert.match(message, /上次已提醒档位：\+100/);
   assert.match(message, /首次跨越：\+200 至 \+300，共 2 档/);
   assert.match(message, /报表区间：2026-09-14—2026-09-20/);
+});
+
+test('negative receivable-downline uses red marker and migration summary label', async () => {
+  let message = '';
+  const { service } = createService(async (_url, init) => {
+    message = JSON.parse(init.body).text;
+    return jsonResponse({ ok: true, result: { message_id: 3 } });
+  });
+  await service.sendTelegram({ name: 'main-account' }, -350, -3, 0, 'subagent-a', 100, '', ['subagent-a'],
+    { start: '2026-09-14', end: '2026-09-20' }, { initialSummary: true });
+  assert.match(message, /🔴 本周应收下线提醒（首次读取汇总）/);
+  assert.match(message, /🔴 本周应收下线：-350\.00/);
+  assert.match(message, /共 3 档（已合并为一条消息）/);
 });

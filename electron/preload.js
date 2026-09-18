@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('monitorApi', {
   getState: () => ipcRenderer.invoke('state:get'),
+  saveTheme: (theme) => ipcRenderer.invoke('appearance:theme', theme),
   saveTelegram: (settings) => ipcRenderer.invoke('telegram:save', settings),
   testTelegram: (settings) => ipcRenderer.invoke('telegram:test', settings),
   discoverTelegramChatId: (botToken) => ipcRenderer.invoke('telegram:discover-chat', { botToken }),

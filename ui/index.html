@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="ocean">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -23,7 +23,7 @@
       <main>
         <header>
           <div><p class="eyebrow">实时监控中心</p><h1 id="page-title">监控面板</h1></div>
-          <div class="header-actions"><span id="header-version" class="version-badge">版本读取中</span><button id="add-account" class="primary">＋ 添加账号</button></div>
+          <div class="header-actions"><label class="theme-picker">主题<select id="theme-select" aria-label="界面主题"><option value="ocean">深蓝</option><option value="graphite">石墨黑</option><option value="light">浅色</option><option value="contrast">高对比</option></select></label><span id="header-version" class="version-badge">版本读取中</span><button id="add-account" class="primary">＋ 添加账号</button></div>
         </header>
 
         <section id="dashboard-view" class="view active">
@@ -36,7 +36,7 @@
           <div class="panel">
             <div class="panel-head"><div><h2>本级账号监控</h2><p>多个账号同时登录；两级代理以层级表格显示，各行独立设备注和提醒间隔</p></div><span class="live"><i></i>自动运行中</span></div>
             <div id="accounts" class="accounts"></div>
-            <div id="empty" class="empty"><span>＋</span><h3>还没有监控账号</h3><p>添加第一个账号并设置交收金额提醒条件。</p><button class="primary add-trigger">添加账号</button></div>
+            <div id="empty" class="empty"><span>＋</span><h3>还没有监控账号</h3><p>添加第一个账号并设置应收下线提醒条件。</p><button class="primary add-trigger">添加账号</button></div>
           </div>
         </section>
 

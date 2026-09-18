@@ -27,26 +27,26 @@ test('splits real-width DOM rows when a subagent name contains Chinese character
   assert.deepEqual(table.dataRows.map((row) => row[0]), ['中文代理', '合计']);
 });
 
-test('reads settlement amount from total row', () => {
+test('reads receivable-downline amount from the total row', () => {
   const result = parseSettlementTable({
     headerRows: [
-      [{ text: '账号', rowspan: 2 }, { text: '上级交收', colspan: 2 }],
-      [{ text: '交收金额' }, { text: '盈亏结果' }],
+      [{ text: '账号', rowspan: 2 }, { text: '会员输赢', colspan: 2 }],
+      [{ text: '盈亏结果' }, { text: '应收下线' }],
     ],
     dataRows: [
-      ['abc', '12,345.67', '-10.00'],
-      ['合计：1行', '33,973,023.35', '-21,841.08'],
+      ['abc', '-10.00', '12,345.67'],
+      ['合计：1行', '-21,841.08', '33,973,023.35'],
     ],
   });
   assert.equal(result.value, 33973023.35);
   assert.deepEqual(result.agents, [{ name: 'abc', value: 12345.67 }]);
 });
 
-test('prefers upper-level settlement when more than one settlement amount exists', () => {
+test('never confuses receivable-downline with upper-level settlement', () => {
   const result = parseSettlementTable({
     headerRows: [[
       { text: '账号' },
-      { text: '本级交收 / 交收金额' },
+      { text: '会员输赢 / 应收下线' },
       { text: '上级交收 / 交收金额' },
     ]],
     dataRows: [
@@ -54,26 +54,38 @@ test('prefers upper-level settlement when more than one settlement amount exists
       ['合计', '888.00', '123.00'],
     ],
   });
-  assert.equal(result.value, 123);
-  assert.deepEqual(result.agents, [{ name: '中文代理', value: 123 }]);
+  assert.equal(result.value, 888);
+  assert.deepEqual(result.agents, [{ name: '中文代理', value: 888 }]);
 });
 
-test('keeps the real colspan total row aligned with the upper-level settlement column', () => {
+test('keeps the real colspan total row aligned with receivable-downline', () => {
   const cell = (text, colspan = 1, rowspan = 1) => ({ text, colspan, rowspan });
   const table = splitReportRows([
     [
       cell('代理账号', 1, 2), cell('名称', 1, 2), cell('笔数', 1, 2), cell('会员数', 1, 2),
-      cell('下注金额', 1, 2), cell('有效金额', 1, 2), cell('会员输赢', 3), cell('代理 输赢', 9),
+      cell('下注金额', 1, 2), cell('有效金额', 1, 2), cell('会员输赢', 4), cell('代理 输赢', 8),
       cell('上交货量', 1, 2), cell('上级交收', 1, 2),
     ],
     ['输赢', '退水', '盈亏结果', '应收下线', '占成', '实占金额', '实占结果', '实占退水', '赚水', '赚赔', '占货比', '盈亏结果'].map((text) => cell(text)),
-    ['agent01', '代理一', '1', '2', '3', '4', '5', '6', '7', '8', '5%', '10', '11', '12', '13', '14', '100%', '15', '16', '-1234.56'].map((text) => cell(text)),
-    [cell('合计：1行', 2), ...['1', '2', '3', '4', '5', '6', '7', '8', '', '10', '11', '12', '13', '14', '100%', '15', '16', '-1234.56'].map((text) => cell(text))],
+    ['agent01', '代理一', '1', '2', '3', '4', '5', '6', '7', '123.45', '5%', '10', '11', '12', '13', '14', '100%', '15', '16', '-1234.56'].map((text) => cell(text)),
+    [cell('合计：1行', 2), ...['1', '2', '3', '4', '5', '6', '7', '-680217.25', '', '10', '11', '12', '13', '14', '100%', '15', '16', '580252.22'].map((text) => cell(text))],
   ]);
   const result = parseSettlementTable(table);
-  assert.equal(result.column, 19);
-  assert.equal(result.value, -1234.56);
-  assert.deepEqual(result.agents, [{ name: 'agent01', value: -1234.56 }]);
+  assert.equal(result.column, 9);
+  assert.equal(result.header, '会员输赢 / 应收下线');
+  assert.equal(result.value, -680217.25);
+  assert.deepEqual(result.agents, [{ name: 'agent01', value: 123.45 }]);
+});
+
+test('missing or ambiguous receivable-downline header blocks alerts instead of guessing', () => {
+  assert.throws(() => parseSettlementTable({
+    headerRows: [[{ text: '账号' }, { text: '上级交收' }]],
+    dataRows: [['abc', '100'], ['合计', '100']],
+  }), /未找到唯一的“应收下线”列/);
+  assert.throws(() => parseSettlementTable({
+    headerRows: [[{ text: '账号' }, { text: '应收下线' }, { text: '应收下线' }]],
+    dataRows: [['abc', '100', '200'], ['合计', '100', '200']],
+  }), /未找到唯一的“应收下线”列/);
 });
 
 test('calculates positive and negative alert levels from zero', () => {

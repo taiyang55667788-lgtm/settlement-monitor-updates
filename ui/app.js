@@ -2,6 +2,7 @@ let appState = { accounts: [], events: [], telegram: {} };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 const statusNames = { waiting: '等待首次检查', checking: '正在检查', ok: '运行正常', triggered: '已达阈值', error: '检查失败' };
 const thresholdDrafts = new Map();
 const collapsedAgentPaths = new Set();
@@ -10,7 +11,24 @@ const pathKey = (path) => JSON.stringify(path);
 const thresholdDraftKey = (accountId, path) => `${accountId}\u0000${pathKey(path)}`;
 
 function isSubagentTriggered(subagent) {
-  return Number.isFinite(subagent.alertStep) && subagent.alertStep > 0 && Math.abs(subagent.value) >= subagent.alertStep;
+  return !subagent.stale && Number.isFinite(subagent.alertStep) && subagent.alertStep > 0 && Math.abs(subagent.value) >= subagent.alertStep;
+}
+
+function notifiedRange(max, step, direction) {
+  if (!Number.isSafeInteger(max) || max <= 0 || !Number.isFinite(step) || step <= 0) return '未提醒';
+  const sign = direction > 0 ? '+' : '−';
+  const first = `${sign}${compactMoney.format(step)}`;
+  return max === 1 ? `${first}（1 档）` : `${first}～${sign}${compactMoney.format(max * step)}（${max} 档）`;
+}
+
+function alertReason(subagent) {
+  if (subagent.stale) return '本次未成功读取，暂停该行提醒';
+  if (!Number.isFinite(subagent.alertStep) || subagent.alertStep <= 0) return '未设置提醒间隔';
+  if (subagent.alertError) return `通知失败：${subagent.alertError}`;
+  const level = Math.trunc(subagent.value / subagent.alertStep);
+  if (!level) return '尚未达到首档';
+  const delivered = level > 0 ? subagent.alertedPositiveMax : subagent.alertedNegativeMax;
+  return Math.abs(level) <= delivered ? '当前档位本周已通知' : '新档位待通知';
 }
 
 function routePreview(account) {
@@ -33,9 +51,15 @@ function subagentList(account) {
     const draft = thresholdDrafts.get(thresholdDraftKey(account.id, path));
     const alertStep = draft ? draft.alertStep : (Number.isFinite(subagent.alertStep) ? subagent.alertStep : '');
     const remark = draft ? draft.remark : (subagent.remark || '');
-    return `<tr class="subagent-row ${depth ? 'second-level' : 'first-level'}" data-subagent-index="${index}">
-      <td><div class="subagent-name">${depth === 0 ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : '<span class="tree-leaf" aria-hidden="true">↳</span>'}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${depth ? `二级代理 · 上级 ${escapeHtml(path[0])}` : `直属代理${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}`}</small>${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
-      <td class="subagent-value ${subagent.value < 0 ? 'negative' : ''}">${money.format(subagent.value)}</td>
+    const readAtFull = subagent.readAt ? new Date(subagent.readAt).toLocaleString('zh-CN') : '尚未成功读取';
+    const readAt = subagent.readAt ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(subagent.readAt)) : '尚未成功读取';
+    const positiveRange = notifiedRange(subagent.alertedPositiveMax, subagent.alertStep, 1);
+    const negativeRange = notifiedRange(subagent.alertedNegativeMax, subagent.alertStep, -1);
+    const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
+    return `<tr class="subagent-row ${depth ? 'second-level' : 'first-level'} ${subagent.stale ? 'stale' : ''}" data-subagent-index="${index}">
+      <td><div class="subagent-name">${depth === 0 ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : '<span class="tree-leaf" aria-hidden="true">↳</span>'}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${depth ? `二级代理 · 上级 ${escapeHtml(path[0])}` : `直属代理${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? '<small class="child-error">数据已过期</small>' : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
+      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}</td>
+      <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small></td>
       <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(subagent.name)} 的备注" /></td>
       <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" aria-label="${escapeHtml(subagent.name)} 的提醒间隔" /></td>
       <td><button class="secondary" data-action="save-subagent">保存</button></td>
@@ -50,10 +74,10 @@ function subagentList(account) {
       return path.length === 2 && path[0] === parentPath[0];
     });
     const childContent = children.length ? children.map((child) => renderRow(child, 1)).join('')
-      : `<tr class="child-placeholder"><td colspan="5">${parent.subagent.childError ? '下级读取失败，请刷新重试' : Number.isFinite(parent.subagent.childCount) ? '暂无下级代理' : '正在读取下级代理…'}</td></tr>`;
+      : `<tr class="child-placeholder"><td colspan="6">${parent.subagent.childError ? '下级读取失败，请刷新重试' : Number.isFinite(parent.subagent.childCount) ? '暂无下级代理' : '正在读取下级代理…'}</td></tr>`;
     return `<tbody class="agent-branch">${renderRow(parent, 0, expanded)}</tbody><tbody class="child-group" ${expanded ? '' : 'hidden'}>${childContent}</tbody>`;
   }).join('');
-  return `<div class="agent-table-scroll"><table class="agent-table"><thead><tr><th scope="col">代理层级</th><th scope="col">本周交收金额</th><th scope="col">备注（同步通知）</th><th scope="col">提醒间隔（从 0 起，正负均提醒）</th><th scope="col">操作</th></tr></thead>${branches}</table></div>`;
+  return `<div class="agent-table-scroll"><table class="agent-table"><thead><tr><th scope="col">代理层级 / 最后成功读取</th><th scope="col">本周应收下线</th><th scope="col">本周已提醒档位</th><th scope="col">备注（同步通知）</th><th scope="col">提醒间隔（正负）</th><th scope="col">操作</th></tr></thead>${branches}</table></div>`;
 }
 
 function toast(message) {
@@ -102,6 +126,9 @@ function restoreThresholdDraft(draft, state) {
 function render(state) {
   const thresholdDraft = captureThresholdDraft();
   appState = state;
+  const theme = ['ocean', 'graphite', 'light', 'contrast'].includes(state.appearance?.theme) ? state.appearance.theme : 'ocean';
+  document.documentElement.dataset.theme = theme;
+  $('#theme-select').value = theme;
   const accounts = state.accounts || [];
   $('#total-count').textContent = accounts.length;
   $('#ok-count').textContent = accounts.filter((a) => a.status === 'ok').length;
@@ -121,7 +148,7 @@ function render(state) {
       <div class="threshold"><small>已设置提醒</small><strong>${configuredCount} 个代理</strong></div>
       <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；验证码失败时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>两级代理交收表</strong><small>${periodLabel}：${escapeHtml(periodText)} · 每档每周只提醒一次；点击直属代理展开下级。</small></div>${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>两级代理应收下线</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，正负每档每周各一次；点击直属代理展开下级。</small></div>${subagentList(account)}</div>
     </article>`;
   }).join('');
   restoreThresholdDraft(thresholdDraft, state);
@@ -192,6 +219,12 @@ $$('.nav-item').forEach((button) => button.addEventListener('click', () => {
   $('#page-title').textContent = button.textContent.trim();
   $('#add-account').style.display = button.dataset.view === 'dashboard' ? '' : 'none';
 }));
+
+$('#theme-select').addEventListener('change', (event) => {
+  const theme = event.target.value;
+  document.documentElement.dataset.theme = theme;
+  action(() => window.monitorApi.saveTheme(theme), '主题已保存');
+});
 
 $('#add-account').addEventListener('click', () => openAccount());
 $$('.add-trigger').forEach((button) => button.addEventListener('click', () => openAccount()));
