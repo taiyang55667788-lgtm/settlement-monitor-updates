@@ -63,7 +63,7 @@ test('keeps the real colspan total row aligned with receivable-downline', () => 
   const table = splitReportRows([
     [
       cell('代理账号', 1, 2), cell('名称', 1, 2), cell('笔数', 1, 2), cell('会员数', 1, 2),
-      cell('下注金额', 1, 2), cell('有效金额', 1, 2), cell('会员输赢', 4), cell('代理 输赢', 8),
+      cell('下注金额', 1, 2), cell('有效金额', 1, 2), cell('会员输赢', 3), cell('代理 输赢', 9),
       cell('上交货量', 1, 2), cell('上级交收', 1, 2),
     ],
     ['输赢', '退水', '盈亏结果', '应收下线', '占成', '实占金额', '实占结果', '实占退水', '赚水', '赚赔', '占货比', '盈亏结果'].map((text) => cell(text)),
@@ -72,7 +72,7 @@ test('keeps the real colspan total row aligned with receivable-downline', () => 
   ]);
   const result = parseSettlementTable(table);
   assert.equal(result.column, 9);
-  assert.equal(result.header, '会员输赢 / 应收下线');
+  assert.equal(result.header, '代理输赢 / 应收下线');
   assert.equal(result.value, -680217.25);
   assert.deepEqual(result.agents, [{ name: 'agent01', value: 123.45 }]);
 });
