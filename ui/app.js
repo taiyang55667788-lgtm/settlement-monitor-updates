@@ -104,6 +104,22 @@ function render(state) {
   restoreThresholdDraft(thresholdDraft, state);
   $('#events').innerHTML = (state.events || []).map((event) => `<div class="event ${event.type}"><i></i><time>${new Date(event.time).toLocaleString('zh-CN')}</time><span>${escapeHtml(event.message)}</span></div>`).join('') || '<div class="empty show"><p>暂无运行记录</p></div>';
   $('#telegram-form').elements.chatId.value = state.telegram?.chatId || '';
+  const pairing = state.telegram?.pairing;
+  const pairingExpired = pairing?.expiresAt && Date.now() >= pairing.expiresAt;
+  $('#pair-status').textContent = !state.telegram?.pairingAvailable
+    ? '配对服务正在准备中，可继续使用下方高级设置'
+    : pairing?.paired ? '✅ 已绑定 Telegram'
+      : pairing && !pairingExpired ? '等待在 Telegram 机器人中发送配对码…'
+        : pairingExpired ? '配对码已过期，请重新生成' : '尚未绑定';
+  $('#pair-code').textContent = pairing?.paired ? '已配对' : pairing && !pairingExpired ? pairing.code : '—';
+  $('#pair-expiry').textContent = pairing && !pairing.paired && !pairingExpired
+    ? `配对码有效至 ${new Date(pairing.expiresAt).toLocaleTimeString('zh-CN')}，只可使用一次。`
+    : '';
+  $('#pair-start').disabled = !state.telegram?.pairingAvailable || pairing?.paired;
+  $('#pair-open-bot').hidden = !pairing?.code || pairing?.paired || pairingExpired;
+  $('#pair-check').hidden = !pairing?.code || pairing?.paired || pairingExpired;
+  $('#pair-unlink').hidden = !pairing?.paired;
+  $('#test-telegram').hidden = state.telegram?.mode !== 'pairing' && !(state.telegram?.mode === 'legacy' && state.telegram?.hasBotToken && state.telegram?.chatId);
   const updater = state.updater || {};
   $('#header-version').textContent = updater.currentVersion ? `v${updater.currentVersion}` : '版本未知';
   $('#current-version').textContent = updater.currentVersion ? `v${updater.currentVersion}` : '—';
@@ -207,10 +223,27 @@ $('#telegram-form').addEventListener('submit', (event) => {
   const values = Object.fromEntries(new FormData(event.currentTarget).entries());
   action(() => window.monitorApi.saveTelegram(values), 'Telegram 设置已保存');
 });
+$('#pair-start').addEventListener('click', () => action(() => window.monitorApi.startTelegramPairing(), '配对码已生成，请发送给机器人'));
+$('#pair-open-bot').addEventListener('click', () => action(() => window.monitorApi.openTelegramPairingBot()));
+$('#pair-check').addEventListener('click', () => action(async () => {
+  const result = await window.monitorApi.checkTelegramPairing();
+  toast(result.paired ? 'Telegram 已绑定' : '还未收到配对码，请先在机器人中发送');
+}));
+$('#pair-unlink').addEventListener('click', () => {
+  if (confirm('确定解除这台电脑的 Telegram 通知绑定吗？')) {
+    action(() => window.monitorApi.unlinkTelegramPairing(), 'Telegram 已解除绑定');
+  }
+});
 $('#test-telegram').addEventListener('click', () => {
   const values = Object.fromEntries(new FormData($('#telegram-form')).entries());
   action(() => window.monitorApi.testTelegram(values), '测试消息已发送');
 });
+setInterval(() => {
+  const pairing = appState.telegram?.pairing;
+  if (document.querySelector('#telegram-view.active') && pairing && !pairing.paired && Date.now() < pairing.expiresAt) {
+    window.monitorApi.checkTelegramPairing().catch(() => {});
+  }
+}, 5000);
 $('#discover-chat').addEventListener('click', () => action(async () => {
   const form = $('#telegram-form');
   const result = await window.monitorApi.discoverTelegramChatId(form.elements.botToken.value);

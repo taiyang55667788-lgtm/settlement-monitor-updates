@@ -1,7 +1,9 @@
 allowBuilds:
   electron: true
   electron-winstaller: true
+  esbuild: true
   tesseract.js: true
+  workerd: true
 onlyBuiltDependencies:
   - electron
   - electron-winstaller

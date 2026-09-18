@@ -9,7 +9,7 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
-function createService(fetch, saved = { botToken: 'saved-token', chatId: 'saved-chat' }, resolveProxy = async () => 'DIRECT') {
+function createService(fetch, saved = { botToken: 'saved-token', chatId: 'saved-chat', mode: 'legacy' }, resolveProxy = async () => 'DIRECT') {
   const events = [];
   const store = {
     state: { telegram: saved, accounts: [] },

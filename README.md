@@ -13,18 +13,18 @@
 - 显示代理线路测速结果、当前登录阶段和明确的失败位置
 - 自动检测掉线并重新登录
 - 只监控本级账号下的代理，不对本级合计金额发提醒
-- 自动列出下级代理数量，每个下级代理单独设置 `≥` 和 `≤` 双向阈值
-- Telegram 越线提醒去重；数值恢复后重新待命
+- 自动列出下级代理数量，每个下级代理单独设置提醒间隔；以 0 为基准，正负每跨一档提醒一次
+- Telegram 一次性配对码绑定；原 Bot Token + Chat ID 手动方式保留在高级设置
 - 敏感配置通过操作系统加密服务保存
 - 启动时和每 6 小时自动检查版本，后台下载并提示重启安装
 
 ## 开发运行
 
-需要 Node.js 20 或更高版本。
+需要 Node.js 22 或更高版本（测试使用内置 SQLite），以及 pnpm。
 
 ```bash
-npm install
-npm start
+pnpm install
+pnpm start
 ```
 
 ## 打包
@@ -39,11 +39,15 @@ Windows 安装包需要在 Windows 电脑上执行 `npm run build:win`；macOS �
 
 ## 自动更新发布
 
-Windows 版本默认从 [GitHub Releases](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest) 检查更新。推送 `v*` 标签后，GitHub Actions 会自动构建安装包、便携版、`latest.yml` 和差分更新文件并发布。应用会自动比较版本号、下载更新，并在用户确认重启后安装。
+Windows 版本默认从 Cloudflare R2 检查更新。推送 `v*` 标签后，GitHub Actions 会先运行测试，再构建安装包、便携版、`latest.yml` 和差分更新文件并发布。也可先手动运行工作流，仅生成供检查的 Windows 安装包，不推送更新。应用会自动比较版本号、下载更新，并在用户确认重启后安装。
 
 发布新版本前先修改 `package.json` 的 `version`。正式分发 macOS 版本时需要使用 Apple Developer 证书签名；Windows 建议使用代码签名证书，避免系统安全警告。
 
-## Telegram 准备
+## Telegram 配对
+
+配对服务的部署说明见 [pairing-service/README.md](pairing-service/README.md)。Worker 地址已配置在 `electron/pairing-config.js`。应用中点击“生成配对码”→“打开机器人”→在 Telegram 点“开始”即可绑定；首次成功配对的私聊成为该机器人的唯一接收者。Bot Token 仅保存在 Cloudflare Worker Secret，不会进入安装包或桌面应用的本地设置；盘口账号、安全码和密码仍只保存在电脑本机。
+
+如果配对服务不可用，仍可使用“高级设置”中的原手动方式：
 
 1. 在 Telegram 联系 `@BotFather` 创建机器人并取得 Bot Token。
 2. 先给机器人发一条消息。

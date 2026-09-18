@@ -1,6 +1,6 @@
 {
   "name": "settlement-monitor",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "private": true,
   "description": "多账号交收金额监控与 Telegram 提醒",
   "repository": "https://github.com/taiyang55667788-lgtm/settlement-monitor-updates",
@@ -22,7 +22,8 @@
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.1131.0",
     "electron": "^38.1.0",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "wrangler": "4.134.0"
   },
   "build": {
     "appId": "com.local.settlement-monitor",

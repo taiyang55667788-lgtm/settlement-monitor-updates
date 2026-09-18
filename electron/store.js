@@ -5,7 +5,7 @@ const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed
 const { alertStepFromLegacy } = require('./report-parser');
 
 const EMPTY_STATE = {
-  telegram: { botToken: '', chatId: '' },
+  telegram: { botToken: '', chatId: '', mode: '', pairing: null },
   update: {
     feedUrl: DEFAULT_UPDATE_FEED_URL,
     autoCheck: true,
@@ -32,6 +32,9 @@ class SecureStore {
         telegram: { ...EMPTY_STATE.telegram, ...(saved.telegram || {}) },
         update: { ...EMPTY_STATE.update, ...(saved.update || {}) },
       };
+      if (!Object.hasOwn(saved.telegram || {}, 'mode') && this.state.telegram.botToken && this.state.telegram.chatId) {
+        this.state.telegram.mode = 'legacy';
+      }
       this.state.update.feedUrl = migrateUpdateFeedUrl(this.state.update.feedUrl);
       this.state.accounts = this.state.accounts.map((account) => ({
         ...account,
@@ -73,6 +76,13 @@ class SecureStore {
       telegram: {
         chatId: this.state.telegram.chatId,
         hasBotToken: Boolean(this.state.telegram.botToken),
+        mode: this.state.telegram.mode,
+        pairing: this.state.telegram.pairing ? {
+          code: this.state.telegram.pairing.code,
+          expiresAt: this.state.telegram.pairing.expiresAt,
+          botUsername: this.state.telegram.pairing.botUsername,
+          paired: this.state.telegram.pairing.paired === true,
+        } : null,
       },
       update: {
         feedUrl: this.state.update?.feedUrl || '',

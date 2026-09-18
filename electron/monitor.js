@@ -2,6 +2,7 @@ const path = require('node:path');
 const { BrowserWindow, session, nativeImage, net } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
 const { splitReportRows, parseSettlementTable, alertTransition, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
+const { PairingClient } = require('./pairing');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -360,6 +361,7 @@ class MonitorService {
     this.onChange = onChange;
     this.telegramFetch = network.fetch || ((...args) => net.fetch(...args));
     this.resolveTelegramProxy = network.resolveProxy || ((url) => session.defaultSession.resolveProxy(url));
+    this.pairingClient = network.pairingClient || new PairingClient();
     this.runtime = new Map();
     this.inFlight = new Set();
     this.revisions = new Map();
@@ -399,6 +401,67 @@ class MonitorService {
       throw new Error(`Telegram 请求失败（${response.status}）${description ? `：${description}` : ''}`);
     }
     return payload;
+  }
+
+  async startTelegramPairing() {
+    if (this.store.state.telegram.pairing?.paired) throw new Error('请先解除当前绑定，再重新配对');
+    const oldToken = this.store.state.telegram.pairing?.token;
+    if (oldToken) await this.pairingClient.unlink(oldToken).catch(() => {});
+    const pairing = await this.pairingClient.start();
+    this.store.update((data) => {
+      data.telegram.pairing = {
+        token: pairing.token,
+        code: pairing.code,
+        expiresAt: pairing.expiresAt,
+        botUsername: pairing.botUsername,
+        paired: false,
+      };
+    });
+    this.onChange();
+    return { code: pairing.code, expiresAt: pairing.expiresAt, botUsername: pairing.botUsername };
+  }
+
+  async checkTelegramPairing() {
+    const pairing = this.store.state.telegram.pairing;
+    if (!pairing?.token) return { paired: false };
+    let result;
+    try {
+      result = await this.pairingClient.status(pairing.token);
+    } catch (error) {
+      if (error.status !== 401) throw error;
+      this.store.update((data) => {
+        data.telegram.pairing = null;
+        data.telegram.mode = 'off';
+      });
+      this.store.addEvent('error', 'Telegram 配对已失效，请重新生成配对码');
+      this.onChange();
+      return { paired: false, invalidated: true };
+    }
+    if (result.paired && !pairing.paired) {
+      this.store.update((data) => {
+        data.telegram.pairing.paired = true;
+        data.telegram.mode = 'pairing';
+      });
+      this.store.addEvent('success', 'Telegram 已通过配对码绑定');
+      this.onChange();
+    }
+    return { paired: Boolean(result.paired) };
+  }
+
+  async unlinkTelegramPairing() {
+    const token = this.store.state.telegram.pairing?.token;
+    if (!token) return;
+    try {
+      await this.pairingClient.unlink(token);
+    } catch (error) {
+      if (error.status !== 401) throw error;
+    }
+    this.store.update((data) => {
+      data.telegram.pairing = null;
+      data.telegram.mode = 'off';
+    });
+    this.store.addEvent('success', 'Telegram 配对已解除');
+    this.onChange();
   }
 
   start() {
@@ -644,8 +707,9 @@ class MonitorService {
   }
 
   async sendTelegram(account, value, level, previousLevel, subagentName, alertStep) {
-    const { botToken, chatId } = this.store.state.telegram;
-    if (!botToken || !chatId) throw new Error('请先设置 Telegram Bot Token 和 Chat ID');
+    const { botToken, chatId, mode, pairing } = this.store.state.telegram;
+    if (mode === 'pairing' && !pairing?.paired) throw new Error('Telegram 配对尚未完成');
+    if (mode !== 'pairing' && (!botToken || !chatId || mode !== 'legacy')) throw new Error('请先绑定 Telegram');
     if (!subagentName || !Number.isFinite(alertStep) || alertStep <= 0) throw new Error('下级代理提醒资料不完整');
     const milestone = level * alertStep;
     const previousMilestone = previousLevel * alertStep;
@@ -661,6 +725,7 @@ class MonitorService {
       crossedCount > 1 ? `本次跨越：${crossedCount} 个档位` : '',
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].filter(Boolean).join('\n');
+    if (mode === 'pairing') return this.pairingClient.send(pairing.token, text);
     await this.telegramJson(botToken, 'sendMessage', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -669,6 +734,14 @@ class MonitorService {
   }
 
   async testTelegram(input = {}) {
+    const pairing = this.store.state.telegram.pairing;
+    if (this.store.state.telegram.mode === 'pairing') {
+      if (!pairing?.paired || !pairing.token) throw new Error('Telegram 配对尚未完成');
+      await this.pairingClient.test(pairing.token);
+      this.store.addEvent('success', 'Telegram 测试消息已发送');
+      this.onChange();
+      return;
+    }
     const botToken = String(input.botToken || this.store.state.telegram.botToken || '').trim();
     const chatId = String(input.chatId || this.store.state.telegram.chatId || '').trim();
     if (!botToken || !chatId) throw new Error('请先填写 Bot Token 和 Chat ID');

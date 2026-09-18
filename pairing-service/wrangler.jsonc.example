@@ -1,0 +1,15 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "settlement-monitor-pairing",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-09-19",
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
+  "vars": { "BOT_USERNAME": "runmingbot" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "settlement-monitor-pairing",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ]
+}

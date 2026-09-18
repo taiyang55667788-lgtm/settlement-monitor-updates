@@ -34,5 +34,6 @@ test('offers in-app viewing for manual captcha login', () => {
 
 test('Telegram test sends the currently entered form values', () => {
   assert.match(client, /testTelegram\(values\)/);
-  assert.match(html, /Telegram 连接会自动跟随 Windows 系统代理/);
+  assert.match(html, /id="pair-start"/);
+  assert.match(html, /id="telegram-form"/);
 });

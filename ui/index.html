@@ -17,7 +17,7 @@
           <button class="nav-item" data-view="events"><span>≡</span>运行记录</button>
           <button class="nav-item" data-view="update"><span>⇧</span>软件更新</button>
         </nav>
-        <div class="security-note"><span>●</span><div><strong>本机加密</strong><small>账号资料不会离开这台电脑</small></div></div>
+        <div class="security-note"><span>●</span><div><strong>本机加密</strong><small>账号资料不会发送到通知服务</small></div></div>
       </aside>
 
       <main>
@@ -42,12 +42,22 @@
 
         <section id="telegram-view" class="view">
           <div class="settings-card">
-            <div><p class="eyebrow">通知通道</p><h2>Telegram 设置</h2><p>达到条件时，应用会向指定聊天发送一次提醒；金额恢复后自动重新待命。Telegram 连接会自动跟随 Windows 系统代理。</p><ol class="setup-steps"><li>在 Telegram 联系 @BotFather，发送 /newbot 创建机器人并复制 Token。</li><li>打开新机器人，点“开始”并给它发送任意一条消息。</li><li>把 Token 粘贴到右边，点击“自动获取 Chat ID”，然后保存并测试。</li><li>远程服务器无法直连时，请在 Clash Verge 打开“系统代理”。</li></ol></div>
-            <form id="telegram-form">
-              <label>Bot Token<input name="botToken" type="password" autocomplete="off" placeholder="留空表示保留现有 Token" /></label>
-              <label>Chat ID<input name="chatId" autocomplete="off" placeholder="例如 123456789" /></label>
-              <div class="form-actions"><button type="button" id="discover-chat" class="secondary">自动获取 Chat ID</button><button type="button" id="test-telegram" class="secondary">发送测试消息</button><button class="primary">保存设置</button></div>
-            </form>
+            <div><p class="eyebrow">通知通道</p><h2>Telegram 一键配对</h2><p>每台电脑只需配对一次。配对后，提醒文字经 Cloudflare 服务发送；盘口账号、安全码和密码仍只保存在本机。</p><ol class="setup-steps"><li>点击右边的“生成配对码”。</li><li>点击“打开机器人”，在 Telegram 中点“开始”；也可以手动发送配对码。</li><li>软件会自动显示“已绑定”，再点“发送测试消息”。</li></ol></div>
+            <div class="pairing-panel">
+              <div id="pair-status" class="pair-status">读取绑定状态中…</div>
+              <div id="pair-code" class="pair-code">—</div>
+              <p id="pair-expiry" class="pair-expiry"></p>
+              <div class="form-actions pairing-actions"><button type="button" id="pair-start" class="primary">生成配对码</button><button type="button" id="pair-open-bot" class="secondary" hidden>打开机器人</button><button type="button" id="pair-check" class="secondary" hidden>检查配对</button><button type="button" id="pair-unlink" class="secondary" hidden>解除绑定</button></div>
+              <button type="button" id="test-telegram" class="secondary" hidden>发送测试消息</button>
+              <details class="advanced-telegram"><summary>高级设置：手动填写 Bot Token 和 Chat ID</summary>
+                <p>已有手动配置继续有效。远程服务器无法连接 Telegram 时，请在 Clash Verge 开启 Windows 系统代理。</p>
+                <form id="telegram-form">
+                  <label>Bot Token<input name="botToken" type="password" autocomplete="off" placeholder="留空表示保留现有 Token" /></label>
+                  <label>Chat ID<input name="chatId" autocomplete="off" placeholder="例如 123456789" /></label>
+                  <div class="form-actions"><button type="button" id="discover-chat" class="secondary">自动获取 Chat ID</button><button class="primary">保存手动设置</button></div>
+                </form>
+              </details>
+            </div>
           </div>
         </section>
 

@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { SecureStore } = require('./store');
 const { MonitorService } = require('./monitor');
 const { UpdateService } = require('./updater');
@@ -17,7 +17,9 @@ function optionalAmount(value) {
 }
 
 function state() {
-  return { ...store.publicState(monitor.runtime), updater: updater?.runtime };
+  const current = store.publicState(monitor.runtime);
+  current.telegram.pairingAvailable = monitor.pairingClient.enabled;
+  return { ...current, updater: updater?.runtime };
 }
 
 function publish() {
@@ -56,6 +58,7 @@ app.whenReady().then(() => {
     store.update((data) => {
       data.telegram.chatId = String(input.chatId || '').trim();
       if (String(input.botToken || '').trim()) data.telegram.botToken = String(input.botToken).trim();
+      data.telegram.mode = 'legacy';
     });
     publish();
     return { ok: true };
@@ -68,6 +71,16 @@ app.whenReady().then(() => {
     ok: true,
     chatId: await monitor.discoverTelegramChatId(input?.botToken),
   }));
+  ipcMain.handle('telegram:pair:start', () => monitor.startTelegramPairing());
+  ipcMain.handle('telegram:pair:status', () => monitor.checkTelegramPairing());
+  ipcMain.handle('telegram:pair:unlink', () => monitor.unlinkTelegramPairing());
+  ipcMain.handle('telegram:pair:open-bot', () => {
+    const pairing = store.state.telegram.pairing;
+    if (!pairing || !/^[A-Za-z0-9_]{5,32}$/.test(pairing.botUsername) || !/^[A-HJ-NP-Z2-9]{10}$/.test(pairing.code)) {
+      throw new Error('请先生成有效配对码');
+    }
+    return shell.openExternal(`https://t.me/${pairing.botUsername}?start=${pairing.code}`);
+  });
   ipcMain.handle('update:save', (_event, input) => {
     store.update((data) => {
       data.update = {
