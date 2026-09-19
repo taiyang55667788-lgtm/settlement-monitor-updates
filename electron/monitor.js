@@ -18,6 +18,16 @@ const {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function inQuietHours(policy, now = new Date()) {
+  const start = String(policy?.quietStart || '');
+  const end = String(policy?.quietEnd || '');
+  if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || start === end) return false;
+  const current = now.getHours() * 60 + now.getMinutes();
+  const minutes = (value) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3));
+  const from = minutes(start); const to = minutes(end);
+  return from < to ? current >= from && current < to : current >= from || current < to;
+}
+
 function captchaOcrVariants(image) {
   const size = image.getSize();
   const width = Math.max(180, size.width * 4);
@@ -643,6 +653,8 @@ class MonitorService {
         subagents: applySubagentAlertSteps(cached.map((agent) => ({ ...agent, stale: true })), account?.subagentThresholds),
         subagentCount: snapshot ? cached.filter((agent) => agent.path?.length === 1).length : null,
         reportPeriod: snapshot?.period || null,
+        consecutiveFailures: account?.monitorHealth?.consecutiveFailures || 0,
+        lastSuccessAt: account?.monitorHealth?.lastSuccessAt || '',
       });
     }
     return this.runtime.get(accountId);
@@ -766,12 +778,20 @@ class MonitorService {
       status.subagentCount = report.agents.length;
       status.totalValue = report.value;
       status.lastCheckedAt = new Date().toISOString();
+      status.lastSuccessAt = status.lastCheckedAt;
+      status.consecutiveFailures = 0;
       this.store.update((data) => {
         const current = data.accounts.find((item) => item.id === accountId);
-        if (current) current.agentSnapshot = {
-          period: client.reportPeriod,
-          agents: agents.map(({ name, path, value, readAt, childCount }) => ({ name, path, value, readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
-        };
+        if (current) {
+          current.agentSnapshot = {
+            period: client.reportPeriod,
+            agents: agents.map(({ name, path, value, readAt, childCount }) => ({ name, path, value, readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
+          };
+          current.monitorHealth = { lastSuccessAt: status.lastSuccessAt, consecutiveFailures: 0 };
+          const point = { time: status.lastSuccessAt, agents: agents.filter((item) => !item.stale).map(({ path, value }) => ({ path, value })) };
+          current.agentTrend = [...(Array.isArray(current.agentTrend) ? current.agentTrend : []), point]
+            .filter((item) => Date.parse(item.time) >= Date.now() - 7 * 86400000).slice(-2016);
+        }
       });
       const persistedAccount = this.store.state.accounts.find((item) => item.id === accountId);
       if (alertHistoryForPeriod(persistedAccount?.alertHistory, periodKey, persistedAccount?.alertMetricVersion === ALERT_METRIC) !== persistedAccount?.alertHistory) {
@@ -790,11 +810,23 @@ class MonitorService {
       }
       let anyTriggered = false;
       const notificationFailures = [];
+      const policy = this.store.state.alertPolicy || {};
+      const confirmationReads = Math.max(1, Math.min(10, Number(policy.confirmationReads) || 1));
       for (const { subagent, level } of evaluateSubagentAlertLevels(status.subagents.filter((agent) => !agent.stale))) {
         if (!this.isCurrentCheck(accountId, revision)) return;
         const alertKey = alertLedgerKey(subagent.path, subagent.alertStep);
         const history = this.store.state.accounts.find((item) => item.id === accountId)?.alertHistory;
-        const pending = pendingAlertNotifications(level, history?.agents?.[alertKey], undefined, {
+        let confirmed = true;
+        this.store.update((data) => {
+          const current = data.accounts.find((item) => item.id === accountId);
+          if (!current) return;
+          current.alertCandidates ||= {};
+          const previous = current.alertCandidates[alertKey];
+          const count = previous?.level === level ? Number(previous.count || 0) + 1 : 1;
+          current.alertCandidates[alertKey] = { level, count, updatedAt: new Date().toISOString() };
+          confirmed = level === 0 || count >= confirmationReads;
+        });
+        const pending = !confirmed || inQuietHours(policy) ? [] : pendingAlertNotifications(level, history?.agents?.[alertKey], undefined, {
           initialSummary: history?.migrationPending === true,
         });
         if (level !== 0) anyTriggered = true;
@@ -840,8 +872,23 @@ class MonitorService {
         ? '网页正在跳转，程序将在下次检查时自动重试'
         : `${status.stage || '检查过程'}：${detail}`;
       status.lastCheckedAt = new Date().toISOString();
+      status.consecutiveFailures = Number(status.consecutiveFailures || 0) + 1;
       status.subagents = (status.subagents || []).map((agent) => ({ ...agent, stale: true }));
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
+      const policy = this.store.state.alertPolicy || {};
+      const escalation = Math.max(1, Number(policy.failureEscalation) || 3);
+      this.store.update((data) => {
+        const current = data.accounts.find((item) => item.id === accountId);
+        if (current) current.monitorHealth = { lastSuccessAt: status.lastSuccessAt || '', consecutiveFailures: status.consecutiveFailures };
+      });
+      if (status.consecutiveFailures === escalation && !inQuietHours(policy)) {
+        try {
+          await this.sendOperationalTelegram(`⚠️ 交收监控连续失败\n账号：${account.name}\n连续失败：${status.consecutiveFailures} 次\n位置：${status.error}\n时间：${new Date().toLocaleString('zh-CN')}`);
+          this.store.addEvent('alert', `${account.name}：连续失败 ${status.consecutiveFailures} 次，已发送升级通知`, account.id);
+        } catch (noticeError) {
+          this.store.addEvent('error', `${account.name}：连续失败升级通知发送失败：${noticeError.message || noticeError}`, account.id);
+        }
+      }
     } finally {
       await client.close();
       const shouldReset = this.resetRequested.has(accountId);
@@ -901,6 +948,15 @@ class MonitorService {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text }),
     });
+  }
+
+  async sendOperationalTelegram(text) {
+    const { botToken, chatId, mode, pairing } = this.store.state.telegram;
+    if (mode === 'pairing' && pairing?.paired && pairing.token) return this.pairingClient.send(pairing.token, text);
+    if (mode === 'legacy' && botToken && chatId) return this.telegramJson(botToken, 'sendMessage', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: chatId, text }),
+    });
+    throw new Error('Telegram 尚未绑定');
   }
 
   async testTelegram(input = {}) {

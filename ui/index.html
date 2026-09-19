@@ -16,6 +16,7 @@
           <button class="nav-item" data-view="telegram"><span>↗</span>Telegram</button>
           <button class="nav-item" data-view="events"><span>≡</span>运行记录</button>
           <button class="nav-item" data-view="update"><span>⇧</span>软件更新</button>
+          <button class="nav-item" data-view="settings"><span>⚙</span>提醒与维护</button>
         </nav>
         <div class="security-note"><span>●</span><div><strong>本机加密</strong><small>账号资料不会发送到通知服务</small></div></div>
       </aside>
@@ -77,6 +78,24 @@
                 <label class="checkbox"><input name="autoCheck" type="checkbox" checked /> 启动时及每 6 小时自动检查</label>
                 <div class="form-actions"><button type="button" id="check-update" class="secondary">立即检查</button><button type="button" id="install-update" class="primary" hidden>重启并安装</button><button class="primary">保存设置</button></div>
               </form>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings-view" class="view">
+          <div class="settings-stack">
+            <div class="settings-card compact-card">
+              <div><p class="eyebrow">提醒策略</p><h2>减少干扰，保留真正需要处理的告警</h2><p>默认不启用静默时间，全天即时通知。只有同时填写开始和结束时间后，才会延后该时段内的新告警；静默结束后会在下次成功读取时发送。</p></div>
+              <form id="alert-policy-form">
+                <label>连续读取确认次数<input name="confirmationReads" type="number" min="1" max="10" value="1" /><small>同一档位连续读到指定次数后才发送；1 表示立即发送。</small></label>
+                <label>连续失败升级次数<input name="failureEscalation" type="number" min="1" max="20" value="3" /><small>连续检查失败达到次数后，向 Telegram 发送一次异常通知。</small></label>
+                <div class="time-grid"><label>静默开始<input name="quietStart" type="time" /></label><label>静默结束<input name="quietEnd" type="time" /></label></div>
+                <div class="form-actions"><button class="primary">保存提醒策略</button></div>
+              </form>
+            </div>
+            <div class="settings-card compact-card">
+              <div><p class="eyebrow">维护工具</p><h2>诊断与配置备份</h2><p>诊断包会自动移除登录资料、Telegram 凭据与安全码，可安全地用于排查。配置备份保持系统加密，只能在同一系统账户中恢复。</p></div>
+              <div class="maintenance-actions"><button type="button" id="export-diagnostics" class="secondary">导出脱敏诊断包</button><button type="button" id="export-backup" class="secondary">导出加密配置备份</button><button type="button" id="import-backup" class="danger">恢复加密配置备份</button></div>
             </div>
           </div>
         </section>

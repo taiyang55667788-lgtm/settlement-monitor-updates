@@ -1,5 +1,6 @@
+const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const { SecureStore } = require('./store');
 const { MonitorService } = require('./monitor');
 const { UpdateService } = require('./updater');
@@ -61,6 +62,50 @@ app.whenReady().then(() => {
     store.update((data) => { data.appearance = { theme }; });
     publish();
     return { ok: true };
+  });
+  ipcMain.handle('alert-policy:save', (_event, input) => {
+    const confirmationReads = Math.max(1, Math.min(10, Number(input.confirmationReads) || 1));
+    const failureEscalation = Math.max(1, Math.min(20, Number(input.failureEscalation) || 3));
+    const validTime = (value) => !value || /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+    const quietStart = String(input.quietStart || ''); const quietEnd = String(input.quietEnd || '');
+    if (!validTime(quietStart) || !validTime(quietEnd)) throw new Error('静默时间必须是 HH:MM 格式');
+    if (Boolean(quietStart) !== Boolean(quietEnd)) throw new Error('请同时填写静默开始和结束时间，或同时留空');
+    store.update((data) => { data.alertPolicy = { confirmationReads, failureEscalation, quietStart, quietEnd }; });
+    publish(); return { ok: true };
+  });
+  ipcMain.handle('support:export-diagnostics', async () => {
+    const chosen = await dialog.showSaveDialog(mainWindow, { title: '导出脱敏诊断包', defaultPath: `交收监控-诊断-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] });
+    if (chosen.canceled || !chosen.filePath) return { canceled: true };
+    const snapshot = state();
+    const diagnostic = {
+      format: 'settlement-monitor-diagnostics-v1', exportedAt: new Date().toISOString(),
+      app: { version: app.getVersion(), platform: process.platform }, alertPolicy: snapshot.alertPolicy,
+      telegram: { mode: snapshot.telegram.mode, paired: Boolean(snapshot.telegram.pairing?.paired), hasBotToken: snapshot.telegram.hasBotToken },
+      accounts: snapshot.accounts.map(({ username, hasSecurityCode, hasPassword, ...account }) => ({ ...account, username: username ? '***' : '', hasSecurityCode, hasPassword })),
+      events: snapshot.events,
+    };
+    fs.writeFileSync(chosen.filePath, JSON.stringify(diagnostic, null, 2), { mode: 0o600 });
+    return { filePath: chosen.filePath };
+  });
+  ipcMain.handle('support:backup-export', async () => {
+    const chosen = await dialog.showSaveDialog(mainWindow, { title: '导出加密配置备份', defaultPath: `交收监控-备份-${new Date().toISOString().slice(0, 10)}.smbackup`, filters: [{ name: '交收监控备份', extensions: ['smbackup'] }] });
+    if (chosen.canceled || !chosen.filePath) return { canceled: true };
+    if (!fs.existsSync(store.filePath)) store.save();
+    fs.writeFileSync(chosen.filePath, JSON.stringify({ format: 'settlement-monitor-encrypted-backup-v1', createdAt: new Date().toISOString(), encryptedSettings: fs.readFileSync(store.filePath, 'utf8') }), { mode: 0o600 });
+    return { filePath: chosen.filePath };
+  });
+  ipcMain.handle('support:backup-import', async () => {
+    const chosen = await dialog.showOpenDialog(mainWindow, { title: '恢复加密配置备份', properties: ['openFile'], filters: [{ name: '交收监控备份', extensions: ['smbackup'] }] });
+    if (chosen.canceled || !chosen.filePaths[0]) return { canceled: true };
+    const backup = JSON.parse(fs.readFileSync(chosen.filePaths[0], 'utf8'));
+    if (backup.format !== 'settlement-monitor-encrypted-backup-v1' || typeof backup.encryptedSettings !== 'string') throw new Error('不是有效的交收监控加密备份文件');
+    if (fs.existsSync(store.filePath)) fs.copyFileSync(store.filePath, `${store.filePath}.before-restore-${Date.now()}`);
+    fs.writeFileSync(store.filePath, backup.encryptedSettings, { mode: 0o600 });
+    store.load();
+    monitor.runtime.clear();
+    for (const account of store.state.accounts) await monitor.invalidateAccount(account.id);
+    store.addEvent('success', '已恢复加密配置备份；请重新检查账号');
+    publish(); return { ok: true };
   });
   ipcMain.handle('telegram:save', (_event, input) => {
     store.update((data) => {

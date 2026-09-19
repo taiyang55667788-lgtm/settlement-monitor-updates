@@ -42,3 +42,13 @@ test('Telegram test sends the currently entered form values', () => {
   assert.match(html, /id="pair-start"/);
   assert.match(html, /id="telegram-form"/);
 });
+
+test('exposes alert policy, trend, diagnostics, and encrypted backup controls', () => {
+  assert.match(html, /id="alert-policy-form"/);
+  assert.match(html, /name="quietStart" type="time"/);
+  assert.match(html, /id="export-diagnostics"/);
+  assert.match(html, /id="export-backup"/);
+  assert.match(html, /id="import-backup"/);
+  assert.match(client, /trendChart/);
+  assert.match(client, /saveAlertPolicy/);
+});

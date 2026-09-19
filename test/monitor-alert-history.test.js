@@ -130,3 +130,17 @@ test('failed descendant read retains its last successful value but does not aler
   assert.equal(child.value, -350);
   assert.equal(alerts.length, 5);
 });
+
+test('confirmation policy holds a new tier until it is read consecutively, while saving a trend point', async () => {
+  const { alerts, store, makeService } = fixture();
+  store.state.alertPolicy = { confirmationReads: 2, quietStart: '', quietEnd: '', failureEscalation: 3 };
+  const service = makeService();
+  await service.check('account-1');
+  assert.equal(alerts.length, 0);
+  assert.equal(store.state.accounts[0].agentTrend.length, 1);
+  await service.check('account-1');
+  assert.equal(alerts.length, 5);
+  assert.equal(store.state.accounts[0].agentTrend.length, 2);
+  assert.equal(service.status('account-1').consecutiveFailures, 0);
+  assert.ok(service.status('account-1').lastSuccessAt);
+});

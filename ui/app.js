@@ -31,6 +31,16 @@ function alertReason(subagent) {
   return Math.abs(level) <= delivered ? '当前档位本周已通知' : '新档位待通知';
 }
 
+function trendChart(trend, path) {
+  const key = pathKey(path);
+  const values = (trend || []).map((point) => point.agents?.find((agent) => pathKey(agent.path) === key)?.value).filter(Number.isFinite).slice(-80);
+  if (values.length < 2) return '<span class="trend-empty">趋势数据积累中</span>';
+  const low = Math.min(...values); const high = Math.max(...values); const range = high - low || 1;
+  const points = values.map((value, index) => `${(index / (values.length - 1) * 100).toFixed(1)},${(26 - ((value - low) / range * 22)).toFixed(1)}`).join(' ');
+  const delta = values.at(-1) - values[0];
+  return `<span class="trend-chart ${delta < 0 ? 'down' : 'up'}" title="最近 ${values.length} 次成功读取：最低 ${compactMoney.format(low)}，最高 ${compactMoney.format(high)}，变化 ${delta > 0 ? '+' : ''}${compactMoney.format(delta)}"><svg viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}" /></svg><small>${delta > 0 ? '+' : ''}${compactMoney.format(delta)}</small></span>`;
+}
+
 function routePreview(account) {
   if (!account?.routes?.length) return '<span>保存后将自动测速并显示代理线路</span>';
   return account.routes.map((route, index) => {
@@ -58,7 +68,7 @@ function subagentList(account) {
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
     return `<tr class="subagent-row ${depth ? 'second-level' : 'first-level'} ${subagent.stale ? 'stale' : ''}" data-subagent-index="${index}">
       <td><div class="subagent-name">${depth === 0 ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : '<span class="tree-leaf" aria-hidden="true">↳</span>'}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${depth ? `二级代理 · 上级 ${escapeHtml(path[0])}` : `直属代理${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? '<small class="child-error">数据已过期</small>' : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
-      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}</td>
+      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}</td>
       <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small></td>
       <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(subagent.name)} 的备注" /></td>
       <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" aria-label="${escapeHtml(subagent.name)} 的提醒间隔" /></td>
@@ -138,6 +148,8 @@ function render(state) {
   $('#accounts').innerHTML = accounts.map((account) => {
     const checked = account.lastCheckedAt ? new Date(account.lastCheckedAt).toLocaleString('zh-CN') : '尚未检查';
     const statusDetail = account.error || (account.status === 'checking' ? account.stage : '') || checked;
+    const nextCheck = account.nextCheckAt ? new Date(account.nextCheckAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '待安排';
+    const health = account.consecutiveFailures ? `连续失败 ${account.consecutiveFailures} 次` : account.lastSuccessAt ? `最近成功 ${new Date(account.lastSuccessAt).toLocaleString('zh-CN')}` : '等待首次成功读取';
     const configuredCount = (account.subagents || []).filter((subagent) => subagent.customized && Number.isFinite(subagent.alertStep)).length;
     const period = account.reportPeriod;
     const periodText = period?.start && period?.end ? `${period.start}—${period.end}` : '待读取';
@@ -146,7 +158,7 @@ function render(state) {
       <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · 直属代理 ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个</small></div></div>
       <div class="metric"><small>直属代理数量</small><strong>${Number.isFinite(account.subagentCount) ? account.subagentCount : '—'}</strong></div>
       <div class="threshold"><small>已设置提醒</small><strong>${configuredCount} 个代理</strong></div>
-      <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small></div>
+      <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small><small class="health-detail" title="${escapeHtml(health)}">${escapeHtml(health)} · 下次 ${escapeHtml(nextCheck)}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；验证码失败时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
       <div class="subagents"><div class="subagents-head"><strong>两级代理应收下线</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，正负每档每周各一次；点击直属代理展开下级。</small></div>${subagentList(account)}</div>
     </article>`;
@@ -181,6 +193,11 @@ function render(state) {
   $('#install-update').hidden = updater.status !== 'ready';
   $('#update-form').elements.feedUrl.value = state.update?.feedUrl || '';
   $('#update-form').elements.autoCheck.checked = state.update?.autoCheck !== false;
+  const policy = state.alertPolicy || {};
+  $('#alert-policy-form').elements.confirmationReads.value = policy.confirmationReads || 1;
+  $('#alert-policy-form').elements.failureEscalation.value = policy.failureEscalation || 3;
+  $('#alert-policy-form').elements.quietStart.value = policy.quietStart || '';
+  $('#alert-policy-form').elements.quietEnd.value = policy.quietEnd || '';
 }
 
 function escapeHtml(value) {
@@ -342,6 +359,24 @@ $('#update-form').addEventListener('submit', (event) => {
 });
 $('#check-update').addEventListener('click', () => action(() => window.monitorApi.checkForUpdates()));
 $('#install-update').addEventListener('click', () => action(() => window.monitorApi.installUpdate()));
+$('#alert-policy-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  action(() => window.monitorApi.saveAlertPolicy(Object.fromEntries(new FormData(event.currentTarget).entries())), '提醒策略已保存');
+});
+$('#export-diagnostics').addEventListener('click', () => action(async () => {
+  const result = await window.monitorApi.exportDiagnostics();
+  if (!result.canceled) toast('脱敏诊断包已导出');
+}));
+$('#export-backup').addEventListener('click', () => action(async () => {
+  const result = await window.monitorApi.exportBackup();
+  if (!result.canceled) toast('加密配置备份已导出');
+}));
+$('#import-backup').addEventListener('click', () => {
+  if (confirm('恢复会覆盖当前配置，并保留一份恢复前备份。确定继续吗？')) action(async () => {
+    const result = await window.monitorApi.importBackup();
+    if (!result.canceled) toast('配置已恢复，请重新检查账号');
+  });
+});
 
 window.monitorApi.onState(render);
 window.monitorApi.getState().then(render).catch((error) => toast(error.message));

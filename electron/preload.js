@@ -3,6 +3,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('monitorApi', {
   getState: () => ipcRenderer.invoke('state:get'),
   saveTheme: (theme) => ipcRenderer.invoke('appearance:theme', theme),
+  saveAlertPolicy: (policy) => ipcRenderer.invoke('alert-policy:save', policy),
+  exportDiagnostics: () => ipcRenderer.invoke('support:export-diagnostics'),
+  exportBackup: () => ipcRenderer.invoke('support:backup-export'),
+  importBackup: () => ipcRenderer.invoke('support:backup-import'),
   saveTelegram: (settings) => ipcRenderer.invoke('telegram:save', settings),
   testTelegram: (settings) => ipcRenderer.invoke('telegram:test', settings),
   discoverTelegramChatId: (botToken) => ipcRenderer.invoke('telegram:discover-chat', { botToken }),

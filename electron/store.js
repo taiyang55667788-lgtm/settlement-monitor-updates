@@ -8,6 +8,7 @@ const { ALERT_METRIC, alertLedgerKey } = require('./alert-ledger');
 const EMPTY_STATE = {
   telegram: { botToken: '', chatId: '', mode: '', pairing: null },
   appearance: { theme: 'ocean' },
+  alertPolicy: { confirmationReads: 1, quietStart: '', quietEnd: '', failureEscalation: 3 },
   update: {
     feedUrl: DEFAULT_UPDATE_FEED_URL,
     autoCheck: true,
@@ -33,6 +34,7 @@ class SecureStore {
         ...saved,
         telegram: { ...EMPTY_STATE.telegram, ...(saved.telegram || {}) },
         appearance: { ...EMPTY_STATE.appearance, ...(saved.appearance || {}) },
+        alertPolicy: { ...EMPTY_STATE.alertPolicy, ...(saved.alertPolicy || {}) },
         update: { ...EMPTY_STATE.update, ...(saved.update || {}) },
       };
       if (!Object.hasOwn(saved.telegram || {}, 'mode') && this.state.telegram.botToken && this.state.telegram.chatId) {
@@ -93,6 +95,7 @@ class SecureStore {
         autoCheck: this.state.update?.autoCheck !== false,
       },
       appearance: { theme: this.state.appearance?.theme || 'ocean' },
+      alertPolicy: { ...EMPTY_STATE.alertPolicy, ...(this.state.alertPolicy || {}) },
       accounts: this.state.accounts.map((account) => {
         const live = runtime.get(account.id) || {};
         const period = live.reportPeriod || account.agentSnapshot?.period;
@@ -125,6 +128,7 @@ class SecureStore {
           hasSecurityCode: Boolean(account.securityCode),
           hasPassword: Boolean(account.password),
           ...live,
+          trend: Array.isArray(account.agentTrend) ? account.agentTrend : [],
           subagents,
         };
       }),
