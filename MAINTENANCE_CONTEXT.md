@@ -1,8 +1,9 @@
 # 交收监控维护上下文
 
-更新时间：2026-09-19  
-当前正式版本：`v1.0.14`  
-`v1.0.14` 功能基线提交：`2a41672`
+更新时间：2026-09-20
+
+当前正式版本：`v1.0.15`
+`v1.0.15` 功能基线提交：`3521984`
 
 ## 项目定位
 
@@ -63,6 +64,10 @@
 - Windows 应用启动时及每 6 小时检查 Cloudflare R2 更新源。
 - 更新在后台下载，准备完成后可重启安装；安装版会覆盖旧版本，保留本机加密设置。
 - Telegram 支持一次性配对码；Bot Token 只保存在 Cloudflare Worker Secret 中，不进入安装包。
+- `v1.0.15` 新增监控健康度：账号显示最近成功读取、连续失败次数和下次检查时间；连续失败达到用户设置次数时可升级通知 Telegram。
+- `v1.0.15` 新增提醒策略：连续读取确认次数、连续失败升级次数和可选静默时间。静默默认关闭，即全天即时通知；静默期间未发送的新档位会在结束后的下一次成功读取补发。
+- `v1.0.15` 为成功读取保留最近 7 天趋势，在代理金额下显示简要走势与变化量。
+- `v1.0.15` 新增“提醒与维护”页：可导出不含登录资料和 Telegram 凭据的诊断包；可在同一系统账户恢复加密配置备份。
 
 ## 主要代码入口
 
@@ -94,7 +99,7 @@ pnpm test:desktop
 - Telegram 配对及手动模式；
 - 更新清单与 Windows 文件名。
 
-`v1.0.14` 发布前的结果：57 项 Node 测试通过，Electron 桌面流程测试通过，Windows 安装包构建、更新清单校验、R2 上传和 GitHub Release 均通过。安装包 SHA-512 与 `latest.yml` 一致。
+`v1.0.15` 发布前的结果：59 项 Node 测试通过，Electron 桌面流程测试通过，Windows 安装包构建、更新清单校验、R2 上传和 GitHub Release 均通过。安装包 SHA-512 与 `latest.yml` 一致。
 
 发布步骤：
 
@@ -108,11 +113,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 版本：`v1.0.14`
-- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.14-x64.exe`
-- 安装包大小：117,431,443 字节
-- SHA-512：`+swcrwQXkjnFb9JAoPH1wo6vdNTE/7138jBaON2CuUi2sMxdpcCCmVDgg4ZYt0pD2+72gSXqiuLJhxHChBt/Fw==`
-- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.14`
+- 版本：`v1.0.15`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.15-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.15/Settlement-Monitor-Portable-1.0.15-x64.exe`
+- 安装包大小：117,434,370 字节
+- SHA-512：`Ui3DFrSUZ43glibauHc0jzGyki3pb2aCXIS16LWQG0i0jqNHO6gHWe9q4Iz8spratCHpv3vJAJd+IDGmZSPg+w==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.15`
 
 ## 后续维护重点
 
@@ -121,6 +127,8 @@ pnpm test:desktop
 3. 不把真实凭据、Token、设备令牌或 Cloudflare Secret 写入源码、测试、截图或文档。
 4. 如果用户报告“为什么没提醒”，先看该代理的本周已提醒档位、最后成功读取时间、过期标记和运行记录，再判断是未越新档、已提醒、读取失败还是 Telegram 失败。
 5. 远程 Windows 实机仍应在每次重大更新后做一次：自动登录、直属代理读取、二级代理读取、Telegram 实收和自动更新覆盖安装检查。
+6. 若要限制软件只能由管理员允许的用户使用，需新增服务器审批激活与设备撤销；当前公开安装包不能单独实现访问控制。现有高级手动 Telegram 设置也允许使用其他 Bot，若需强制只发给管理员，必须移除或以管理员密码锁定。
+7. 安全加固优先考虑：登录线路域名白名单/变更确认、Windows 代码签名，以及限制普通用户更改更新源。导航页或线路遭劫持、电脑被恶意软件控制时，本机加密无法保护正在使用的凭据。
 
 ## 下次继续时的简短说明
 
