@@ -15,3 +15,6 @@
 不要把 Token 放在 shell 命令历史里。部署前至少验证：错误 webhook Secret 被拒绝；第二个 Telegram 私聊不能绑定；正确私聊能收到测试消息；解除绑定后不能发送消息。未完成以上端到端验证，不发布带有配对按钮的新版本。
 
 `wrangler.jsonc` 只含非密钥配置，可随项目保存；Bot Token 和 webhook Secret 必须只存在于 Cloudflare Worker Secrets。更换接收者需要在 D1 中重置 `bot_owner`，这是管理员操作，不能通过客户端解除绑定来改变接收者。
+## Telegram 指令
+
+仅机器人唯一拥有者的私聊可发送 `/report`、`/报表`、`/status` 或 `/状态`。Worker 会把请求排队给已配对的在线电脑；电脑完成刷新后，用同一机器人返回当下可读取的两级代理数据。离线电脑不会立即回应。

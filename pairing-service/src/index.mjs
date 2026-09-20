@@ -127,7 +127,20 @@ async function receiveWebhook(request, env, ctx, fetcher) {
   const message = update?.message;
   const chatId = message?.chat?.id;
   if (message?.chat?.type !== 'private' || !chatId) return json({ ok: true });
-  const code = String(message.text || '').trim().match(/^(?:\/start(?:@[A-Za-z0-9_]+)?\s+)?([A-HJ-NP-Z2-9]{10})$/i)?.[1]?.toUpperCase();
+  const text = String(message.text || '').trim();
+  const command = text.match(/^\/(?:report|status|报表|状态)(?:@[A-Za-z0-9_]+)?$/i);
+  if (command) {
+    const owner = await env.DB.prepare('SELECT chat_id FROM bot_owner WHERE id = 1').bind().first();
+    if (owner?.chat_id !== String(chatId)) return json({ ok: true });
+    const devices = await env.DB.prepare('SELECT id FROM pairings WHERE chat_id = ?').bind(String(chatId)).all();
+    for (const device of devices.results || []) {
+      await env.DB.prepare('INSERT INTO commands (id, device_id, command, created_at) VALUES (?, ?, ?, ?)')
+        .bind(crypto.randomUUID(), device.id, 'report', Date.now()).run();
+    }
+    ctx.waitUntil(sendBotMessage(env, fetcher, chatId, devices.results?.length ? '📊 已收到报表查询，正在向在线电脑请求最新数据。' : '当前没有已配对电脑。').catch(() => {}));
+    return json({ ok: true });
+  }
+  const code = text.match(/^(?:\/start(?:@[A-Za-z0-9_]+)?\s+)?([A-HJ-NP-Z2-9]{10})$/i)?.[1]?.toUpperCase();
   if (!code) return json({ ok: true });
   const codeHash = await sha256(code);
   const candidate = await env.DB.prepare('SELECT id FROM pairings WHERE code_hash = ? AND chat_id IS NULL AND expires_at > ?')
@@ -145,6 +158,13 @@ async function receiveWebhook(request, env, ctx, fetcher) {
     ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '✅ 交收监控已配对。现在可以回到电脑查看状态。').catch(() => {}));
   }
   return json({ ok: true });
+}
+
+async function nextCommand(env, device) {
+  const command = await env.DB.prepare('SELECT id, command FROM commands WHERE device_id = ? ORDER BY created_at ASC LIMIT 1').bind(device.id).first();
+  if (!command) return json({ command: null });
+  await env.DB.prepare('DELETE FROM commands WHERE id = ?').bind(command.id).run();
+  return json({ command: command.command });
 }
 
 async function sendFromDevice(request, env, fetcher, device, testOnly) {
@@ -176,6 +196,7 @@ export async function handleRequest(request, env, ctx, fetcher = fetch) {
       await env.DB.prepare('DELETE FROM pairings WHERE id = ?').bind(device.id).run();
       return json({ ok: true });
     }
+    if (request.method === 'GET' && pathname === '/v1/commands/next') return await nextCommand(env, device);
     if (request.method === 'POST' && pathname === '/v1/messages/test') return await sendFromDevice(request, env, fetcher, device, true);
     if (request.method === 'POST' && pathname === '/v1/messages') return await sendFromDevice(request, env, fetcher, device, false);
     return json({ error: '未找到接口' }, 404);

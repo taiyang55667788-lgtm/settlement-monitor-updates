@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { MonitorService } = require('../electron/monitor');
+const { MonitorService, settlementWeekRange } = require('../electron/monitor');
 
 function fixture(state) {
   const alerts = [];
@@ -143,4 +143,9 @@ test('confirmation policy holds a new tier until it is read consecutively, while
   assert.equal(store.state.accounts[0].agentTrend.length, 2);
   assert.equal(service.status('account-1').consecutiveFailures, 0);
   assert.ok(service.status('account-1').lastSuccessAt);
+});
+
+test('settlement week switches at Monday 06:00, not midnight', () => {
+  assert.deepEqual(settlementWeekRange(new Date(2026, 8, 21, 5, 59)), { start: '2026-09-14', end: '2026-09-20' });
+  assert.deepEqual(settlementWeekRange(new Date(2026, 8, 21, 6, 0)), { start: '2026-09-21', end: '2026-09-27' });
 });

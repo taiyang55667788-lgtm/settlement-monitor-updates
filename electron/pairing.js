@@ -40,6 +40,7 @@ class PairingClient {
   status(token) { return this.request('GET', '/v1/pairings/status', token); }
   test(token) { return this.request('POST', '/v1/messages/test', token); }
   send(token, text) { return this.request('POST', '/v1/messages', token, { text }); }
+  nextCommand(token) { return this.request('GET', '/v1/commands/next', token); }
   unlink(token) { return this.request('DELETE', '/v1/pairings', token); }
 }
 

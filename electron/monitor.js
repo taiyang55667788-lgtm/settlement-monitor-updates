@@ -18,6 +18,16 @@ const {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function settlementWeekRange(now = new Date()) {
+  const date = new Date(now);
+  const day = date.getDay();
+  const beforeMondayCutoff = day === 1 && date.getHours() < 6;
+  date.setDate(date.getDate() - ((day + 6) % 7) - (beforeMondayCutoff ? 7 : 0));
+  const format = (value) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+  const start = format(date); date.setDate(date.getDate() + 6);
+  return { start, end: format(date) };
+}
+
 function inQuietHours(policy, now = new Date()) {
   const start = String(policy?.quietStart || '');
   const end = String(policy?.quietEnd || '');
@@ -308,9 +318,20 @@ class SiteClient {
       this.status.agentUrl = agentUrl;
       await this.login(agentUrl);
     }
-    await this.openThisWeekReport();
-    this.status.stage = '本周报表读取成功';
-    return this.readCurrentSettlement();
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        this.status.stage = attempt === 1 ? '正在查询本周报表' : `本周报表校验异常，正在重试（${attempt}/3）`;
+        await this.openThisWeekReport();
+        this.status.stage = '本周报表读取成功';
+        return await this.readCurrentSettlement();
+      } catch (error) {
+        lastError = error;
+        if (!/报表日期或代理层级|结算周|本周报表/.test(error.message || '') || attempt === 3) throw error;
+        await sleep(800);
+      }
+    }
+    throw lastError;
   }
 
   async openThisWeekReport() {
@@ -353,6 +374,10 @@ class SiteClient {
       return start && end ? { start, end } : null;
     })()`, Boolean);
     if (!weekRange) throw new Error('无法确认本周报表日期');
+    const settlementPeriod = settlementWeekRange();
+    if (weekRange.start !== settlementPeriod.start || weekRange.end !== settlementPeriod.end) {
+      throw new Error(`盘口本周日期应为 ${settlementPeriod.start}—${settlementPeriod.end}（周一 06:00 切换），当前为 ${weekRange.start}—${weekRange.end}`);
+    }
     const querySubmitted = await executeInFrames(this.window, `(() => {
       const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
       const control = document.querySelector('#btnSelect') || [...document.querySelectorAll('button, input, a')]
@@ -371,7 +396,7 @@ class SiteClient {
   async verifyReportPeriod(expectedDepth) {
     const { start, end } = this.reportPeriod || {};
     if (!start || !end) throw new Error('无法确认本周报表日期');
-    const valid = await waitUntil(this.window, `(() => {
+    const valid = await waitUntilAnyFrame(this.window, `(() => {
       const nav = document.querySelector('#navAgentReport');
       return Boolean(nav && nav.innerText.includes(${jsString(start)}) && nav.innerText.includes(${jsString(end)})
         && nav.querySelectorAll('#AgentReportNav a').length === ${Number(expectedDepth)});
@@ -462,6 +487,8 @@ class MonitorService {
     this.viewWindows = new Map();
     this.openingViews = new Set();
     this.timer = null;
+    this.commandTimer = null;
+    this.commandPollRunning = false;
   }
 
   async telegramRequest(botToken, method, init = {}) {
@@ -559,11 +586,14 @@ class MonitorService {
   start() {
     if (this.timer) return;
     this.timer = setInterval(() => this.tick(), 10000);
+    this.commandTimer = setInterval(() => void this.pollTelegramCommands(), 15000);
     void this.tick();
+    setTimeout(() => void this.pollTelegramCommands(), 3000);
   }
 
   stop() {
     clearInterval(this.timer);
+    clearInterval(this.commandTimer);
     this.timer = null;
     const windows = [...this.viewWindows.values()];
     this.viewWindows.clear();
@@ -571,6 +601,29 @@ class MonitorService {
     for (const win of windows) {
       if (!win.isDestroyed()) win.destroy();
     }
+  }
+
+  async pollTelegramCommands() {
+    if (this.commandPollRunning) return;
+    const pairing = this.store.state.telegram.pairing;
+    if (this.store.state.telegram.mode !== 'pairing' || !pairing?.paired || !pairing.token) return;
+    this.commandPollRunning = true;
+    try {
+      const command = await this.pairingClient.nextCommand(pairing.token);
+      if (!command?.command) return;
+      if (command.command !== 'report') return;
+      await Promise.allSettled(this.store.state.accounts.filter((account) => account.enabled).map((account) => this.check(account.id)));
+      const rows = this.store.state.accounts.map((account) => {
+        const status = this.status(account.id);
+        const period = status.reportPeriod ? `${status.reportPeriod.start}—${status.reportPeriod.end}` : '未读取';
+        const values = (status.subagents || []).filter((agent) => !agent.stale).map((agent) => `${agent.path.join(' / ')} ${agent.value > 0 ? '+' : ''}${agent.value}`).slice(0, 12);
+        return [`账号：${account.name} · ${period}`, status.status === 'error' ? `读取失败：${status.error}` : (values.join('\n') || '暂无成功读取的数据')].join('\n');
+      });
+      await this.pairingClient.send(pairing.token, `📊 当前盘口报表\n${rows.join('\n\n')}`.slice(0, 3400));
+      this.store.addEvent('success', '已响应 Telegram /report 报表查询指令'); this.onChange();
+    } catch (error) {
+      this.store.addEvent('error', `Telegram 指令处理失败：${error.message || error}`); this.onChange();
+    } finally { this.commandPollRunning = false; }
   }
 
   async openAccountView(accountId) {
@@ -780,6 +833,8 @@ class MonitorService {
       status.lastCheckedAt = new Date().toISOString();
       status.lastSuccessAt = status.lastCheckedAt;
       status.consecutiveFailures = 0;
+      const recovered = Boolean(status.failureNotified);
+      status.failureNotified = false;
       this.store.update((data) => {
         const current = data.accounts.find((item) => item.id === accountId);
         if (current) {
@@ -793,6 +848,7 @@ class MonitorService {
             .filter((item) => Date.parse(item.time) >= Date.now() - 7 * 86400000).slice(-2016);
         }
       });
+      if (recovered) await this.sendOperationalTelegram(`✅ 交收监控恢复正常\n账号：${account.name}\n时间：${new Date().toLocaleString('zh-CN')}`).catch(() => {});
       const persistedAccount = this.store.state.accounts.find((item) => item.id === accountId);
       if (alertHistoryForPeriod(persistedAccount?.alertHistory, periodKey, persistedAccount?.alertMetricVersion === ALERT_METRIC) !== persistedAccount?.alertHistory) {
         this.store.update((data) => {
@@ -881,10 +937,12 @@ class MonitorService {
         const current = data.accounts.find((item) => item.id === accountId);
         if (current) current.monitorHealth = { lastSuccessAt: status.lastSuccessAt || '', consecutiveFailures: status.consecutiveFailures };
       });
-      if (status.consecutiveFailures === escalation && !inQuietHours(policy)) {
+      if (status.consecutiveFailures === 1 || status.consecutiveFailures === escalation) {
         try {
-          await this.sendOperationalTelegram(`⚠️ 交收监控连续失败\n账号：${account.name}\n连续失败：${status.consecutiveFailures} 次\n位置：${status.error}\n时间：${new Date().toLocaleString('zh-CN')}`);
-          this.store.addEvent('alert', `${account.name}：连续失败 ${status.consecutiveFailures} 次，已发送升级通知`, account.id);
+          const label = status.consecutiveFailures === 1 ? '读取失败' : '连续失败升级';
+          await this.sendOperationalTelegram(`⚠️ 交收监控${label}\n账号：${account.name}\n连续失败：${status.consecutiveFailures} 次\n位置：${status.error}\n时间：${new Date().toLocaleString('zh-CN')}`);
+          status.failureNotified = true;
+          this.store.addEvent('alert', `${account.name}：${label}已发送 Telegram 通知`, account.id);
         } catch (noticeError) {
           this.store.addEvent('error', `${account.name}：连续失败升级通知发送失败：${noticeError.message || noticeError}`, account.id);
         }
@@ -993,4 +1051,4 @@ class MonitorService {
   }
 }
 
-module.exports = { MonitorService, SiteClient };
+module.exports = { MonitorService, SiteClient, settlementWeekRange };

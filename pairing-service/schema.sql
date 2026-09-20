@@ -14,3 +14,12 @@ CREATE TABLE IF NOT EXISTS bot_owner (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   chat_id TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS commands (
+  id TEXT PRIMARY KEY,
+  device_id TEXT NOT NULL,
+  command TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (device_id) REFERENCES pairings(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS commands_device_created ON commands (device_id, created_at);
