@@ -39,6 +39,7 @@ function fixture(state) {
         async open() {},
         async readThisWeekSettlement() { return { value: context.parentValue, agents: [{ name: 'parent', value: context.parentValue, turnover: context.parentTurnover }] }; },
         async readDescendantSettlement(path) {
+          await context.beforeDescendant?.(path, service);
           context.descendantReads += 1;
           if (context.childFailure) throw new Error('下级报表加载失败');
           if (context.descendants) return context.descendants.get(path.join('/')) || { value: 0, agents: [] };
@@ -56,6 +57,65 @@ function fixture(state) {
   };
   return { alerts, deltaAlerts, context, store, makeService };
 }
+
+test('publishes and alerts the first layer before a slow descendant finishes, once per check', async () => {
+  const { alerts, context, store, makeService } = fixture();
+  store.state.alertPolicy = { confirmationReads: 2 };
+  const service = makeService();
+  await service.check('account-1');
+  assert.equal(alerts.length, 0);
+  context.beforeDescendant = async (path) => {
+    if (path.length !== 1) return;
+    assert.deepEqual(alerts, [['parent', 1], ['parent', 2]]);
+    const status = service.status('account-1');
+    assert.equal(status.running, true);
+    assert.equal(status.subagents.find(a => a.name === 'parent').stale, undefined);
+    assert.equal(status.subagents.find(a => a.name === 'child').stale, true);
+  };
+  await service.check('account-1');
+  assert.equal(alerts.length, 5);
+  assert.equal(service.status('account-1').status, 'triggered');
+  assert.ok(service.status('account-1').phaseTimings.branches.length > 0);
+});
+
+test('keeps the 166 session window for the next check without hiding a manually opened window', async () => {
+  const { makeService } = fixture();
+  const service = makeService();
+  let opens = 0, hides = 0, closes = 0;
+  const win = { isDestroyed: () => false, once() {}, hide() { hides++; } };
+  const factory = service.createSiteClient;
+  service.createSiteClient = (...args) => {
+    const client = factory(...args);
+    client.ownsWindow = true;
+    client.open = async () => { opens++; client.window = win; };
+    client.close = async () => { if (client.ownsWindow) closes++; };
+    return client;
+  };
+  await service.check('account-1');
+  await service.check('account-1');
+  assert.equal(opens, 1);
+  assert.equal(closes, 0);
+  assert.equal(hides, 1);
+  assert.equal(service.viewWindows.get('account-1'), win);
+});
+
+test('schedules from the start of the check, accounting for time spent reading', async () => {
+  const { context, store, makeService } = fixture();
+  store.state.accounts[0].intervalMinutes = 1;
+  const realNow = Date.now;
+  const started = realNow();
+  let elapsed = 0;
+  Date.now = () => started + elapsed;
+  try {
+    context.beforeDescendant = async () => { elapsed = 20000; };
+    const service = makeService();
+    await service.check('account-1');
+    assert.equal(Date.parse(service.status('account-1').nextCheckAt), started + 60000);
+    assert.equal(service.status('account-1').durationMs, 20000);
+  } finally {
+    Date.now = realNow;
+  }
+});
 
 test('monitor repeats alerts when values return to an earlier tier, while retaining state across restart', async () => {
   const { alerts, context, store, makeService } = fixture();
