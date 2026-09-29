@@ -3,12 +3,54 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
-const statusNames = { waiting: '等待首次检查', checking: '正在检查', ok: '运行正常', triggered: '运行正常', error: '检查失败', paused: '已暂停' };
+const statusNames = { waiting: '等待首次检查', checking: '读取中', ok: '运行正常', triggered: '运行正常', error: '读取异常', paused: '已暂停' };
 const thresholdDrafts = new Map();
 const collapsedAgentPaths = new Set();
 const reminderOnlyAccounts = new Set();
 const filteredCollapsedPaths = new Set();
-const MAX_AGENT_DEPTH = 5;
+const MAX_AGENT_DEPTH = 4;
+let readingDetailsAccountId = null;
+let previousAccountMarkup = '';
+
+function refreshReadingDetails() {
+  if (!$('#reading-dialog').open) return;
+  const account = appState.accounts.find(item => item.id === readingDetailsAccountId);
+  $('#reading-details-content').textContent = account ? [
+    `账号：${account.name}`, `状态：${statusNames[account.status] || '等待读取'}`,
+    `过程：${account.stage || '尚未开始'}`, `模式：${account.scanMode || '首次扫描'}`,
+    `已读取：${account.readProgress?.read || 0} 个代理；待查分支：${account.readProgress?.pendingBranches ?? '—'}`,
+    `最近成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功'}`,
+    `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
+    `下次检查：${account.nextCheckAt ? new Date(account.nextCheckAt).toLocaleString('zh-CN') : '待安排'}`,
+    `异常：${account.error || '无'}`,
+    ...(account.phaseTimings?.branches || []).map(item => `${item.path.join(' / ')}：${(item.durationMs / 1000).toFixed(1)} 秒${item.error ? ' · ' + item.error : ''}`),
+  ].join('\n') : '账号已删除';
+}
+
+// Reuse keyed account/agent DOM nodes to preserve focus, expanded rows and scroll.
+function patchChildren(parent, next) {
+  const key = node => node.nodeType === 1 ? node.dataset.id || node.dataset.agentKey || node.id || '' : '';
+  let cursor = parent.firstChild;
+  for (const desired of [...next.childNodes]) {
+    const wantedKey = key(desired);
+    let current = wantedKey ? [...parent.childNodes].find(node => key(node) === wantedKey) : cursor;
+    if (!current || current.nodeType !== desired.nodeType || current.nodeName !== desired.nodeName || key(current) !== wantedKey) {
+      current = desired.cloneNode(true);
+      parent.insertBefore(current, cursor);
+    } else {
+      if (current !== cursor) parent.insertBefore(current, cursor);
+      if (current.nodeType === 3) { if (current.nodeValue !== desired.nodeValue) current.nodeValue = desired.nodeValue; }
+      else if (current.nodeType === 1) {
+        for (const attr of [...current.attributes]) if (!desired.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+        for (const attr of desired.attributes) if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+        if (current instanceof HTMLInputElement && current !== document.activeElement && current.value !== desired.value) current.value = desired.value;
+        patchChildren(current, desired);
+      }
+    }
+    cursor = current.nextSibling;
+  }
+  while (cursor) { const nextNode = cursor.nextSibling; cursor.remove(); cursor = nextNode; }
+}
 
 const monitorMetrics = {
   'receivable-downline': { label: '应收下线', sectionLabel: '代理应收下线', valueLabel: '本周应收下线', usesSubagents: true },
@@ -87,7 +129,7 @@ function agentToolbar(account) {
   if (!monitorMetric(account).usesSubagents) return '';
   const only = reminderOnlyAccounts.has(account.id);
   const descendants = monitorMetric(account).readsDescendants !== false;
-  return `<div class="agent-toolbar"><button class="secondary" data-action="filter-reminders" aria-pressed="${only}">${only ? '显示全部代理' : '只看已设置提醒'}</button>${descendants ? '<button class="secondary" data-action="collapse-agents">收起全部</button><button class="secondary" data-action="full-scan" title="重新发现最多五级代理并刷新全部金额">全量扫描</button>' : ''}<small>${descendants ? `${escapeHtml(account.scanMode || '首次全量扫描')} · 日常读前两级及深层提醒分支` : ''}${only ? ' · 仅显示提醒代理及上级路径' : ''}</small></div>`;
+  return `<div class="agent-toolbar"><button class="secondary" data-action="filter-reminders" aria-pressed="${only}">${only ? '显示全部代理' : '只看已设置提醒'}</button>${descendants ? '<button class="secondary" data-action="collapse-agents">收起全部</button><button class="secondary" data-action="full-scan" title="重新发现最多四级代理并刷新全部金额">全量扫描</button>' : ''}<small>${descendants ? `${escapeHtml(account.scanMode || '首次全量扫描')} · 日常读前两级及深层提醒分支` : ''}${only ? ' · 仅显示提醒代理及上级路径' : ''}</small></div>`;
 }
 
 function reminderSettings(name, alertStep, deltaAlertStep) {
@@ -146,7 +188,7 @@ function subagentList(account) {
   const hasTurnover = metric.hasTurnover === true;
   const agentLabel = metric.agentLabel || '直属代理';
   if (!Number.isFinite(account.subagentCount)) {
-    return '<div class="subagent-empty">登录并完成首次检查后，这里会显示最多五级下级代理。</div>';
+    return '<div class="subagent-empty">登录并完成首次检查后，这里会显示最多四级下级代理。</div>';
   }
   if (!account.subagents?.length) return '<div class="subagent-empty">本级账号下暂未发现代理。</div>';
   const only = reminderOnlyAccounts.has(account.id);
@@ -177,7 +219,7 @@ function subagentList(account) {
     const positiveRange = notifiedRange(subagent.alertedPositiveLevel, subagent.alertStep, 1);
     const negativeRange = notifiedRange(subagent.alertedNegativeLevel, subagent.alertStep, -1);
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
-    return `<tr class="subagent-row level-${depth} ${depth === 1 ? 'first-level' : 'nested-level'} ${subagent.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="${index}" data-depth="${depth}" style="--tree-depth:${depth}">
+    return `<tr class="subagent-row level-${depth} ${depth === 1 ? 'first-level' : 'nested-level'} ${subagent.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="${index}" data-agent-key="${escapeHtml(pathKey(path))}" data-depth="${depth}" style="--tree-depth:${depth}">
       <td><div class="subagent-name">${canExpand ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth > 1 ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${readsDescendants ? `第${depth}级代理${depth > 1 ? ` · 上级 ${escapeHtml(path.at(-2))}` : ''}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? `<small class="child-error">${subagent.notRefreshed ? '本轮未刷新（保留上次数据）' : '数据已过期'}</small>` : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
       <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}</td>
       ${hasTurnover ? `<td class="subagent-turnover">${Number.isFinite(subagent.turnover) ? money.format(subagent.turnover) : '—'}</td>` : ''}
@@ -282,17 +324,10 @@ function render(state) {
   $('#alert-count').textContent = accounts.reduce((count, account) => count + (account.subagents || []).filter(isSubagentTriggered).length, 0);
   $('#error-count').textContent = accounts.filter((a) => a.status === 'error').length;
   $('#empty').classList.toggle('show', accounts.length === 0);
-  $('#accounts').innerHTML = accounts.map((account) => {
+  const accountMarkup = accounts.map((account) => {
     const metric = monitorMetric(account);
     const agentLabel = metric.agentLabel || '直属代理';
     const alertAgentLabel = metric.readsDescendants !== false ? '下级代理' : agentLabel;
-    const checked = account.lastCheckedAt ? new Date(account.lastCheckedAt).toLocaleString('zh-CN') : '尚未检查';
-    const statusDetail = account.error || (account.status === 'checking' ? account.stage : '') || checked;
-    const nextCheck = account.nextCheckAt ? new Date(account.nextCheckAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '待安排';
-    const health = account.consecutiveFailures ? `连续失败 ${account.consecutiveFailures} 次` : account.lastSuccessAt ? `最近成功 ${new Date(account.lastSuccessAt).toLocaleString('zh-CN')}` : '等待首次成功读取';
-    const readTiming = account.status === 'checking' && account.readProgress
-      ? `本轮已读取 ${account.readProgress.read} 个代理${Number.isFinite(account.readProgress.pendingBranches) ? ` · 待查分支 ${account.readProgress.pendingBranches}` : ''}`
-      : Number.isFinite(account.durationMs) ? `上轮耗时 ${(account.durationMs / 1000).toFixed(1)} 秒` : '';
     const configuredAgents = (account.subagents || []).filter((subagent) => subagent.customized && Number.isFinite(subagent.alertStep) && subagent.alertStep > 0);
     const configuredCount = configuredAgents.length || (account.subagentThresholds || []).filter((subagent) => Number.isFinite(subagent.alertStep) && subagent.alertStep > 0).length;
     const reachedCount = configuredAgents.filter(isSubagentTriggered).length;
@@ -304,11 +339,18 @@ function render(state) {
       <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)} · ${escapeHtml(systemLabel(account))}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · ${metric.usesSubagents ? `${agentLabel} ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个` : metric.label}</small></div></div>
       <div class="metric"><small>${metric.usesSubagents ? `${agentLabel}数量` : '监控口径'}</small><strong>${metric.usesSubagents ? (Number.isFinite(account.subagentCount) ? account.subagentCount : '—') : escapeHtml(metric.label)}</strong></div>
       <div class="threshold"><small>已设置提醒</small><strong>${metric.usesSubagents ? `${configuredCount} 个${alertAgentLabel}` : (configuredCount ? '已设置' : '未设置')}</strong><small class="threshold-state ${reachedCount ? '' : 'clear'}">${escapeHtml(thresholdState)}</small></div>
-      <div class="status-wrap"><span class="status ${!account.enabled ? 'paused' : (account.status || 'waiting')}">${!account.enabled ? statusNames.paused : (statusNames[account.status] || statusNames.waiting)}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small><small class="health-detail" title="${escapeHtml(health)}">${escapeHtml(health)} · 下次 ${escapeHtml(nextCheck)}</small><small>${escapeHtml([readTiming, account.failureKind].filter(Boolean).join(' · '))}</small></div>
+      <div class="status-wrap"><span class="status ${!account.enabled ? 'paused' : (account.status || 'waiting')}">${!account.enabled ? statusNames.paused : (statusNames[account.status] || statusNames.waiting)}</span><small class="health-detail">最近成功：${account.lastSuccessAt ? escapeHtml(new Date(account.lastSuccessAt).toLocaleTimeString('zh-CN', { hour12: false })) : '尚未成功'}</small><button class="secondary reading-detail-button" data-action="reading-details">查看详情</button></div>
       <div class="actions"><button data-action="view" title="打开盘口；图形验证或验证码时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '自动识别最多五级下级代理；点击任一有下级的代理可展开或收起。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${agentToolbar(account)}${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '自动识别最多四级下级代理；点击任一有下级的代理可展开或收起。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${agentToolbar(account)}${subagentList(account)}</div>
     </article>`;
   }).join('');
+  if (accountMarkup !== previousAccountMarkup) {
+    const nextAccounts = document.createElement('template');
+    nextAccounts.innerHTML = accountMarkup;
+    patchChildren($('#accounts'), nextAccounts.content);
+    previousAccountMarkup = accountMarkup;
+  }
+  refreshReadingDetails();
   restoreThresholdDraft(thresholdDraft, state);
   $('#events').innerHTML = (state.events || []).map((event) => `<div class="event ${event.type}"><i></i><time>${new Date(event.time).toLocaleString('zh-CN')}</time><span>${escapeHtml(event.message)}</span></div>`).join('') || '<div class="empty show"><p>暂无运行记录</p></div>';
   $('#alert-records').innerHTML = (state.alertRecords || []).map((record) => {
@@ -475,6 +517,11 @@ $('#accounts').addEventListener('click', (event) => {
     return;
   }
   if (button.dataset.action === 'edit') openAccount(account);
+  if (button.dataset.action === 'reading-details') {
+    readingDetailsAccountId = account.id;
+    $('#reading-dialog').showModal();
+    refreshReadingDetails();
+  }
   if (button.dataset.action === 'filter-reminders') {
     if (reminderOnlyAccounts.has(account.id)) reminderOnlyAccounts.delete(account.id);
     else reminderOnlyAccounts.add(account.id);
@@ -501,6 +548,7 @@ $('#view-account').addEventListener('click', () => {
   $('#account-dialog').close();
   action(() => window.monitorApi.openAccountView(id), '正在打开盘内查看');
 });
+$('#close-reading-details').addEventListener('click', () => $('#reading-dialog').close());
 
 $('#accounts').addEventListener('input', (event) => {
   if (!event.target.matches('.subagent-row input[data-field]')) return;

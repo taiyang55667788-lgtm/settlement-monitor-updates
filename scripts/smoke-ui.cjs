@@ -14,7 +14,7 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
     await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const deadline = Date.now() + 3000;
-      const poll = () => document.querySelectorAll('.subagent-row').length === 5 ? resolve() : Date.now() > deadline ? reject(new Error('五级代理列表未显示')) : setTimeout(poll, 25);
+      const poll = () => document.querySelectorAll('.subagent-row').length === 4 ? resolve() : Date.now() > deadline ? reject(new Error('四级代理列表未显示')) : setTimeout(poll, 25);
       poll();
     })`);
     const initial = await win.webContents.executeJavaScript(`({
@@ -36,21 +36,45 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(initial.tableCount, 1);
     assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '提醒状态', '备注（同步通知）', '提醒设置', '操作']);
-    assert.deepEqual(initial.visible, [true, true, true, true, true]);
-    assert.deepEqual(initial.depths, [1, 2, 3, 4, 5]);
-    assert.deepEqual(initial.remarks, ['直属备注', '二级备注', '三级备注', '四级备注', '五级备注']);
+    assert.deepEqual(initial.visible, [true, true, true, true]);
+    assert.deepEqual(initial.depths, [1, 2, 3, 4]);
+    assert.deepEqual(initial.remarks, ['直属备注', '二级备注', '三级备注', '四级备注']);
     assert.match(initial.tiers[0], /\+500（最近）/);
     assert.match(initial.tiers[1], /−200（最近）/);
-    assert.deepEqual(initial.progress, ['下一档 +600 · 差 60', '下一档 −400 · 差 170', '下一档 +400 · 差 70', '下一档 −500 · 差 70', '下一档 +600 · 差 70']);
-    assert.deepEqual(initial.reminderLabels, Array.from({ length: 5 }, () => ['金额档位', '变化阈值']));
+    assert.deepEqual(initial.progress, ['下一档 +600 · 差 60', '下一档 −400 · 差 170', '下一档 +400 · 差 70', '下一档 −500 · 差 70']);
+    assert.deepEqual(initial.reminderLabels, Array.from({ length: 4 }, () => ['金额档位', '变化阈值']));
     assert.equal(initial.batchRemoved, true);
     assert.equal(initial.visibleUnsavedHints, 0);
     assert.equal(initial.recentAlerts.length, 1);
     assert.match(initial.recentAlerts[0], /^最近提醒：09\/19 \d{2}:03$/);
     assert.equal(initial.status, '运行正常');
-    assert.equal(initial.thresholdState, '已达阈值：5 个下级代理');
+    assert.equal(initial.thresholdState, '已达阈值：4 个下级代理');
     assert.equal(initial.readTimes.every((text) => text.includes('最后成功读取：')), true);
     assert.notEqual(initial.valueColors[0], initial.valueColors[1]);
+    const stableStatus = await win.webContents.executeJavaScript(`(async () => {
+      const original = structuredClone(await window.monitorApi.getState());
+      const field = document.querySelector('.subagent-row input[data-field="remark"]');
+      field.focus();
+      const beforeHeight = document.querySelector('.status-wrap').getBoundingClientRect().height;
+      const next = structuredClone(original);
+      next.accounts[0].status = 'checking';
+      next.accounts[0].stage = '当前代理详细路径/'.repeat(30);
+      next.accounts[0].readProgress = { read: 75, pendingBranches: 7 };
+      render(next);
+      const result = { sameNode: field === document.querySelector('.subagent-row input[data-field="remark"]'), focused: document.activeElement === field, beforeHeight, afterHeight: document.querySelector('.status-wrap').getBoundingClientRect().height, text: document.querySelector('.status-wrap').textContent };
+      document.querySelector('[data-action="reading-details"]').click();
+      result.details = document.querySelector('#reading-details-content').textContent;
+      result.open = document.querySelector('#reading-dialog').open;
+      document.querySelector('#close-reading-details').click();
+      render(original);
+      return result;
+    })()`);
+    assert.equal(stableStatus.sameNode, true);
+    assert.equal(stableStatus.focused, true);
+    assert.equal(stableStatus.beforeHeight, stableStatus.afterHeight);
+    assert.doesNotMatch(stableStatus.text, /75|待查分支|当前代理详细路径/);
+    assert.equal(stableStatus.open, true);
+    assert.match(stableStatus.details, /75 个代理；待查分支：7/);
     if (process.env.SMOKE_SCREENSHOT) {
       await win.webContents.executeJavaScript(`new Promise(resolve => {
         document.querySelector('.subagents').scrollIntoView({ block: 'start' });
@@ -87,13 +111,13 @@ app.whenReady().then(async () => {
     const childHidden = await win.webContents.executeJavaScript(`!document.querySelector('.level-2')`);
     assert.equal(childHidden, true);
     await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').click()`);
-    const childVisible = await win.webContents.executeJavaScript(`document.querySelectorAll('.subagent-row').length === 5 && Boolean(document.querySelector('.level-5'))`);
+    const childVisible = await win.webContents.executeJavaScript(`document.querySelectorAll('.subagent-row').length === 4 && Boolean(document.querySelector('.level-4'))`);
     assert.equal(childVisible, true);
     const filter = await win.webContents.executeJavaScript(`(() => {
       document.querySelector('[data-action="filter-reminders"]').click();
       return { rows: document.querySelectorAll('.subagent-row').length, pressed: document.querySelector('[data-action="filter-reminders"]').getAttribute('aria-pressed') };
     })()`);
-    assert.equal(filter.rows, 5);
+    assert.equal(filter.rows, 4);
     assert.equal(filter.pressed, 'true');
     await win.webContents.executeJavaScript(`document.querySelector('[data-action="filter-reminders"]').click()`);
     const pending = await win.webContents.executeJavaScript(`(() => {
@@ -198,12 +222,12 @@ app.whenReady().then(async () => {
       return { defaultRows, names: [...document.querySelectorAll('.subagent-name strong')].map(el => el.textContent), stale: document.querySelector('.level-3').textContent };
     })()`);
     assert.equal(filtered.defaultRows, 2);
-    assert.deepEqual(filtered.names, ['parent-01', 'child-01', 'third-01', 'fourth-01', 'fifth-01']);
+    assert.deepEqual(filtered.names, ['parent-01', 'child-01', 'third-01', 'fourth-01']);
     assert.match(filtered.stale, /本轮未刷新/);
     const fullScan = new Promise(resolve => ipcMain.once('smoke:full-scan', (_event, id) => resolve(id)));
     await win.webContents.executeJavaScript(`document.querySelector('[data-action="full-scan"]').click()`);
     assert.equal(await fullScan, 'fixture-account');
-    process.stdout.write('Five-level UI smoke test passed\n');
+    process.stdout.write('Four-level UI smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);
     process.exitCode = 1;

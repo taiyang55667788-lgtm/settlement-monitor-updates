@@ -2,7 +2,34 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { SiteClient } = require('../electron/monitor');
 
-test('five-level chain reuses the current report and only resets for a sibling', async () => {
+test('unchanged healthy report retries once then ends the branch, but errors and logout remain failures', async () => {
+  const realNow = Date.now;
+  let tick = 0;
+  Date.now = () => (tick += 13000);
+  try {
+    for (const scenario of ['healthy', 'logout', 'loading', 'site-error']) {
+      const client = new SiteClient({}, {});
+      let clicks = 0;
+      const frame = { isDestroyed: () => false, executeJavaScript: async script => {
+        if (script.includes('control.click()')) { clicks++; return { before: 'unchanged report' }; }
+        return true;
+      } };
+      client.window = { webContents: { mainFrame: frame, isLoading: () => scenario === 'loading' } };
+      client.readLoginFailure = async () => scenario === 'site-error' ? '系统错误' : '';
+      client.isLoggedIn = async () => scenario !== 'logout';
+      client.verifyReportPeriod = async depth => assert.equal(depth, 1);
+      if (scenario === 'healthy') {
+        assert.equal(await client.drillIntoAgent('a', 2), false);
+        assert.equal(clicks, 2);
+      } else {
+        await assert.rejects(client.drillIntoAgent('a', 2));
+        assert.equal(clicks, 1);
+      }
+    }
+  } finally { Date.now = realNow; }
+});
+
+test('four-level chain reuses the current report and only resets for a sibling', async () => {
   const client = new SiteClient({}, {});
   client.reportPeriod = { start: '2026-09-28', end: '2026-10-04' };
   client.currentReportPath = [];
@@ -11,11 +38,11 @@ test('five-level chain reuses the current report and only resets for a sibling',
   client.openThisWeekReport = async () => { roots++; };
   client.drillIntoAgent = async name => { clicks.push(name); return true; };
   client.readCurrentSettlement = async () => ({ agents: [] });
-  for (const path of [['a'], ['a', 'b'], ['a', 'b', 'c'], ['a', 'b', 'c', 'd']]) {
+  for (const path of [['a'], ['a', 'b'], ['a', 'b', 'c']]) {
     await client.readDescendantSettlement(path);
   }
   assert.equal(roots, 0);
-  assert.deepEqual(clicks, ['a', 'b', 'c', 'd']);
+  assert.deepEqual(clicks, ['a', 'b', 'c']);
   await client.readDescendantSettlement(['sibling']);
   assert.equal(roots, 1);
   assert.deepEqual(client.currentReportPath, ['sibling']);

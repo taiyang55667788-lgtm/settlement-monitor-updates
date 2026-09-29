@@ -6,7 +6,7 @@ const { splitReportRows, parseSettlementTable, parseCrownGeneralAgentTable, pars
 const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel } = require('./alert-ledger');
 const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
-const MAX_DESCENDANT_DEPTH = 5;
+const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -916,7 +916,7 @@ class SiteClient {
     return parseCrownGeneralAgentTable(splitReportRows(rawRows, 16));
   }
 
-  async drillIntoAgent(name, expectedDepth) {
+  async drillIntoAgent(name, expectedDepth, retried = false) {
     const target = jsString(name);
     const clicked = await executeInFrames(this.window, `(() => {
       const tables = [...document.querySelectorAll('table')];
@@ -941,13 +941,30 @@ class SiteClient {
         .find(t => /应收下线/.test(t.innerText) && /合计/.test(t.innerText));
       return Boolean(table && table.innerText !== ${jsString(clicked.before)});
     })()`, 12000);
-    if (!changed) throw new Error('点击代理后报表没有切换到下级；请提供点击前后的盘口截图');
+    if (!changed) {
+      const failure = await this.readLoginFailure();
+      if (failure) throw new Error(`网站提示：${failure}`);
+      if (!await this.isLoggedIn()) throw new Error('读取下级时登录状态已失效');
+      if (this.window.webContents.isLoading()) throw new Error('下级报表加载超时');
+      // Only a healthy, unchanged parent report can be treated as a terminal branch.
+      await this.verifyReportPeriod(expectedDepth - 1);
+      const healthy = await executeInFrames(this.window, `(() => {
+        const text = document.body.innerText || '';
+        const table = [document.querySelector('#mytable'), ...document.querySelectorAll('table')].filter(Boolean)
+          .find(t => /应收下线/.test(t.innerText) && /合计/.test(t.innerText));
+        return Boolean(table && table.innerText === ${jsString(clicked.before)} && !/加载中|请稍候|请求失败|网络错误|系统错误|服务异常|超时/.test(text));
+      })()`, Boolean);
+      if (!healthy) throw new Error('下级页面未正常响应，保留读取失败状态');
+      if (!retried) return this.drillIntoAgent(name, expectedDepth, true);
+      return false;
+    }
     await this.verifyReportPeriod(expectedDepth);
     this.previousReportText = clicked.before;
     return true;
   }
 
   async readDescendantSettlement(path) {
+    if (path.length >= MAX_DESCENDANT_DEPTH) throw new Error('最多读取四级代理');
     const expectedPeriod = this.reportPeriod ? `${this.reportPeriod.start}/${this.reportPeriod.end}` : '';
     const current = this.currentReportPath;
     const canContinue = Array.isArray(current) && current.length <= path.length && current.every((name, index) => path[index] === name);

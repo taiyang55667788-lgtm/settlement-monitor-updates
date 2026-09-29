@@ -36,7 +36,7 @@
             <article class="summary"><span>异常账号</span><strong id="error-count">0</strong><small>将自动重试</small></article>
           </div>
           <div class="panel">
-            <div class="panel-head"><div><h2>本级账号监控</h2><p>多个账号同时登录；最多五级下级代理以层级表格显示，各行独立设置备注和提醒间隔</p></div><span class="live"><i></i>自动运行中</span></div>
+            <div class="panel-head"><div><h2>本级账号监控</h2><p>多个账号同时登录；最多四级下级代理以层级表格显示，各行独立设置备注和提醒间隔</p></div><span class="live"><i></i>自动运行中</span></div>
             <div id="accounts" class="accounts"></div>
             <div id="empty" class="empty"><span>＋</span><h3>还没有监控账号</h3><p>添加第一个账号并设置应收下线提醒条件。</p><button class="primary add-trigger">添加账号</button></div>
           </div>
@@ -113,6 +113,9 @@
       </main>
     </div>
 
+    <dialog id="reading-dialog">
+      <div class="reading-details"><div class="dialog-head"><h2>读取详情</h2><button type="button" class="icon-button" id="close-reading-details" aria-label="关闭读取详情">×</button></div><pre id="reading-details-content"></pre></div>
+    </dialog>
     <dialog id="account-dialog">
       <form id="account-form" method="dialog">
         <div class="dialog-head"><div><p class="eyebrow">盘口登录配置</p><h2 id="dialog-title">添加监控账号</h2></div><button type="button" class="icon-button close-dialog">×</button></div>

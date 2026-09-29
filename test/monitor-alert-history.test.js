@@ -117,7 +117,7 @@ test('schedules from the start of the check, accounting for time spent reading',
   }
 });
 
-test('discovers all five levels once, then selects only reminder branches and preserves unread data', async () => {
+test('discovers all four levels once, then selects only reminder branches and preserves unread data', async () => {
   const { context, store, alerts, makeService } = fixture();
   context.descendants = new Map([
     ['parent', { agents: [{ name: 'child', value: 10 }, { name: 'other', value: 20 }] }],
@@ -131,19 +131,19 @@ test('discovers all five levels once, then selects only reminder branches and pr
   let service = makeService();
   await service.check('account-1');
   assert.ok(reads.includes('parent/other'));
-  assert.ok(reads.includes('parent/child/third/fourth'));
+  assert.ok(reads.includes('parent/child/third'));
   assert.equal(store.state.accounts[0].agentSnapshot.structureVersion, 1);
   reads.length = 0;
   service = makeService(); // structure survives restart
   await service.check('account-1');
   assert.deepEqual(reads, ['parent']);
-  assert.equal(service.status('account-1').subagents.find(a => a.name === 'fifth').notRefreshed, true);
-  const leafPath = ['parent', 'child', 'third', 'fourth', 'fifth'];
-  store.state.accounts[0].subagentThresholds.push({ name: 'fifth', path: leafPath, deltaAlertStep: 10 });
+  assert.equal(service.status('account-1').subagents.find(a => a.name === 'fourth').notRefreshed, true);
+  const leafPath = ['parent', 'child', 'third', 'fourth'];
+  store.state.accounts[0].subagentThresholds.push({ name: 'fourth', path: leafPath, deltaAlertStep: 10 });
   reads.length = 0;
   await service.check('account-1');
-  assert.deepEqual(reads, ['parent', 'parent/child', 'parent/child/third', 'parent/child/third/fourth']);
-  assert.equal(service.status('account-1').subagents.find(a => a.name === 'fifth').stale, undefined);
+  assert.deepEqual(reads, ['parent', 'parent/child', 'parent/child/third']);
+  assert.equal(service.status('account-1').subagents.find(a => a.name === 'fourth').stale, undefined);
   assert.equal(service.status('account-1').subagents.find(a => a.path.join('/') === 'parent/other/third').notRefreshed, true);
   store.state.accounts[0].subagentThresholds.at(-1).deltaAlertStep = null;
   reads.length = 0;
@@ -158,7 +158,7 @@ test('discovers all five levels once, then selects only reminder branches and pr
   reads.length = 0;
   await service.check('account-1');
   assert.ok(reads.includes('parent/other'));
-  assert.ok(reads.includes('parent/child/third/fourth'));
+  assert.ok(reads.includes('parent/child/third'));
   assert.equal(service.fullScanRequested.has('account-1'), false);
 });
 
@@ -286,7 +286,7 @@ test('failed descendant read retains its last successful value but does not aler
   assert.equal(alerts.length, 5);
 });
 
-test('monitor discovers each downline level through level five without reading a sixth level', async () => {
+test('monitor discovers each downline level through level four without reading a fifth level', async () => {
   const { context, makeService } = fixture();
   context.descendants = new Map([
     ['parent', { value: -200, agents: [{ name: 'child', value: -200 }] }],
@@ -298,9 +298,9 @@ test('monitor discovers each downline level through level five without reading a
   const service = makeService();
   await service.check('account-1');
   assert.deepEqual(service.status('account-1').subagents.map((agent) => agent.path), [
-    ['parent'], ['parent', 'child'], ['parent', 'child', 'third'], ['parent', 'child', 'third', 'fourth'], ['parent', 'child', 'third', 'fourth', 'fifth'],
+    ['parent'], ['parent', 'child'], ['parent', 'child', 'third'], ['parent', 'child', 'third', 'fourth'],
   ]);
-  assert.equal(context.descendantReads, 4);
+  assert.equal(context.descendantReads, 3);
 });
 
 test('confirmation policy holds a new tier until it is read consecutively, while saving a trend point', async () => {

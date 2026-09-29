@@ -12,11 +12,15 @@ app.whenReady().then(() => {
     const oldStore = new SecureStore(directory);
     oldStore.state.accounts.push({
       id: 'fixture', name: '测试账号', username: 'fixture',
-      subagentThresholds: [{ name: 'parent-01', alertStep: 100 }],
+      subagentThresholds: [{ name: 'parent-01', alertStep: 100 }, { name: 'removed-fifth', path: ['a', 'b', 'c', 'd', 'removed-fifth'], alertStep: 50 }],
     });
     oldStore.save();
     const migrated = new SecureStore(directory);
     migrated.load();
+    assert.equal(migrated.state.accounts[0].subagentThresholds.length, 1);
+    const persisted = new SecureStore(directory);
+    persisted.load();
+    assert.equal(persisted.state.accounts[0].subagentThresholds.length, 1);
     assert.deepEqual(migrated.state.accounts[0].subagentThresholds[0].path, ['parent-01']);
     migrated.update((data) => {
       data.appearance.theme = 'light';

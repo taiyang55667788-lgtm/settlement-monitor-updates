@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { safeStorage } = require('electron');
+const { pruneDeepAgents } = require('./agent-depth');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
 const { alertStepFromLegacy, agentPath } = require('./report-parser');
 const { alertLedgerKey } = require('./alert-ledger');
@@ -44,6 +45,7 @@ class SecureStore {
       }
       this.state.update.feedUrl = migrateUpdateFeedUrl(this.state.update.feedUrl);
       this.state.alertRecords = Array.isArray(this.state.alertRecords) ? this.state.alertRecords.slice(0, 500) : [];
+      let depthPruned = false;
       this.state.accounts = this.state.accounts.map((account) => {
         const systemType = accountSystemId(account);
         const crownLoginEntry = crownLoginEntryId(account.crownLoginEntry, account.monitorMetric);
@@ -60,8 +62,12 @@ class SecureStore {
           : [],
         expandedAgentPaths: Array.isArray(account.expandedAgentPaths) ? account.expandedAgentPaths.filter(Array.isArray) : [],
         };
+        const before = JSON.stringify(normalized);
+        pruneDeepAgents(normalized);
+        depthPruned ||= before !== JSON.stringify(normalized);
         return normalized;
       });
+      if (depthPruned) this.save();
     } catch (error) {
       const backup = `${this.filePath}.unreadable-${Date.now()}`;
       fs.copyFileSync(this.filePath, backup);
