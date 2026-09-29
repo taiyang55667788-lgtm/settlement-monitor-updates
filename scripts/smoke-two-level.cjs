@@ -93,8 +93,7 @@ app.whenReady().then(async () => {
     assert.deepEqual(crownReport.agents, [{ name: 'general-a', value: -250, turnover: 3000 }, { name: 'general-b', value: 500, turnover: 2000 }]);
     assert.equal(crownReport.value, -1250);
     assert.equal(crownReport.turnover, 6000);
-    const crownHtml = `<ul><li id="one" onclick="openLogin()">登入 1</li><li>登入 2</li><li>登入 3</li></ul><script>
-      function openLogin() { document.body.innerHTML = '<input name="username"><input type="password" name="password"><input name="securityCode"><button onclick="complete()">登⼊</button>'; }
+    const crownHtml = `<input name="username"><input type="password" name="password"><input name="securityCode"><button onclick="complete()">登⼊</button><script>
       function complete() { window.crownInputs = [...document.querySelectorAll('input')].map(input => input.value); document.body.innerHTML = '<div id="left_dsearch_user_type"></div><div>绩效概况</div>'; }
     </script>`;
     fs.writeFileSync(path.join(directory, 'crown.html'), crownHtml);
@@ -112,15 +111,15 @@ app.whenReady().then(async () => {
     phase = 'testing Crown default login-one form';
     const crownDefaultClient = new SiteClient({ id: 'crown-default', systemType: 'crown', crownLoginEntry: 'login-1', username: 'crown-user', password: 'crown-pass', securityCode: 'crown-code' }, { stage: '' });
     crownDefaultClient.window = win;
+    await win.loadFile(path.join(directory, 'crown-default.html'));
     await crownDefaultClient.loginCrown(`file://${path.join(directory, 'crown-default.html')}`);
     assert.deepEqual(await win.webContents.executeJavaScript('window.defaultInputs'), ['crown-user', 'crown-pass', 'crown-code']);
-    const crownVerificationHtml = `<ul><li onclick="openLogin()">登入 1</li></ul><script>
-      function openLogin() { document.body.innerHTML = '<label>登录账号<input name="username"></label><label>密码<input type="password" name="password"></label><label>安全码<input name="securityCode"></label><label>图形验证<input name="verifyCode"></label><button>登录</button>'; }
-    </script>`;
+    const crownVerificationHtml = `<label>登录账号<input name="username"></label><label>密码<input type="password" name="password"></label><label>安全码<input name="securityCode"></label><label>图形验证<input name="verifyCode"></label><button>登录</button>`;
     fs.writeFileSync(path.join(directory, 'crown-verification.html'), crownVerificationHtml);
     phase = 'detecting Crown human verification';
     const crownVerificationClient = new SiteClient({ id: 'crown-verification', systemType: 'crown', crownLoginEntry: 'login-1', username: 'crown-user', password: 'crown-pass', securityCode: 'crown-code' }, { stage: '' });
     crownVerificationClient.window = win;
+    await win.loadFile(path.join(directory, 'crown-verification.html'));
     await assert.rejects(crownVerificationClient.loginCrown(`file://${path.join(directory, 'crown-verification.html')}`), /图形验证/);
     process.stdout.write('Two-level report DOM smoke test passed\n');
   } catch (error) {

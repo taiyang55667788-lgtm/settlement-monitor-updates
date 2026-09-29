@@ -313,8 +313,13 @@ class SiteClient {
     const configuredUrl = CROWN_URLS.find((url) => {
       try { return new URL(url).host === new URL(this.account.crownDomain || this.account.navUrl).host; } catch { return false; }
     }) || CROWN_URLS[0];
-    const candidates = [configuredUrl, ...CROWN_URLS, agentUrl]
-      .filter((url, index, values) => url && values.indexOf(url) === index);
+    // 本地 DOM 烟雾测试传入 file:// 夹具；不能为了测试去访问真实盘口域名。
+    // 生产环境仍然只尝试已配置或白名单中的皇冠线路。
+    const candidates = String(agentUrl || '').startsWith('file:')
+      ? [agentUrl]
+      : [configuredUrl, ...CROWN_URLS, agentUrl]
+        .filter((url, index, values) => url && values.indexOf(url) === index);
+    const entryAliases = JSON.stringify(crownLoginEntry(this.account.crownLoginEntry, this.account.monitorMetric).aliases);
     let lastError;
     const failures = [];
     for (const candidate of candidates) {
@@ -327,7 +332,11 @@ class SiteClient {
           const hasLoginForm = Boolean(document.querySelector('input[type="password"]'));
           const hasLoggedInPage = Boolean(document.querySelector('#left_dsearch_user_type, #date_div_600, #dashboard_main, .dashboard_main'))
             || /绩效概况/.test(document.body.innerText || '');
-          return hasLoginForm || hasLoggedInPage;
+          const aliases = ${entryAliases};
+          const normalize = value => String(value || '').replace(/\s+/g, '').toLowerCase();
+          const hasLoginEntry = [...document.querySelectorAll('a, button, li, [role="button"]')]
+            .some(node => aliases.some(alias => normalize(node.innerText).includes(normalize(alias))));
+          return hasLoginForm || hasLoggedInPage || hasLoginEntry;
         })()`, 15000);
         if (ready) {
           this.status.routeHost = new URL(candidate).host;
@@ -449,9 +458,19 @@ class SiteClient {
     const hasSecurityCode = Boolean(String(this.account.securityCode || ''));
     const formReady = await waitUntilAnyFrame(this.window, `document.querySelectorAll('input:not([type=button]):not([type=submit]):not([type=hidden])').length >= ${hasSecurityCode ? 3 : 2}`, 12000);
     if (!formReady) throw new Error(hasSecurityCode ? '皇冠登录页没有找到账号、密码和安全代码输入框' : '皇冠登录页没有找到账号和密码输入框');
-    const error = new Error('皇冠登录需要你完成安全码和图形验证；已暂停自动提交并打开“盘内查看”');
-    error.code = 'CROWN_HUMAN_VERIFICATION_REQUIRED';
-    throw error;
+    if (await this.crownHumanVerificationRequired()) {
+      const error = new Error('皇冠登录需要你完成安全码和图形验证；已暂停自动提交并打开“盘内查看”');
+      error.code = 'CROWN_HUMAN_VERIFICATION_REQUIRED';
+      throw error;
+    }
+    const baselineFailure = await this.readLoginFailure();
+    await executeInFrames(this.window, crownLoginSubmissionScript(this.account.username, this.account.password, this.account.securityCode), () => true);
+    const outcome = await this.waitForLoginOutcome(10000, baselineFailure);
+    if (outcome.loggedIn) {
+      this.status.stage = '皇冠账号登录成功';
+      return;
+    }
+    throw new Error(`皇冠登录未完成${outcome.failure ? `（${outcome.failure}）` : ''}`);
   }
 
   async reportUrl() {
