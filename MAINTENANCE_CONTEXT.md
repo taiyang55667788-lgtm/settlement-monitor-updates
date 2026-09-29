@@ -2,7 +2,9 @@
 
 更新时间：2026-09-29
 
-## v1.0.27 开发完成，尚未发布
+## v1.0.27 已验证并正式发布
+
+发布提交/标签：`eb99e4e22dae2a0918a3901478c303a6bfacb708`。Windows 验证工作流 `36574194453`、正式发布工作流 `36574565980` 均成功，121 项 Node 测试、三项 Electron 桌面测试、安装版与便携版构建、清单校验全部通过。GitHub Release 非草稿、非预发布，R2 latest.yml 已为 1.0.27；线上安装包完整读取 117460413 字节，SHA-512 与清单一致。正式流程：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/actions/runs/36574565980`。
 
 用户授权范围：前两轮九项持续运行建议 + 同档重复提醒修复，见 `ai-artifacts/plans/2026-09-29-continuous-monitor-design.md`。用户随后明确授权「做好后跑完测试直接发布」；允许验证通过后推送与发布 v1.0.27，无需再次确认。
 
@@ -14,7 +16,7 @@
 - 等待/断点结构缓存/按需未读/失败分开显示，重点行显示更新年龄。200 个不变档位判断零次持久化更新的测试通过；非关键事件和断点一秒合并保存，重要配置/通知及时保存，趋势仍按整轮保存。上次加密备份至多每五分钟轮换；损坏恢复后持久化 reviewRequired，用户核对前暂停读取与自动发送。
 - 启动自检只认可本次进程开始后的首次成功读取；升级/首次启动、无启用账号、加载失败、备份恢复待确认分别显示；不宣称 24 小时实测已完成。
 
-本地验证：121 项 Node 测试及三项 Electron 桌面测试最终回归通过（含队列对话框转义、禁用旧收件人重试、加密持久化失败回滚、损坏备份恢复）。队列截图 `/tmp/settlement-queue-dialog.png` 已检查。仍需 Windows 验证构建、真实 Telegram 实收和 Windows 长期运行观察。源码版本 1.0.27，线上仍 1.0.26。未推送、未打标签、未上传安装包。
+本地验证：121 项 Node 测试及三项 Electron 桌面测试最终回归通过（含队列对话框转义、按钮调用、禁用旧收件人重试、加密持久化失败回滚、损坏备份恢复）。队列截图 `/tmp/settlement-queue-dialog.png` 已检查。Windows 验证构建、正式发布和线上完整校验已完成。真实 Telegram 实收、用户现场重复原因及 Windows 长期运行效果仍需观察，不以模拟测试代替。
 
 v1.0.26 发布验证完成：源码/标签提交 `a03ba2f`；Windows 验证工作流 `36562971202` 与正式发布工作流 `36563278413` 全部通过，包含 106 项 Node 测试、三项 Electron 桌面测试、Windows 安装版/便携版构建及清单校验。GitHub Release 和 R2 上传成功；线上 latest.yml 为 1.0.26，完整下载安装包的大小与 SHA-512 均一致。正式工作流：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/actions/runs/36563278413`。真实用户电脑是否恢复连续更新仍需升级后验证。
 
@@ -24,8 +26,8 @@ v1.0.25 已获用户明确授权并正式发布：标签指向源码提交 `ae26
 
 v1.0.25 已发布功能：设计记录在 `ai-artifacts/plans/2026-09-29-stability-design.md`。新增 `electron/reliability.js`，包含优先级、新鲜度、操作看门狗与持久通知队列。金额账本记录已接受的通知，`deliveredAlertHistory` 独立记录真实发送成功的档位；界面显示待发数量，避免把排队误当送达。队列随设置加密保存，按收件人哈希隔离，最大 2000 条，不自动删除未送达消息。部分失败不会清零健康计数或误报恢复。默认重点代理新鲜度阈值为 max(3 个检查间隔, 5 分钟)，单次页面操作 150 秒硬上限，根报表查询 30 秒上限。旧表单日期必须由本星期按钮重新设置，旧表格必须更新后才可读取。后台节流原已关闭，此次新增休眠/唤醒及网络恢复调度。当前已通过 101 项 Node 测试和三项 Electron 桌面测试，含 16 秒慢报表、查询表单复用、旧表格拒绝、队列加密持久化；Windows 验证构建已通过，见上方记录。真实 Windows 盘口持续运行未验证；不要保证零重复通知。
 
-当前正式版本：`v1.0.26`
-`v1.0.26` 功能基线及发布标签构建提交：`a03ba2f`
+当前正式版本：`v1.0.27`
+`v1.0.27` 功能基线及发布标签构建提交：`eb99e4e`
 
 v1.0.24 已获用户授权并正式发布：读取上限统一为四级，启动/恢复配置时清除第五级及更深层的提醒配置、快照、趋势、展开路径和去重缓存，并保存迁移结果（历史已发送通知记录保留）。状态区固定显示状态、最近成功时间和“查看详情”；过程路径、计数、错误、分支耗时仅在详情弹窗显示。账号及代理行使用 keyed DOM 更新，保持输入焦点和滚动容器。未切换下级时只在登录有效、页面无错误且父层日期/层级校验通过后重试一次，再判为末级；掉线、加载超时和网站报错仍按失败处理。实际速度仍需用户 Windows 盘口验证。
 
@@ -163,12 +165,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 正式版本：`v1.0.26`
-- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.26-x64.exe`
-- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.26/Settlement-Monitor-Portable-1.0.26-x64.exe`
-- 安装包大小：117,455,982 字节
-- SHA-512：`dVTAnEVIj+S8lKmb0pgvwIDdVbKky+zWwKP2FTWG1YTZnRHNM7xddjR+dVJizW53L+kSINmTw4TYSfcwjlRjbg==`
-- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.26`
+- 正式版本：`v1.0.27`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.27-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.27/Settlement-Monitor-Portable-1.0.27-x64.exe`
+- 安装包大小：117,460,413 字节
+- SHA-512：`cR9XcfXJHms3XK5QtKVWtOc5b8quSNMcf/IVLbjXQtjmBA8t7RtGhtAhi2SBu1geQoictr/3BWqgo2xVd6Z5RA==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.27`
 
 ## 后续维护重点
 
