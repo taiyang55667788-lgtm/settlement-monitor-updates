@@ -1,8 +1,9 @@
 const path = require('node:path');
 const { BrowserWindow, session, nativeImage, net } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
-const { splitReportRows, parseSettlementTable, legacyAlertStep, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
+const { splitReportRows, parseSettlementTable, parseCrownGeneralAgentTable, parseCrownDashboardDetails, legacyAlertStep, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
 const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel } = require('./alert-ledger');
+const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
 const {
   partitionForAccount,
@@ -11,12 +12,17 @@ const {
   selectFastestRoute,
   loginSubmissionScript,
   loginPrefillScript,
+  crownLoginSubmissionScript,
+  crownLoginPrefillScript,
   selectCaptchaCandidate,
   isCredentialFailure,
   loginFailureScript,
 } = require('./navigation');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// 皇冠会在登录后的报表请求中拒绝 Electron 默认 UA；使用桌面 Chrome 标识，
+// 与用户在 Chrome 中可正常查看盘口的环境保持一致。
+const CROWN_BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
 function settlementWeekRange(now = new Date()) {
   const date = new Date(now);
@@ -62,6 +68,17 @@ function captchaOcrVariants(image) {
 
 function jsString(value) {
   return JSON.stringify(String(value));
+}
+
+function crownReportPeriodScript() {
+  return `(() => {
+    const matches = [...(document.body.innerText || '').matchAll(/(\\d{4})\\/(\\d{1,2})\\/(\\d{1,2})\\s*~\\s*(\\d{4})\\/(\\d{1,2})\\/(\\d{1,2})/g)];
+    const toDate = (year, month, day) => Date.UTC(Number(year), Number(month) - 1, Number(day));
+    const match = matches.find(item => toDate(item[4], item[5], item[6]) - toDate(item[1], item[2], item[3]) === 6 * 86400000);
+    if (!match) return null;
+    const format = (year, month, day) => [year, month, day].map((part, index) => index ? String(part).padStart(2, '0') : part).join('-');
+    return { start: format(match[1], match[2], match[3]), end: format(match[4], match[5], match[6]) };
+  })()`;
 }
 
 async function waitUntil(win, test, timeoutMs = 15000) {
@@ -117,8 +134,18 @@ async function waitUntilAnyFrame(win, test, timeoutMs = 15000) {
 }
 
 async function load(win, url) {
+  let timeout;
   try {
-    await win.loadURL(url);
+    const navigation = win.loadURL(url);
+    // 某些皇冠备用域名不会报错也不会完成加载。给每次跳转设上限，让调用方
+    // 有机会改用下一个允许域名，不能让整次登录永远卡在“正在打开”。
+    const deadline = new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        win.webContents.stop();
+        reject(new Error(`网页加载超时：${url}`));
+      }, 15000);
+    });
+    await Promise.race([navigation, deadline]);
   } catch (error) {
     if (!isRedirectAbort(error)) throw error;
     await new Promise((resolve) => {
@@ -131,6 +158,8 @@ async function load(win, url) {
     });
     const finalUrl = win.webContents.getURL();
     if (!/^https?:\/\//i.test(finalUrl)) throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
   await sleep(350);
 }
@@ -139,27 +168,41 @@ class SiteClient {
   constructor(account, status) {
     this.account = account;
     this.status = status;
+    this.metric = metricForAccount(account);
     this.window = null;
     this.ocr = null;
+    this.ownsWindow = true;
   }
 
   async open() {
     const partition = partitionForAccount(this.account.id);
+    const crown = accountSystemId(this.account) === 'crown';
     this.window = new BrowserWindow({
-      show: false,
+      // 皇冠首页会在 document.visibilityState 为 hidden 时延后创建报表卡片。
+      // 第一次读取先让真实窗口完成渲染，成功后由 MonitorService 隐藏并复用它。
+      show: crown,
       width: 1280,
       height: 900,
       webPreferences: {
         partition,
+        backgroundThrottling: false,
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
       },
     });
+    if (crown) {
+      this.window.webContents.setUserAgent(CROWN_BROWSER_USER_AGENT);
+      // 此持久会话只用于皇冠账户。系统代理会令 mos011 返回空响应；
+      // 只在该皇冠分区内直连，不触碰 macOS / Clash 的全局代理设置，
+      // 也不会影响 166、Telegram 或 Codex / GPT 的网络线路。
+      await this.window.webContents.session.setProxy({ mode: 'direct' });
+    }
     this.window.webContents.setWindowOpenHandler(({ url }) => ({ action: 'deny' }));
   }
 
   async discoverAgentUrl() {
+    if (accountSystemId(this.account) === 'crown') return this.account.navUrl;
     this.status.stage = '正在打开导航网址';
     await load(this.window, this.account.navUrl);
     this.status.stage = '正在填写安全码';
@@ -193,6 +236,9 @@ class SiteClient {
   }
 
   async isLoggedIn() {
+    if (accountSystemId(this.account) === 'crown') {
+      return Boolean(await executeInFrames(this.window, `Boolean(document.querySelector('#left_dsearch_user_type, #date_div_600, #dashboard_main, .dashboard_main, #data_right_scroll, .data_right_scroll')) || /绩效概况/.test(document.body.innerText)`));
+    }
     return this.window.webContents.executeJavaScript(`/报表查询/.test(document.body.innerText) && !/管理员登录/.test(document.body.innerText)`, true);
   }
 
@@ -250,6 +296,53 @@ class SiteClient {
     await sleep(800);
   }
 
+  async crownHumanVerificationRequired() {
+    return Boolean(await executePageAction(this.window, `(() => {
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const inputHint = input => [input.name, input.id, input.placeholder, input.getAttribute('aria-label'), input.closest('label, .form-group, .input-group, .field')?.innerText]
+        .filter(Boolean).join(' ').toLowerCase();
+      const hasCaptchaInput = [...document.querySelectorAll('input')].some(input => /captcha|verify|checkcode|validcode|验证码|图形验证|人机验证/.test(inputHint(input)));
+      const hasChallengeText = /图形验证|验证码|人机验证|滑动验证|拖动滑块|相关的图案|排序点击/.test(compact(document.body.innerText));
+      return hasCaptchaInput || hasChallengeText;
+    })()`));
+  }
+
+  async loadCrownLoginPage(agentUrl) {
+    // 历史检查状态可能保留已失效的备用域名。手动盘内查看和重新登录应
+    // 优先采用用户当前保存的皇冠域名，不能先被旧线路的证书错误卡住。
+    const configuredUrl = CROWN_URLS.find((url) => {
+      try { return new URL(url).host === new URL(this.account.crownDomain || this.account.navUrl).host; } catch { return false; }
+    }) || CROWN_URLS[0];
+    const candidates = [configuredUrl, ...CROWN_URLS, agentUrl]
+      .filter((url, index, values) => url && values.indexOf(url) === index);
+    let lastError;
+    const failures = [];
+    for (const candidate of candidates) {
+      try {
+        await load(this.window, candidate);
+        // 皇冠首页可能在已登录内容的下方保留一段“网络问题”提示；只要
+        // 登录表单或已登录的页面已经存在，就应继续使用该有效会话，而不是
+        // 因这段附带文案错误切到另一条线路。
+        const ready = await waitUntilAnyFrame(this.window, `(() => {
+          const hasLoginForm = Boolean(document.querySelector('input[type="password"]'));
+          const hasLoggedInPage = Boolean(document.querySelector('#left_dsearch_user_type, #date_div_600, #dashboard_main, .dashboard_main'))
+            || /绩效概况/.test(document.body.innerText || '');
+          return hasLoginForm || hasLoggedInPage;
+        })()`, 15000);
+        if (ready) {
+          this.status.routeHost = new URL(candidate).host;
+          return candidate;
+        }
+        lastError = new Error(`${new URL(candidate).host} 未显示可用的登录页`);
+        failures.push(lastError.message);
+      } catch (error) {
+        lastError = error;
+        failures.push(`${new URL(candidate).host}：${error?.message || error}`);
+      }
+    }
+    throw new Error(`皇冠登录页无法加载（${failures.join('；') || lastError?.message || '三个允许域名均不可用'}）`);
+  }
+
   async readLoginFailure() {
     return this.window.webContents.executeJavaScript(loginFailureScript(), true).catch(() => '');
   }
@@ -266,6 +359,7 @@ class SiteClient {
   }
 
   async login(agentUrl) {
+    if (accountSystemId(this.account) === 'crown') return this.loginCrown(agentUrl);
     this.status.stage = '正在打开代理登录页';
     await load(this.window, agentUrl);
     if (await this.isLoggedIn()) {
@@ -298,6 +392,68 @@ class SiteClient {
     throw new Error(`验证码自动识别连续三次未通过${lastFailure ? `（${lastFailure}）` : ''}；请点击“盘内查看”手动输入验证码并登录`);
   }
 
+  async selectCrownLoginEntry() {
+    const entry = crownLoginEntry(this.account.crownLoginEntry, this.account.monitorMetric);
+    this.status.stage = `正在打开皇冠${entry.label}`;
+    // 皇冠首次打开默认就是登入一；不等待 SPA 标签渲染，避免延迟页面被误判为
+    // “找不到登入一”并关闭用户正在使用的登录窗口。
+    if (entry.id === 'login-1') return;
+    const aliases = JSON.stringify(entry.aliases);
+    const selected = await executeInFrames(this.window, `(() => {
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const names = ${aliases}.map(compact);
+      const controls = [...document.querySelectorAll('button, input[type=button], input[type=submit], a, label, [role=tab], li')];
+      const control = controls.find(el => names.includes(compact(el.innerText || el.value || el.textContent)));
+      if (!control) return false;
+      control.click();
+      return true;
+    })()`, Boolean);
+    if (!selected) throw new Error(`皇冠首页未找到“${entry.label}”入口，已停止登录`);
+    const ready = await waitUntilAnyFrame(this.window, `document.querySelectorAll('input:not([type=button]):not([type=submit]):not([type=hidden])').length >= 2 || Boolean(document.querySelector('#left_dsearch_user_type, #date_div_600')) || /绩效概况/.test(document.body.innerText)`, 12000);
+    if (!ready) throw new Error(`皇冠${entry.label}登录页加载超时`);
+  }
+
+  async loginCrown(agentUrl) {
+    this.status.stage = '正在打开皇冠登录页';
+    if (await this.isLoggedIn()) {
+      this.status.stage = '登录状态有效';
+      return;
+    }
+    // 盘内查看窗口由用户完成图形验证。后台轮询绝不能在用户输入时 reload
+    // 或提交表单，否则会反复清空输入并把窗口误关成一次登录失败。
+    const manualFormOpen = !this.ownsWindow && await executeInFrames(this.window, `(() => {
+      const inputs = [...document.querySelectorAll('input:not([type=button]):not([type=submit]):not([type=hidden])')];
+      return inputs.some(input => input.type === 'password') && inputs.some(input => input.type !== 'password');
+    })()`, Boolean);
+    if (manualFormOpen) {
+      const error = new Error('皇冠等待你在“盘内查看”完成安全码和图形验证；后台不会刷新或自动提交登录表单');
+      error.code = 'CROWN_HUMAN_VERIFICATION_REQUIRED';
+      throw error;
+    }
+    await this.loadCrownLoginPage(agentUrl);
+    if (await this.isLoggedIn()) {
+      this.status.stage = '登录状态有效';
+      return;
+    }
+    const entry = crownLoginEntry(this.account.crownLoginEntry, this.account.monitorMetric);
+    const defaultLoginFormVisible = entry.id === 'login-1' && await executeInFrames(this.window, `(() => {
+      const inputs = [...document.querySelectorAll('input:not([type=button]):not([type=submit]):not([type=hidden])')];
+      return inputs.some(input => input.type === 'password') && inputs.some(input => input.type !== 'password');
+    })()`, Boolean).catch(() => false);
+    if (defaultLoginFormVisible) this.status.stage = '皇冠登入一登录页已就绪';
+    else await this.selectCrownLoginEntry();
+    if (await this.isLoggedIn()) {
+      this.status.stage = '登录状态有效';
+      return;
+    }
+    const hasSecurityCode = Boolean(String(this.account.securityCode || ''));
+    const formReady = await waitUntilAnyFrame(this.window, `document.querySelectorAll('input:not([type=button]):not([type=submit]):not([type=hidden])').length >= ${hasSecurityCode ? 3 : 2}`, 12000);
+    if (!formReady) throw new Error(hasSecurityCode ? '皇冠登录页没有找到账号、密码和安全代码输入框' : '皇冠登录页没有找到账号和密码输入框');
+    const error = new Error('皇冠登录需要你完成安全码和图形验证；已暂停自动提交并打开“盘内查看”');
+    error.code = 'CROWN_HUMAN_VERIFICATION_REQUIRED';
+    throw error;
+  }
+
   async reportUrl() {
     const href = await this.window.webContents.executeJavaScript(`(() => {
       const link = [...document.querySelectorAll('a')].find(el => /报表查询/.test(el.innerText));
@@ -318,15 +474,27 @@ class SiteClient {
       this.status.agentUrl = agentUrl;
       await this.login(agentUrl);
     }
+    const crownRoutes = accountSystemId(this.account) === 'crown'
+      ? [agentUrl, ...CROWN_URLS].filter((url, index, values) => url && values.indexOf(url) === index)
+      : [];
+    let crownRouteIndex = 0;
     let lastError;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        this.status.stage = attempt === 1 ? '正在查询本周报表' : `本周报表校验异常，正在重试（${attempt}/3）`;
+        this.status.stage = attempt === 1 ? `正在查询本周${this.metric.label}` : `本周${this.metric.label}校验异常，正在重试（${attempt}/3）`;
         await this.openThisWeekReport();
         this.status.stage = '本周报表读取成功';
         return await this.readCurrentSettlement();
       } catch (error) {
         lastError = error;
+        if (error?.code === 'CROWN_ROUTE_ERROR' && crownRouteIndex + 1 < crownRoutes.length) {
+          crownRouteIndex += 1;
+          agentUrl = crownRoutes[crownRouteIndex];
+          this.status.agentUrl = agentUrl;
+          this.status.stage = `皇冠报表线路异常，正在切换 ${new URL(agentUrl).host}`;
+          await this.loginCrown(agentUrl);
+          continue;
+        }
         if (!/报表日期或代理层级|结算周|本周报表/.test(error.message || '') || attempt === 3) throw error;
         await sleep(800);
       }
@@ -335,6 +503,7 @@ class SiteClient {
   }
 
   async openThisWeekReport() {
+    if (accountSystemId(this.account) === 'crown' && this.metric.id === 'general-agent-result') return this.openCrownGeneralAgentReport();
     this.previousReportText = '';
     this.status.stage = '正在打开报表查询';
     await executePageAction(this.window, `(() => new Promise((resolve, reject) => {
@@ -378,6 +547,7 @@ class SiteClient {
     if (weekRange.start !== settlementPeriod.start || weekRange.end !== settlementPeriod.end) {
       throw new Error(`盘口本周日期应为 ${settlementPeriod.start}—${settlementPeriod.end}（周一 06:00 切换），当前为 ${weekRange.start}—${weekRange.end}`);
     }
+    await this.selectReportOption();
     const querySubmitted = await executeInFrames(this.window, `(() => {
       const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
       const control = document.querySelector('#btnSelect') || [...document.querySelectorAll('button, input, a')]
@@ -390,7 +560,213 @@ class SiteClient {
     const ready = await waitUntilAnyFrame(this.window, `Boolean(document.querySelector('#mytable') && /合计/.test(document.querySelector('#mytable').innerText))`, 15000);
     if (!ready) throw new Error('本周报表加载超时');
     this.reportPeriod = weekRange;
-    await this.verifyReportPeriod(1);
+    await this.verifyReportPeriod(this.metric.usesSubagents ? 1 : null);
+  }
+
+  async dismissCrownSecurityPrompt() {
+    // 登录后皇冠有时会展示「账户安全 / 双重验证」的介绍弹窗。它遮住了
+    // 「本周有结果」入口；这里只寻找弹窗右上角的关闭控件，绝不触发
+    // 「启用双重验证」或改动任何账号安全设置。
+    const dismissed = await executeInFrames(this.window, `(() => {
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const dialogs = [...document.querySelectorAll('[role="dialog"], .modal, .dialog, .popup, div')]
+        .filter(el => {
+          const text = compact(el.innerText || el.textContent);
+          return text.includes('账户安全') && (text.includes('双重验证') || text.includes('2FA'));
+        });
+      const dialog = dialogs.sort((left, right) => (left.innerText || '').length - (right.innerText || '').length)[0];
+      if (!dialog) return false;
+      const controls = [...dialog.querySelectorAll('button, a, [role="button"], [aria-label], [title]')];
+      const close = controls.find(el => /关闭|close/i.test(el.getAttribute('aria-label') || '')
+        || /关闭|close/i.test(el.getAttribute('title') || '')
+        || ['×', 'x'].includes(compact(el.innerText || el.textContent)))
+        || controls.find(el => {
+          const label = compact(el.innerText || el.textContent);
+          return !label && Boolean(el.querySelector('svg, i, img'));
+        });
+      if (!close) return false;
+      close.click();
+      return true;
+    })()`, Boolean).catch(() => false);
+    if (dismissed) await sleep(250);
+    return dismissed;
+  }
+
+  async openCrownGeneralAgentReport() {
+    this.status.stage = '正在打开皇冠本周总代理报表';
+    await this.dismissCrownSecurityPrompt();
+    const dashboardReady = await executeInFrames(this.window, `(() => {
+      const panel = document.querySelector('#data_right_scroll, .data_right_scroll');
+      const text = panel?.innerText || '';
+      return Boolean(panel && text.includes('总代理结果') && text.includes('总代理实货量')
+        && panel.querySelector('[id^="accid_"]') && document.querySelector('[id^="td_"][id$="_fixed"]'));
+    })()`);
+    if (dashboardReady) {
+      const period = await executeInFrames(this.window, crownReportPeriodScript(), value => Boolean(value?.start && value?.end));
+      const expected = settlementWeekRange();
+      if (!period || period.start !== expected.start || period.end !== expected.end) {
+        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 06:00 切换），已停止读取`);
+      }
+      this.reportPeriod = period;
+      return;
+    }
+    const reportEntryReady = await waitUntilAnyFrame(this.window, `(() => {
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      return [...document.querySelectorAll('button, input[type=button], input[type=submit], a, label, [role=button], [role=tab], [onclick], li, div')]
+        .some(el => ['本周有结果', '常用报表', '报表'].includes(compact(el.innerText || el.value || el.textContent)));
+    })()`, 15000);
+    if (!reportEntryReady) {
+      const visibleActions = await executeInFrames(this.window, `(() => {
+        const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+        return [...document.querySelectorAll('button, input[type=button], input[type=submit], a, label, [role=button], [role=tab], [onclick], li, div')]
+          .map(el => compact(el.innerText || el.value || el.textContent)).filter(Boolean).slice(0, 12);
+      })()`, Array.isArray);
+      const summary = visibleActions?.length ? visibleActions.join('、') : '无可点击报表项';
+      const error = new Error(`皇冠首页报表入口加载超时（当前可见项：${summary}），已停止读取`);
+      if (/加载此页面时遇到问题吗？|网络问题或是您使用不支持的浏览/.test(summary)) error.code = 'CROWN_ROUTE_ERROR';
+      throw error;
+    }
+    const reportsOpened = await executeInFrames(this.window, `(() => {
+      if (document.querySelector('#result_type_div_600, #date_div_600')) return true;
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const control = [...document.querySelectorAll('button, input[type=button], input[type=submit], a, label, [role=button], [role=tab], [onclick], li, div')]
+        .find(el => ['本周有结果', '常用报表', '报表'].includes(compact(el.innerText || el.value || el.textContent)));
+      if (!control) return false;
+      control.click();
+      return true;
+    })()`);
+    if (!reportsOpened) throw new Error('皇冠首页未找到“常用报表”入口，已停止读取');
+    const crownReportPageReady = await waitUntilAnyFrame(this.window, `(() => {
+      const text = document.body.innerText || '';
+      return (text.includes('股东结果') || text.includes('总代理结果'))
+        || Boolean(document.querySelector('#result_type_div_600, #date_div_600'));
+    })()`, 15000);
+    if (!crownReportPageReady) throw new Error('皇冠报表页面加载超时，未出现股东或总代理结果栏');
+    const spaDetailsReady = await waitUntilAnyFrame(this.window, `(() => {
+      const panel = document.querySelector('#data_right_scroll, .data_right_scroll');
+      const text = panel?.innerText || '';
+      return Boolean(panel && text.includes('总代理结果') && text.includes('总代理实货量')
+        && panel.querySelector('[id^="accid_"]') && document.querySelector('[id^="td_"][id$="_fixed"]'));
+    })()`, 15000);
+    if (spaDetailsReady) {
+      const period = await executeInFrames(this.window, crownReportPeriodScript(), value => Boolean(value?.start && value?.end));
+      const expected = settlementWeekRange();
+      if (!period || period.start !== expected.start || period.end !== expected.end) {
+        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 06:00 切换），已停止读取`);
+      }
+      this.reportPeriod = period;
+      return;
+    }
+    // 皇冠的新报表先显示「股东」汇总。总代理结果和实货量在点击当前股东帐号后
+    // 才会出现；不能把这一层的股东结果误当成总代理结果。
+    const shareholderDrilldown = await executeInFrames(this.window, `(() => {
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const panel = document.querySelector('#data_right_scroll, .data_right_scroll') || document.body;
+      const text = panel.innerText || '';
+      if (!text.includes('股东结果') || text.includes('总代理结果')) return { needed: false };
+      const expected = compact(${jsString(this.account.username)});
+      const account = [...document.querySelectorAll('[id^="td_"][id$="_fixed"], a, button, [onclick], [role="button"], td, div')]
+        .find(el => compact(el.innerText || el.textContent) === expected && el !== panel);
+      if (!account) return { needed: true, opened: false };
+      account.click();
+      return { needed: true, opened: true, before: text };
+    })()`, value => value !== undefined && value !== null);
+    if (shareholderDrilldown?.needed) {
+      if (!shareholderDrilldown.opened) throw new Error('皇冠股东汇总未找到可进入的股东帐号，已停止读取以免把股东结果当总代理结果');
+      const drilled = await waitUntilAnyFrame(this.window, `(() => {
+        const panel = document.querySelector('#data_right_scroll, .data_right_scroll') || document.body;
+        return (panel.innerText || '').includes('总代理结果') && (panel.innerText || '').includes('总代理实货量');
+      })()`, 15000);
+      if (!drilled) throw new Error('皇冠股东帐号未进入总代理明细，已停止读取以免误取股东结果');
+    }
+    const drilledDetailsReady = await executeInFrames(this.window, `(() => {
+      const panel = document.querySelector('#data_right_scroll, .data_right_scroll');
+      const text = panel?.innerText || '';
+      return Boolean(panel && text.includes('总代理结果') && text.includes('总代理实货量')
+        && panel.querySelector('[id^="accid_"]') && document.querySelector('[id^="td_"][id$="_fixed"]'));
+    })()`);
+    if (drilledDetailsReady) {
+      const period = await executeInFrames(this.window, crownReportPeriodScript(), value => Boolean(value?.start && value?.end));
+      const expected = settlementWeekRange();
+      if (!period || period.start !== expected.start || period.end !== expected.end) {
+        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 06:00 切换），已停止读取`);
+      }
+      this.reportPeriod = period;
+      return;
+    }
+    const ready = await waitUntilAnyFrame(this.window, `Boolean(document.querySelector('#result_type_div_600') && document.querySelector('#date_div_600'))`, 15000);
+    if (!ready) throw new Error('皇冠常用报表页面加载超时');
+    const week = settlementWeekRange();
+    this.status.stage = '正在查询皇冠本周总代理明细';
+    const selected = await executeInFrames(this.window, `(() => {
+      const fire = element => { element.dispatchEvent(new Event('input', { bubbles: true })); element.dispatchEvent(new Event('change', { bubbles: true })); };
+      const values = [['#result_type_div_600', 'Y'], ['#date_div_600', 'tw'], ['#gtype_div_600', 'ALL']];
+      for (const [selector, value] of values) {
+        const control = document.querySelector(selector);
+        if (!control) { if (selector === '#gtype_div_600') continue; return false; }
+        control.value = value; fire(control);
+      }
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const query = [...document.querySelectorAll('button, input[type=button], input[type=submit], a')]
+        .find(el => compact(el.innerText || el.value || el.textContent) === '查询');
+      if (!query) return false;
+      query.click();
+      return true;
+    })()`);
+    if (!selected) throw new Error('皇冠常用报表缺少本周、有结果或查询控件，已停止读取');
+    const [startYear, startMonth, startDay] = week.start.split('-').map(Number);
+    const [endYear, endMonth, endDay] = week.end.split('-').map(Number);
+    const expectedPeriod = `${startYear}/${startMonth}/${startDay} ~ ${endYear}/${endMonth}/${endDay}`;
+    const queried = await waitUntilAnyFrame(this.window, `document.body.innerText.includes(${jsString(expectedPeriod)}) && [...document.querySelectorAll('button, input[type=button], input[type=submit], a')].some(el => [...String(el.innerText || el.value || el.textContent || '')].filter(char => char.trim()).join('') === '观看总代理')`, 15000);
+    if (!queried) throw new Error(`皇冠本周报表未显示 ${expectedPeriod} 或“观看总代理”入口，已停止读取`);
+    const opened = await executeInFrames(this.window, `(() => {
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const control = [...document.querySelectorAll('button, input[type=button], input[type=submit], a')]
+        .find(el => compact(el.innerText || el.value || el.textContent) === '观看总代理');
+      if (!control) return false;
+      control.click();
+      return true;
+    })()`);
+    if (!opened) throw new Error('皇冠本周报表未找到“观看总代理”入口');
+    const detailsReady = await waitUntilAnyFrame(this.window, `(() => [...document.querySelectorAll('table')].some(table => {
+      const text = table.innerText || '';
+      const rows = [...table.querySelectorAll('tr')];
+      const hasHeaders = text.includes('总代理帐号') && text.includes('总代理结果') && text.includes('总代理实货量');
+      const total = rows.find(row => row.cells?.[0]?.innerText?.trim() === '总计');
+      return hasHeaders && total && !/\\*[A-Z_0-9]+\\*/.test(total.innerText || '');
+    }))()`, 15000);
+    if (!detailsReady) throw new Error('皇冠总代理明细未加载完成，已停止读取以免误取模板数据');
+    this.reportPeriod = week;
+  }
+
+  async selectReportOption() {
+    if (!this.metric.reportOption) return;
+    this.status.stage = `正在选择“${this.metric.reportOption}”`;
+    const option = jsString(this.metric.reportOption);
+    const selected = await executeInFrames(this.window, `(() => {
+      const compact = value => [...String(value || '')].filter(char => char.trim()).join('');
+      const expected = compact(${option});
+      const fire = element => {
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      for (const select of document.querySelectorAll('select')) {
+        const choice = [...select.options].find(item => compact(item.textContent) === expected);
+        if (choice) { select.value = choice.value; fire(select); return true; }
+      }
+      const controls = [...document.querySelectorAll('input[type=radio], input[type=checkbox]')];
+      const control = controls.find((item) => {
+        const labels = item.labels ? [...item.labels].map(label => label.innerText || label.textContent).join(' ') : '';
+        const wrapper = item.closest('label, li, td, div')?.innerText || '';
+        return compact(labels) === expected || compact(wrapper) === expected;
+      });
+      if (control) { control.checked = true; fire(control); return true; }
+      const action = [...document.querySelectorAll('button, input[type=button], a, label')]
+        .find(item => compact(item.innerText || item.value || item.textContent) === expected);
+      if (action) { action.click(); return true; }
+      return false;
+    })()`, Boolean);
+    if (!selected) throw new Error(`本周交收页面未找到“${this.metric.reportOption}”选项，已停止读取以免误取其他结果`);
   }
 
   async verifyReportPeriod(expectedDepth) {
@@ -398,18 +774,21 @@ class SiteClient {
     if (!start || !end) throw new Error('无法确认本周报表日期');
     const valid = await waitUntilAnyFrame(this.window, `(() => {
       const nav = document.querySelector('#navAgentReport');
+      const links = nav?.querySelectorAll('#AgentReportNav a').length;
       return Boolean(nav && nav.innerText.includes(${jsString(start)}) && nav.innerText.includes(${jsString(end)})
-        && nav.querySelectorAll('#AgentReportNav a').length === ${Number(expectedDepth)});
+        && (${expectedDepth === null ? 'true' : `links === ${Number(expectedDepth)}`}));
     })()`, 8000);
     if (!valid) throw new Error(`报表日期或代理层级与本周 ${start}—${end} 不符，已停止读取以免误报`);
   }
 
   async readCurrentSettlement() {
+    if (accountSystemId(this.account) === 'crown' && this.metric.id === 'general-agent-result') return this.readCrownGeneralAgentSettlement();
     const priorText = this.previousReportText || '';
+    const header = jsString(this.metric.columnLabel);
     const rawRows = await executeInFrames(this.window, `(() => {
       const tables = [...document.querySelectorAll('table')];
       const table = [document.querySelector('#mytable'), ...tables].filter(Boolean)
-        .find(t => /应收下线/.test(t.innerText) && /合计/.test(t.innerText) && (!${Boolean(priorText)} || t.innerText !== ${jsString(priorText)}));
+        .find(t => t.innerText.includes(${header}) && /合计/.test(t.innerText) && (!${Boolean(priorText)} || t.innerText !== ${jsString(priorText)}));
       if (!table) return null;
       const rows = [...table.querySelectorAll('tr')];
       return rows.map(row => [...row.cells].map(cell => ({
@@ -419,7 +798,41 @@ class SiteClient {
       })));
     })()`, Array.isArray);
     if (!rawRows) throw new Error('没有报表表格');
-    return parseSettlementTable(splitReportRows(rawRows));
+    return parseSettlementTable(splitReportRows(rawRows), this.metric);
+  }
+
+  async readCrownGeneralAgentSettlement() {
+    const dashboard = await executeInFrames(this.window, `(() => {
+      const panel = document.querySelector('#data_right_scroll, .data_right_scroll');
+      if (!panel || !panel.innerText.includes('总代理结果') || !panel.innerText.includes('总代理实货量')) return null;
+      const numberTokens = text => (String(text || '').match(/-?[\\d,]+(?:\\.\\d+)?/g) || []);
+      const rows = [...panel.querySelectorAll('[id^="accid_"]')].map(node => {
+        const id = node.id.slice('accid_'.length);
+        const accountCell = document.getElementById('td_' + id + '_fixed');
+        const name = String(accountCell?.innerText || '').trim().split(/\\s+/)[0];
+        return { name, values: numberTokens(node.innerText) };
+      });
+      if (!rows.length || rows.some(row => !row.name || row.values.length < 2)) return null;
+      const firstRow = panel.querySelector('[id^="accid_"]');
+      const totalNode = firstRow?.previousElementSibling;
+      const total = numberTokens(totalNode?.innerText);
+      if (total.length < 2) return null;
+      return { total, agents: rows };
+    })()`, value => Boolean(value));
+    if (dashboard) return parseCrownDashboardDetails(dashboard);
+    const rawRows = await executeInFrames(this.window, `(() => {
+      const table = [...document.querySelectorAll('table')].find(candidate => {
+        const text = candidate.innerText || '';
+        const rows = [...candidate.querySelectorAll('tr')];
+        const total = rows.find(row => row.cells?.[0]?.innerText?.trim() === '总计');
+        return text.includes('总代理帐号') && text.includes('总代理结果') && text.includes('总代理实货量')
+          && total && !/\\*[A-Z_0-9]+\\*/.test(total.innerText || '');
+      });
+      if (!table) return null;
+      return [...table.querySelectorAll('tr')].map(row => [...row.cells].map(cell => ({ text: cell.innerText, colspan: cell.colSpan, rowspan: cell.rowSpan })));
+    })()`);
+    if (!rawRows) throw new Error('皇冠总代理明细表格不存在或仍是模板数据');
+    return parseCrownGeneralAgentTable(splitReportRows(rawRows, 16));
   }
 
   async drillIntoAgent(name) {
@@ -467,7 +880,7 @@ class SiteClient {
 
   async close() {
     if (this.ocr) await this.ocr.terminate().catch(() => {});
-    if (this.window && !this.window.isDestroyed()) this.window.destroy();
+    if (this.ownsWindow && this.window && !this.window.isDestroyed()) this.window.destroy();
   }
 }
 
@@ -662,11 +1075,17 @@ class MonitorService {
         title: `${account.name} - 盘内查看`,
         webPreferences: {
           partition: partitionForAccount(accountId),
+          backgroundThrottling: false,
           sandbox: true,
           contextIsolation: true,
           nodeIntegration: false,
         },
       });
+      if (accountSystemId(account) === 'crown') {
+        win.webContents.setUserAgent(CROWN_BROWSER_USER_AGENT);
+        // 与后台读取使用同一皇冠专属分区；见 SiteClient.open 中的说明。
+        await win.webContents.session.setProxy({ mode: 'direct' });
+      }
       this.viewWindows.set(accountId, win);
       win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       win.on('closed', () => {
@@ -676,15 +1095,38 @@ class MonitorService {
         if (wasCurrent && current?.enabled) setImmediate(() => void this.check(accountId));
       });
       try {
-        await load(win, targetUrl);
-        if (!await win.webContents.executeJavaScript(`/报表查询/.test(document.body.innerText) && !/管理员登录/.test(document.body.innerText)`, true)) {
-          const ready = await waitUntil(win, `document.querySelectorAll('input').length >= 3`, 12000);
+        const crown = accountSystemId(account) === 'crown';
+        // 盘内查看必须和自动检查一样避开已失效的备用域名；否则会把一次
+        // hga030 的证书错误留在状态中，之后无法打开用户刚登录的有效会话。
+        let viewClient = null;
+        if (crown) {
+          viewClient = new SiteClient(account, status);
+          viewClient.window = win;
+          targetUrl = await viewClient.loadCrownLoginPage(targetUrl);
+          status.agentUrl = targetUrl;
+        } else {
+          await load(win, targetUrl);
+        }
+        const crownLoggedIn = `Boolean(document.querySelector('#left_dsearch_user_type, #date_div_600')) || /绩效概况/.test(document.body.innerText)`;
+        let crownHumanVerification = false;
+        if (crown && !await executeInFrames(win, crownLoggedIn, Boolean)) {
+          await viewClient.selectCrownLoginEntry();
+        }
+        if (!await (crown
+          ? executeInFrames(win, crownLoggedIn, Boolean)
+          : win.webContents.executeJavaScript(`/报表查询/.test(document.body.innerText) && !/管理员登录/.test(document.body.innerText)`, true))) {
+          const crownSecurityCode = crown && Boolean(String(account.securityCode || ''));
+          const ready = crown
+            ? await waitUntilAnyFrame(win, `document.querySelectorAll('input:not([type=button]):not([type=submit]):not([type=hidden])').length >= ${crownSecurityCode ? 3 : 2}`, 12000)
+            : await waitUntil(win, `document.querySelectorAll('input:not([type=button]):not([type=submit]):not([type=hidden])').length >= 3`, 12000);
           if (!ready) throw new Error('盘内登录页加载失败');
-          await executePageAction(win, loginPrefillScript(account.username, account.password));
+          if (crown) await executeInFrames(win, crownLoginPrefillScript(account.username, account.password, account.securityCode), () => true);
+          else await executePageAction(win, loginPrefillScript(account.username, account.password));
+          if (crown && viewClient) crownHumanVerification = await viewClient.crownHumanVerificationRequired();
         }
         win.show();
         win.focus();
-        status.stage = '盘内查看已打开；可手动输入验证码';
+        status.stage = crownHumanVerification ? '皇冠图形验证已检测；已预填资料，请完成验证后登录' : crown ? '皇冠盘内查看已打开；已预填登录资料，可手动登录' : '盘内查看已打开；可手动输入验证码';
         this.onChange();
       } catch (error) {
         this.viewWindows.delete(accountId);
@@ -700,12 +1142,14 @@ class MonitorService {
     if (!this.runtime.has(accountId)) {
       const account = this.store.state.accounts.find((item) => item.id === accountId);
       const snapshot = account?.agentSnapshot;
-      const cached = Array.isArray(snapshot?.agents) ? snapshot.agents : [];
+      const metric = metricForAccount(account);
+      const snapshotMatchesMetric = snapshot?.metric === metric.id || (!snapshot?.metric && metric.id === 'receivable-downline');
+      const cached = snapshotMatchesMetric && Array.isArray(snapshot?.agents) ? snapshot.agents : [];
       this.runtime.set(accountId, {
         status: 'waiting',
         subagents: applySubagentAlertSteps(cached.map((agent) => ({ ...agent, stale: true })), account?.subagentThresholds),
-        subagentCount: snapshot ? cached.filter((agent) => agent.path?.length === 1).length : null,
-        reportPeriod: snapshot?.period || null,
+        subagentCount: snapshotMatchesMetric ? cached.filter((agent) => agent.path?.length === 1).length : null,
+        reportPeriod: snapshotMatchesMetric ? snapshot?.period || null : null,
         consecutiveFailures: account?.monitorHealth?.consecutiveFailures || 0,
         lastSuccessAt: account?.monitorHealth?.lastSuccessAt || '',
       });
@@ -758,7 +1202,7 @@ class MonitorService {
     const now = Date.now();
     const due = this.store.state.accounts.filter((account) => {
       const status = this.status(account.id);
-      return account.enabled && !this.viewWindows.has(account.id) && !this.openingViews.has(account.id) && !status.running && (!status.nextCheckAt || Date.parse(status.nextCheckAt) <= now);
+      return account.enabled && !this.openingViews.has(account.id) && !status.running && (!status.nextCheckAt || Date.parse(status.nextCheckAt) <= now);
     });
     await Promise.allSettled(due.map((account) => this.check(account.id)));
   }
@@ -767,11 +1211,12 @@ class MonitorService {
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     if (!storedAccount) throw new Error('账号不存在');
     if (!storedAccount.enabled) return;
-    if (this.viewWindows.has(accountId) || this.openingViews.has(accountId)) return;
+    if (this.openingViews.has(accountId)) return;
     if (this.inFlight.has(accountId)) return;
     this.inFlight.add(accountId);
     const revision = this.revisions.get(accountId) || 0;
     const account = structuredClone(storedAccount);
+    const metric = metricForAccount(account);
     const status = this.status(accountId);
     status.running = true;
     status.status = 'checking';
@@ -779,8 +1224,14 @@ class MonitorService {
     status.stage = '准备检查';
     this.onChange();
     const client = this.createSiteClient(account, status);
+    const activeView = this.viewWindows.get(accountId);
+    if (activeView && !activeView.isDestroyed()) {
+      client.window = activeView;
+      client.ownsWindow = false;
+    }
+    let manualCrownVerification = false;
     try {
-      await client.open();
+      if (!client.window) await client.open();
       const report = await client.readThisWeekSettlement();
       if (!this.isCurrentCheck(accountId, revision)) return;
       status.reportPeriod = client.reportPeriod;
@@ -788,10 +1239,12 @@ class MonitorService {
       const periodKey = `${client.reportPeriod.start}/${client.reportPeriod.end}`;
       const cachedSnapshot = this.store.state.accounts.find((item) => item.id === accountId)?.agentSnapshot;
       const cachedAgents = cachedSnapshot?.period?.start === client.reportPeriod.start
-        && cachedSnapshot?.period?.end === client.reportPeriod.end ? cachedSnapshot.agents || [] : [];
-      const agents = report.agents.map((agent) => ({ ...agent, path: [agent.name], readAt: rootReadAt }));
+        && cachedSnapshot?.period?.end === client.reportPeriod.end && cachedSnapshot.metric === metric.id ? cachedSnapshot.agents || [] : [];
+      const agents = metric.usesSubagents
+        ? report.agents.map((agent) => ({ ...agent, path: [agent.name], readAt: rootReadAt }))
+        : [{ name: metric.label, path: [metric.label], value: report.value, readAt: rootReadAt }];
       const childErrors = [];
-      const branches = report.agents.map((agent) => [agent.name]);
+      const branches = metric.readsDescendants !== false ? report.agents.map((agent) => [agent.name]) : [];
       for (const path of branches) {
         if (!this.isCurrentCheck(accountId, revision)) return;
         const parent = agents.find((agent) => agentPathKey(agent.path) === agentPathKey(path));
@@ -815,10 +1268,10 @@ class MonitorService {
           }
         }
       }
-      status.stage = '两级代理报表读取完成';
+      status.stage = metric.readsDescendants !== false ? '两级代理报表读取完成' : metric.usesSubagents ? '皇冠总代理明细读取完成' : '报表读取完成';
       let configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
       const legacyStep = legacyAlertStep(account);
-      if (!configuredSubagents.length && report.agents.length && legacyStep !== null) {
+      if (metric.usesSubagents && !configuredSubagents.length && report.agents.length && legacyStep !== null) {
         configuredSubagents = report.agents.map((agent) => ({ name: agent.name, alertStep: legacyStep }));
         account.subagentThresholds = configuredSubagents;
         this.store.update((data) => {
@@ -828,7 +1281,7 @@ class MonitorService {
         this.store.addEvent('success', `${account.name}：旧版提醒条件已迁移到 ${configuredSubagents.length} 个下级代理`, account.id);
       }
       status.subagents = applySubagentAlertSteps(agents, configuredSubagents);
-      status.subagentCount = report.agents.length;
+      status.subagentCount = metric.usesSubagents ? report.agents.length : 1;
       status.totalValue = report.value;
       status.lastCheckedAt = new Date().toISOString();
       status.lastSuccessAt = status.lastCheckedAt;
@@ -840,34 +1293,37 @@ class MonitorService {
         if (current) {
           current.agentSnapshot = {
             period: client.reportPeriod,
-            agents: agents.map(({ name, path, value, readAt, childCount }) => ({ name, path, value, readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
+            metric: metric.id,
+            agents: agents.map(({ name, path, value, turnover, readAt, childCount }) => ({ name, path, value, ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
           };
           current.monitorHealth = { lastSuccessAt: status.lastSuccessAt, consecutiveFailures: 0 };
-          const point = { time: status.lastSuccessAt, agents: agents.filter((item) => !item.stale).map(({ path, value }) => ({ path, value })) };
+          const point = { time: status.lastSuccessAt, metric: metric.id, agents: agents.filter((item) => !item.stale).map(({ path, value }) => ({ path, value })) };
           current.agentTrend = [...(Array.isArray(current.agentTrend) ? current.agentTrend : []), point]
             .filter((item) => Date.parse(item.time) >= Date.now() - 7 * 86400000).slice(-2016);
         }
       });
       if (recovered) await this.sendOperationalTelegram(`✅ 交收监控恢复正常\n账号：${account.name}\n时间：${new Date().toLocaleString('zh-CN')}`).catch(() => {});
       const persistedAccount = this.store.state.accounts.find((item) => item.id === accountId);
-      if (alertHistoryForPeriod(persistedAccount?.alertHistory, periodKey, persistedAccount?.alertMetricVersion === ALERT_METRIC) !== persistedAccount?.alertHistory) {
+      const alertMetric = metric.alertMetric || ALERT_METRIC;
+      if (alertHistoryForPeriod(persistedAccount?.alertHistory, periodKey, alertMetric, persistedAccount?.alertMetricVersion === alertMetric) !== persistedAccount?.alertHistory) {
         this.store.update((data) => {
           const current = data.accounts.find((item) => item.id === accountId);
           if (!current) return;
-          if (current.alertHistory?.period && current.alertHistory.metric !== ALERT_METRIC) {
+          if (current.alertHistory?.period && current.alertHistory.metric !== alertMetric) {
             current.alertHistoryArchive = [...(current.alertHistoryArchive || []), {
               ...current.alertHistory,
               metric: current.alertHistory.metric || 'upper-level-settlement-v1',
               archivedAt: new Date().toISOString(),
             }].slice(-12);
           }
-          current.alertHistory = alertHistoryForPeriod(current.alertHistory, periodKey, current.alertMetricVersion === ALERT_METRIC);
+          current.alertHistory = alertHistoryForPeriod(current.alertHistory, periodKey, alertMetric, current.alertMetricVersion === alertMetric);
         });
       }
       let anyTriggered = false;
       const notificationFailures = [];
       const policy = this.store.state.alertPolicy || {};
       const confirmationReads = Math.max(1, Math.min(10, Number(policy.confirmationReads) || 1));
+      const quiet = inQuietHours(policy);
       for (const { subagent, level } of evaluateSubagentAlertLevels(status.subagents.filter((agent) => !agent.stale))) {
         if (!this.isCurrentCheck(accountId, revision)) return;
         const alertKey = alertLedgerKey(subagent.path, subagent.alertStep);
@@ -882,10 +1338,11 @@ class MonitorService {
           current.alertCandidates[alertKey] = { level, count, updatedAt: new Date().toISOString() };
           confirmed = level === 0 || count >= confirmationReads;
         });
-        const pending = !confirmed || inQuietHours(policy) ? [] : pendingAlertNotifications(level, history?.agents?.[alertKey], undefined, {
+        const pending = !confirmed || quiet ? [] : pendingAlertNotifications(level, history?.agents?.[alertKey], undefined, {
           initialSummary: history?.migrationPending === true,
         });
         if (level !== 0) anyTriggered = true;
+        let notificationFailed = false;
         for (const notification of pending) {
           if (!this.isCurrentCheck(accountId, revision)) return;
           try {
@@ -897,8 +1354,9 @@ class MonitorService {
             });
             if (!this.isCurrentCheck(accountId, revision)) return;
             status.lastAlertAt = new Date().toISOString();
-            this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}${subagent.remark ? `（${subagent.remark}）` : ''}：本周首次提醒 ${notification.level > 0 ? '+' : ''}${(notification.level * subagent.alertStep).toLocaleString('zh-CN')} 档位${notification.combined ? `（合并 ${notification.count} 档）` : ''}`, account.id);
+            this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}${subagent.remark ? `（${subagent.remark}）` : ''}：进入 ${notification.level > 0 ? '+' : ''}${(notification.level * subagent.alertStep).toLocaleString('zh-CN')} 档位${notification.combined ? `（合并 ${notification.count} 档）` : ''}`, account.id);
           } catch (error) {
+            notificationFailed = true;
             const message = `${subagent.name}：${error.message || String(error)}`;
             subagent.alertError = error.message || String(error);
             notificationFailures.push(message);
@@ -906,13 +1364,21 @@ class MonitorService {
             break;
           }
         }
+        if (confirmed && !quiet && !notificationFailed) {
+          this.store.update((data) => {
+            const current = data.accounts.find((item) => item.id === accountId);
+            if (current?.alertHistory?.period === periodKey) {
+              current.alertHistory.agents[alertKey] = recordAlertLevel(current.alertHistory.agents[alertKey], level);
+            }
+          });
+        }
       }
       if (!childErrors.length && !notificationFailures.length && this.store.state.accounts.find((item) => item.id === accountId)?.alertHistory?.migrationPending) {
         this.store.update((data) => {
           const current = data.accounts.find((item) => item.id === accountId);
           if (current?.alertHistory?.period === periodKey) {
             current.alertHistory.migrationPending = false;
-            current.alertMetricVersion = ALERT_METRIC;
+            current.alertMetricVersion = alertMetric;
           }
         });
       }
@@ -921,7 +1387,17 @@ class MonitorService {
         childErrors.length ? `部分下级代理读取失败：${childErrors.slice(0, 3).join('；')}${childErrors.length > 3 ? `；共 ${childErrors.length} 个代理失败` : ''}` : '',
         notificationFailures.length ? `Telegram 提醒失败：${notificationFailures.join('；')}` : '',
       ].filter(Boolean).join('；');
+      if (accountSystemId(account) === 'crown' && client.window && !client.window.isDestroyed()) {
+        const crownSessionWindow = activeView && !activeView.isDestroyed() ? activeView : client.window;
+        this.viewWindows.set(accountId, crownSessionWindow);
+        client.ownsWindow = false;
+        crownSessionWindow.once('closed', () => {
+          if (this.viewWindows.get(accountId) === crownSessionWindow) this.viewWindows.delete(accountId);
+        });
+        crownSessionWindow.hide();
+      }
     } catch (error) {
+      manualCrownVerification = error?.code === 'CROWN_HUMAN_VERIFICATION_REQUIRED';
       status.status = 'error';
       const detail = error.message || String(error);
       status.error = isTransientScriptError(error)
@@ -964,6 +1440,14 @@ class MonitorService {
         this.onChange();
         const current = this.store.state.accounts.find((item) => item.id === accountId);
         if (current?.enabled) setImmediate(() => void this.check(accountId));
+      } else if (manualCrownVerification) {
+        status.nextCheckAt = null;
+        this.onChange();
+        setImmediate(() => void this.openAccountView(accountId).catch((error) => {
+          status.error = `无法打开皇冠盘内查看：${error.message || error}`;
+          this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
+          this.onChange();
+        }));
       } else if (this.rerunRequested.delete(accountId)) {
         status.nextCheckAt = null;
         this.onChange();
@@ -980,24 +1464,25 @@ class MonitorService {
     const { botToken, chatId, mode, pairing } = this.store.state.telegram;
     if (mode === 'pairing' && !pairing?.paired) throw new Error('Telegram 配对尚未完成');
     if (mode !== 'pairing' && (!botToken || !chatId || mode !== 'legacy')) throw new Error('请先绑定 Telegram');
-    if (!subagentName || !Number.isFinite(alertStep) || alertStep <= 0) throw new Error('下级代理提醒资料不完整');
+    const metric = metricForAccount(account);
+    if (!subagentName || !Number.isFinite(alertStep) || alertStep <= 0) throw new Error(`${metric.label}提醒资料不完整`);
     const milestone = level * alertStep;
     const previousMilestone = previousLevel * alertStep;
     const crossedCount = Math.abs(level - previousLevel);
-    const firstNewMilestone = (previousLevel + Math.sign(level)) * alertStep;
+    const firstNewMilestone = (previousLevel + Math.sign(level - previousLevel || level)) * alertStep;
     const direction = value < 0 ? '🔴' : '🔵';
     const signedValue = `${value > 0 ? '+' : ''}${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const text = [
-      `${direction} 本周应收下线提醒${notification.initialSummary ? '（首次读取汇总）' : ''}`,
+      `${direction} ${metric.valueLabel}提醒${notification.initialSummary ? '（首次读取汇总）' : ''}`,
       `账号：${account.name}`,
-      `代理层级：${path.join(' / ')}`,
+      metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${path.join(' / ')}` : `监控项：${metric.label}`,
       remark ? `备注：${remark}` : '',
       period ? `报表区间：${period.start}—${period.end}` : '',
-      `${direction} 本周应收下线：${signedValue}`,
+      `${direction} ${metric.valueLabel}：${signedValue}`,
       `当前档位：${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}（从 0 起）`,
       `提醒间隔：每 ${alertStep.toLocaleString('zh-CN')} 一档`,
       previousLevel ? `上次已提醒档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上次已提醒档位：0',
-      crossedCount > 1 ? `首次跨越：${firstNewMilestone > 0 ? '+' : ''}${firstNewMilestone.toLocaleString('zh-CN')} 至 ${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}，共 ${crossedCount} 档（已合并为一条消息）` : '此档位本周只提醒一次',
+      crossedCount > 1 ? `本次跨越：${firstNewMilestone > 0 ? '+' : ''}${firstNewMilestone.toLocaleString('zh-CN')} 至 ${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}，共 ${crossedCount} 档（已合并为一条消息）` : '已进入此档位',
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].filter(Boolean).join('\n');
     if (mode === 'pairing') return this.pairingClient.send(pairing.token, text);

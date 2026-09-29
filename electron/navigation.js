@@ -30,11 +30,11 @@ function selectFastestRoute(rows) {
   return { routes, selected: routes[0] || null };
 }
 
-function loginFormScript(username, password, captcha, submitForm) {
+function loginFormScript(username, password, captcha, submitForm, requiresCaptcha = true) {
   const literal = (value) => JSON.stringify(String(value));
   return `(() => {
     const inputs = [...document.querySelectorAll('input')].filter(el => !['button','submit','hidden'].includes(el.type));
-    if (inputs.length < 3) throw new Error('登录表单输入框不足');
+    if (inputs.length < ${requiresCaptcha ? 3 : 2}) throw new Error('登录表单输入框不足');
     const hint = el => [el.name, el.id, el.placeholder, el.getAttribute?.('aria-label')].filter(Boolean).join(' ').toLowerCase();
     const matches = (el, words) => words.some(word => hint(el).includes(word));
     const passwordInput = inputs.find(el => el.type === 'password') || inputs[1];
@@ -43,8 +43,8 @@ function loginFormScript(username, password, captcha, submitForm) {
       || inputs[0];
     const captchaInput = inputs.find(el => matches(el, ['captcha', 'verify', 'checkcode', '验证码']))
       || inputs.find(el => el !== usernameInput && el !== passwordInput)
-      || inputs[2];
-    if (!usernameInput || !passwordInput || !captchaInput) throw new Error('无法定位登录表单输入框');
+      || null;
+    if (!usernameInput || !passwordInput || (${requiresCaptcha} && !captchaInput)) throw new Error('无法定位登录表单输入框');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
     const set = (el, value) => {
       setter?.call(el, value);
@@ -53,15 +53,15 @@ function loginFormScript(username, password, captcha, submitForm) {
     };
     set(usernameInput, ${literal(username)});
     set(passwordInput, ${literal(password)});
-    if (${Boolean(captcha)}) set(captchaInput, ${literal(captcha)});
+    if (${Boolean(captcha)} && captchaInput) set(captchaInput, ${literal(captcha)});
     if (!${Boolean(submitForm)}) {
-      captchaInput.focus();
+      (captchaInput || passwordInput).focus();
       return true;
     }
     window.__settlementMonitorLoginError = '';
     window.alert = message => { window.__settlementMonitorLoginError = String(message || '登录失败'); };
     const controls = [...document.querySelectorAll('button, input[type=button], input[type=submit], a')];
-    const submit = controls.find(el => [...(el.innerText || el.value || '')].filter(char => char.trim()).join('') === '登录');
+    const submit = controls.find(el => /^登(?:录|陸|陆|入|⼊)$/.test([...(el.innerText || el.value || '')].filter(char => char.trim()).join('')));
     if (!submit) throw new Error('没有登录按钮');
     submit.click();
   })()`;
@@ -73,6 +73,51 @@ function loginSubmissionScript(username, password, captcha) {
 
 function loginPrefillScript(username, password) {
   return loginFormScript(username, password, '', false);
+}
+
+function crownLoginFormScript(username, password, securityCode, submitForm) {
+  const literal = (value) => JSON.stringify(String(value));
+  return `(() => {
+    const inputs = [...document.querySelectorAll('input')].filter(el => !['button','submit','hidden'].includes(el.type));
+    if (inputs.length < 2) throw new Error('皇冠登录表单缺少账号或密码输入框');
+    const hint = el => [el.name, el.id, el.placeholder, el.getAttribute?.('aria-label')].filter(Boolean).join(' ').toLowerCase();
+    const nearbyText = el => [hint(el), el.closest?.('label, .form-group, .input-group, .field')?.innerText || ''].join(' ').toLowerCase();
+    const matches = (el, words) => words.some(word => nearbyText(el).includes(word));
+    const passwordInput = inputs.find(el => el.type === 'password') || null;
+    const securityCodeInput = inputs.find(el => matches(el, ['securitycode', 'safecode', 'security code', '安全代码', '安全码'])) || null;
+    const usernameInput = inputs.find(el => matches(el, ['account', 'username', 'user', 'loginname', '账号', '用户']) && el !== securityCodeInput)
+      || inputs.find(el => el !== passwordInput && el !== securityCodeInput && !matches(el, ['captcha', 'verify', 'checkcode', '验证码']))
+      || null;
+    if (!usernameInput || !passwordInput) throw new Error('无法定位皇冠登录账号或密码输入框');
+    if (${Boolean(securityCode)} && !securityCodeInput) throw new Error('皇冠登录页未找到安全代码输入框');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    const set = (el, value) => {
+      setter?.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    set(usernameInput, ${literal(username)});
+    set(passwordInput, ${literal(password)});
+    if (${Boolean(securityCode)} && securityCodeInput) set(securityCodeInput, ${literal(securityCode)});
+    if (!${Boolean(submitForm)}) {
+      (securityCodeInput || passwordInput).focus();
+      return true;
+    }
+    window.__settlementMonitorLoginError = '';
+    window.alert = message => { window.__settlementMonitorLoginError = String(message || '登录失败'); };
+    const controls = [...document.querySelectorAll('button, input[type=button], input[type=submit], a')];
+    const submit = controls.find(el => /^登(?:录|陸|陆|入|⼊)$/.test([...(el.innerText || el.value || '')].filter(char => char.trim()).join('')));
+    if (!submit) throw new Error('没有登录按钮');
+    submit.click();
+  })()`;
+}
+
+function crownLoginSubmissionScript(username, password, securityCode = '') {
+  return crownLoginFormScript(username, password, securityCode, true);
+}
+
+function crownLoginPrefillScript(username, password, securityCode = '') {
+  return crownLoginFormScript(username, password, securityCode, false);
 }
 
 function selectCaptchaCandidate(candidates, expectedLength = 0) {
@@ -128,6 +173,8 @@ module.exports = {
   selectFastestRoute,
   loginSubmissionScript,
   loginPrefillScript,
+  crownLoginSubmissionScript,
+  crownLoginPrefillScript,
   selectCaptchaCandidate,
   isCredentialFailure,
   loginFailureScript,

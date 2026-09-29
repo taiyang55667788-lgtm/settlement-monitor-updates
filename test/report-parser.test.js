@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { splitReportRows, flattenHeaders, parseSettlementTable, alertStepFromLegacy, alertLevel, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('../electron/report-parser');
+const { splitReportRows, flattenHeaders, parseSettlementTable, parseCrownGeneralAgentTable, parseCrownDashboardDetails, alertStepFromLegacy, alertLevel, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('../electron/report-parser');
 
 test('flattens grouped table headers', () => {
   const headers = flattenHeaders([
@@ -86,6 +86,47 @@ test('missing or ambiguous receivable-downline header blocks alerts instead of g
     headerRows: [[{ text: '账号' }, { text: '应收下线' }, { text: '应收下线' }]],
     dataRows: [['abc', '100', '200'], ['合计', '100', '200']],
   }), /未找到唯一的“应收下线”列/);
+});
+
+test('Crown general-agent details retain result for alerts and turnover only for display', () => {
+  const result = parseCrownGeneralAgentTable({
+    headerRows: [[
+      { text: '总代理帐号' }, { text: '名称' }, { text: '总代理结果' }, { text: '总代理实货量' },
+      ...Array.from({ length: 12 }, () => ({ text: '其他栏位' })),
+    ]],
+    dataRows: [
+      ['总计', '', '-1,053,095.3', '6,862,200.6', ...Array(12).fill('0')],
+      ['general-a', '总代理 A', '37,944.9', '1,194,622.4', ...Array(12).fill('0')],
+      ['general-b', '总代理 B', '-14,200.0', '88,000.0', ...Array(12).fill('0')],
+    ],
+  });
+  assert.equal(result.value, -1053095.3);
+  assert.equal(result.turnover, 6862200.6);
+  assert.deepEqual(result.agents, [
+    { name: 'general-a', value: 37944.9, turnover: 1194622.4 },
+    { name: 'general-b', value: -14200, turnover: 88000 },
+  ]);
+  assert.throws(() => parseCrownGeneralAgentTable({
+    headerRows: [[{ text: '总代理帐号' }, { text: '总代理结果' }, { text: '总代理结果' }, { text: '总代理实货量' }]],
+    dataRows: [['总计', '100', '200', '300'], ['general-a', '1', '2', '3']],
+  }), /未找到唯一的“总代理结果”列/);
+});
+
+test('Crown dashboard details align each general-agent account by its shared DOM id', () => {
+  const result = parseCrownDashboardDetails({
+    total: ['-906,429.6', '8,158,522.2'],
+    agents: [
+      { name: '7ogj7nfuw', values: ['34,463.4', '1,200,718.4'] },
+      { name: 'bajie8899', values: ['-52,352.9', '306,468.6'] },
+    ],
+  });
+  assert.equal(result.value, -906429.6);
+  assert.equal(result.turnover, 8158522.2);
+  assert.deepEqual(result.agents, [
+    { name: '7ogj7nfuw', value: 34463.4, turnover: 1200718.4 },
+    { name: 'bajie8899', value: -52352.9, turnover: 306468.6 },
+  ]);
+  assert.throws(() => parseCrownDashboardDetails({ total: ['1', '2'], agents: [{ name: 'a', values: ['1', '2'] }, { name: 'a', values: ['3', '4'] }] }), /重复账号/);
 });
 
 test('calculates positive and negative alert levels from zero', () => {

@@ -3,7 +3,8 @@ const path = require('node:path');
 const { safeStorage } = require('electron');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
 const { alertStepFromLegacy, agentPath } = require('./report-parser');
-const { ALERT_METRIC, alertLedgerKey } = require('./alert-ledger');
+const { alertLedgerKey } = require('./alert-ledger');
+const { accountSystemId, accountBaseUrl, crownLoginEntryId, crownUrl, metricForAccount } = require('./monitor-systems');
 
 const EMPTY_STATE = {
   telegram: { botToken: '', chatId: '', mode: '', pairing: null },
@@ -41,13 +42,24 @@ class SecureStore {
         this.state.telegram.mode = 'legacy';
       }
       this.state.update.feedUrl = migrateUpdateFeedUrl(this.state.update.feedUrl);
-      this.state.accounts = this.state.accounts.map((account) => ({
-        ...account,
+      this.state.accounts = this.state.accounts.map((account) => {
+        const systemType = accountSystemId(account);
+        const crownLoginEntry = crownLoginEntryId(account.crownLoginEntry, account.monitorMetric);
+        const crownDomain = crownUrl(account.crownDomain || account.navUrl);
+        const normalized = {
+          ...account,
+          systemType,
+          navUrl: systemType === 'crown' ? crownDomain : account.navUrl || accountBaseUrl({ systemType }),
+          crownDomain: systemType === 'crown' ? crownDomain : '',
+          crownLoginEntry: systemType === 'crown' ? crownLoginEntry : '',
+          monitorMetric: metricForAccount({ systemType, crownLoginEntry }).id,
         subagentThresholds: Array.isArray(account.subagentThresholds)
           ? account.subagentThresholds.map((item) => ({ name: item.name, path: agentPath(item), remark: String(item.remark || '').trim(), alertStep: alertStepFromLegacy(item) }))
           : [],
         expandedAgentPaths: Array.isArray(account.expandedAgentPaths) ? account.expandedAgentPaths.filter(Array.isArray) : [],
-      }));
+        };
+        return normalized;
+      });
     } catch (error) {
       const backup = `${this.filePath}.unreadable-${Date.now()}`;
       fs.copyFileSync(this.filePath, backup);
@@ -97,17 +109,21 @@ class SecureStore {
       appearance: { theme: this.state.appearance?.theme || 'ocean' },
       alertPolicy: { ...EMPTY_STATE.alertPolicy, ...(this.state.alertPolicy || {}) },
       accounts: this.state.accounts.map((account) => {
+        const metric = metricForAccount(account);
         const live = runtime.get(account.id) || {};
-        const period = live.reportPeriod || account.agentSnapshot?.period;
+        const snapshotMatchesMetric = account.agentSnapshot?.metric === metric.id
+          || (!account.agentSnapshot?.metric && metric.id === 'receivable-downline');
+        const period = live.reportPeriod || (snapshotMatchesMetric ? account.agentSnapshot?.period : null);
         const periodKey = period?.start && period?.end ? `${period.start}/${period.end}` : '';
-        const history = account.alertHistory?.metric === ALERT_METRIC && account.alertHistory?.period === periodKey
+        const history = account.alertHistory?.metric === metric.alertMetric && account.alertHistory?.period === periodKey
           ? account.alertHistory : null;
         const subagents = (live.subagents || []).map((agent) => {
           const entry = history?.agents?.[alertLedgerKey(agent.path, agent.alertStep)];
           return {
             ...agent,
-            alertedPositiveMax: entry?.positiveMax || 0,
-            alertedNegativeMax: entry?.negativeMax || 0,
+            alertedPositiveLevel: entry?.positiveLastAlertLevel || 0,
+            alertedNegativeLevel: entry?.negativeLastAlertLevel || 0,
+            lastObservedLevel: entry?.currentLevel || 0,
             lastAlertAt: entry?.lastSentAt || '',
           };
         });
@@ -115,7 +131,11 @@ class SecureStore {
           id: account.id,
           name: account.name,
           navUrl: account.navUrl,
+          systemType: accountSystemId(account),
+          crownDomain: account.crownDomain || '',
+          crownLoginEntry: account.crownLoginEntry || '',
           username: account.username,
+          monitorMetric: metric.id,
           subagentThresholds: (account.subagentThresholds || []).map((item) => ({
             name: item.name,
             path: agentPath(item),
@@ -128,7 +148,7 @@ class SecureStore {
           hasSecurityCode: Boolean(account.securityCode),
           hasPassword: Boolean(account.password),
           ...live,
-          trend: Array.isArray(account.agentTrend) ? account.agentTrend : [],
+          trend: Array.isArray(account.agentTrend) ? account.agentTrend.filter((point) => !point.metric || point.metric === metric.id) : [],
           subagents,
         };
       }),

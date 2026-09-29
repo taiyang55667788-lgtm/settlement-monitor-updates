@@ -9,21 +9,35 @@ const client = fs.readFileSync(path.join(__dirname, '..', 'ui', 'app.js'), 'utf8
 test('security code is visibly entered', () => {
   assert.match(html, /name="securityCode" type="text"/);
   assert.doesNotMatch(html, /name="securityCode" type="password"/);
+  assert.match(html, /id="security-code-site-slot"/);
+  assert.match(html, /id="security-code-login-slot"/);
+  assert.match(client, /皇冠登录安全码/);
+  assert.match(client, /166 线路安全码/);
 });
 
-test('from-zero interval inputs exist only on discovered subagents', () => {
+test('from-zero interval inputs are shared across both systems', () => {
   assert.doesNotMatch(html, /name="lowerThreshold"/);
   assert.doesNotMatch(html, /name="upperThreshold"/);
   assert.doesNotMatch(client, /data-field="lowerThreshold"/);
   assert.doesNotMatch(client, /data-field="upperThreshold"/);
   assert.match(client, /data-field="alertStep"/);
   assert.match(client, /提醒从 0 起，正负每档每周各一次/);
-  assert.match(html, /读取直属代理及直属代理的下级/);
+  assert.match(html, /name="systemType"/);
+  assert.match(html, /value="crown"/);
+  assert.match(html, /name="crownDomain"/);
+  assert.match(html, /name="crownLoginEntry"/);
+  assert.match(html, /<option value="login-1">登入一<\/option>/);
+  assert.match(html, /<option value="login-2">登入二<\/option>/);
+  assert.match(html, /<option value="login-3">登入三<\/option>/);
+  assert.match(html, /固定读取本周总代理明细/);
+  assert.match(client, /总代理结果/);
+  assert.match(client, /总代理实货量/);
   assert.match(client, /data-field="remark"/);
   assert.match(client, /data-action="expand-subagent"/);
   assert.match(client, /<table class="agent-table">/);
   assert.match(client, /<tbody class="child-group"/);
   assert.match(client, /getAccountSecurityCode\(account\.id\)/);
+  assert.match(client, /updateSystemFields/);
 });
 
 test('account form clearly starts recognition after saving', () => {
@@ -33,6 +47,7 @@ test('account form clearly starts recognition after saving', () => {
 
 test('offers in-app viewing for manual captcha login', () => {
   assert.match(html, /id="view-account"[^>]*>盘内查看</);
+  assert.match(client, /图形验证或验证码时可手动登录/);
   assert.match(client, /data-action="view"/);
   assert.match(client, /openAccountView/);
 });

@@ -8,6 +8,7 @@ const {
   selectFastestRoute,
   loginSubmissionScript,
   loginPrefillScript,
+  crownLoginSubmissionScript,
   selectCaptchaCandidate,
   isCredentialFailure,
   loginFailureScript,
@@ -104,6 +105,42 @@ test('prefills credentials without submitting for manual in-app viewing', () => 
   assert.deepEqual(inputs.map((input) => input.value), ['agent01', 'pass01', '']);
   assert.equal(inputs[2].focused, true);
   assert.equal(clicked, false);
+});
+
+test('Crown login submits account, password, and an optional configured security code', () => {
+  class MockInput {
+    constructor(type, name) { this.type = type; this.name = name; this.storedValue = ''; }
+    set value(value) { this.storedValue = value; }
+    get value() { return this.storedValue; }
+    dispatchEvent() {}
+    getAttribute() { return ''; }
+  }
+  const inputs = [new MockInput('text', 'username'), new MockInput('password', 'password'), new MockInput('text', 'securityCode')];
+  let clicked = false;
+  const login = { innerText: '登录', click: () => { clicked = true; } };
+  const document = { querySelectorAll: (selector) => selector === 'input' ? inputs : [login] };
+  const run = new Function('document', 'window', 'HTMLInputElement', 'Event', `return ${crownLoginSubmissionScript('crown-a', 'crown-p', 'crown-code')};`);
+  run(document, {}, MockInput, class {});
+  assert.deepEqual(inputs.map((input) => input.value), ['crown-a', 'crown-p', 'crown-code']);
+  assert.equal(clicked, true);
+});
+
+test('Crown login leaves the security code blank when the account has none', () => {
+  class MockInput {
+    constructor(type, name) { this.type = type; this.name = name; this.storedValue = ''; }
+    set value(value) { this.storedValue = value; }
+    get value() { return this.storedValue; }
+    dispatchEvent() {}
+    getAttribute() { return ''; }
+  }
+  const inputs = [new MockInput('text', 'username'), new MockInput('password', 'password'), new MockInput('text', 'securityCode')];
+  let clicked = false;
+  const login = { innerText: '登录', click: () => { clicked = true; } };
+  const document = { querySelectorAll: (selector) => selector === 'input' ? inputs : [login] };
+  const run = new Function('document', 'window', 'HTMLInputElement', 'Event', `return ${crownLoginSubmissionScript('crown-a', 'crown-p')};`);
+  run(document, {}, MockInput, class {});
+  assert.deepEqual(inputs.map((input) => input.value), ['crown-a', 'crown-p', '']);
+  assert.equal(clicked, true);
 });
 
 test('chooses captcha OCR consensus and respects the expected length', () => {

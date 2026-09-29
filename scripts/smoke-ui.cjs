@@ -27,11 +27,11 @@ app.whenReady().then(async () => {
       valueColors: [...document.querySelectorAll('.subagent-value')].map(cell => getComputedStyle(cell).color),
     })`);
     assert.equal(initial.tableCount, 1);
-    assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '本周已提醒档位', '备注（同步通知）', '提醒间隔（正负）', '操作']);
+    assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '本周最近提醒档位', '备注（同步通知）', '提醒间隔（正负）', '操作']);
     assert.deepEqual(initial.visible, [true, true]);
     assert.deepEqual(initial.remarks, ['直属备注', '二级备注']);
-    assert.match(initial.tiers[0], /\+100～\+500（5 档）/);
-    assert.match(initial.tiers[1], /−200（1 档）/);
+    assert.match(initial.tiers[0], /\+500（最近）/);
+    assert.match(initial.tiers[1], /−200（最近）/);
     assert.equal(initial.readTimes.every((text) => text.includes('最后成功读取：')), true);
     assert.notEqual(initial.valueColors[0], initial.valueColors[1]);
     if (process.env.SMOKE_SCREENSHOT) {
@@ -92,6 +92,44 @@ app.whenReady().then(async () => {
       poll();
     })`);
     assert.equal(editCode, '75454');
+    await win.webContents.executeJavaScript(`document.querySelector('.close-dialog').click()`);
+    await win.webContents.executeJavaScript(`window.monitorApi.__smokeEmitState({
+      accounts: [{
+        id: 'total-account', name: '总盘账号', username: 'total', enabled: true, systemType: 'crown', crownLoginEntry: 'login-1', monitorMetric: 'general-agent-result',
+        status: 'triggered', subagentCount: 1, reportPeriod: { start: '2026-09-21', end: '2026-09-27' },
+        subagents: [{ name: 'general-a', path: ['general-a'], value: -1250, turnover: 3000, readAt: '2026-09-22T06:00:00.000Z', remark: '总盘', alertStep: 500, customized: true, alertedPositiveLevel: 0, alertedNegativeLevel: -2, lastObservedLevel: -2 }],
+      }], events: [], telegram: {}, update: {}, updater: {}, appearance: { theme: 'ocean' }, alertPolicy: {},
+    })`);
+    const totalResult = await win.webContents.executeJavaScript(`({
+      heading: document.querySelector('.agent-table th:nth-child(2)').textContent.trim(),
+      label: document.querySelector('.subagents-head strong').textContent.trim(),
+      rows: document.querySelectorAll('.subagent-row').length,
+      treeToggle: Boolean(document.querySelector('.tree-toggle')),
+      value: document.querySelector('.subagent-value').textContent,
+      turnover: document.querySelector('.subagent-turnover').textContent,
+    })`);
+    assert.deepEqual(totalResult, { heading: '总代理结果', label: '本周总代理明细', rows: 1, treeToggle: false, value: '-1,250.00趋势数据积累中', turnover: '3,000.00' });
+    await win.webContents.executeJavaScript(`document.querySelector('#add-account').click()`);
+    const crownFields = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const deadline = Date.now() + 3000;
+      const poll = () => {
+        const dialog = document.querySelector('#account-dialog');
+        if (!dialog.open) return Date.now() > deadline ? reject(new Error('添加账号弹窗未打开')) : setTimeout(poll, 20);
+        const form = document.querySelector('#account-form');
+        form.elements.systemType.value = 'crown';
+        form.elements.systemType.dispatchEvent(new Event('change', { bubbles: true }));
+        resolve({
+          securityVisible: !form.elements.securityCode.closest('label').hidden,
+          securitySection: form.elements.securityCode.closest('.config-section').querySelector('.config-title strong').textContent,
+          securityLabel: form.elements.securityCode.closest('label').querySelector('.security-code-label').textContent,
+          routeHidden: document.querySelector('#route-preview').hidden,
+          domainVisible: !form.elements.crownDomain.closest('[data-system-field]').hidden,
+          entryVisible: !form.elements.crownLoginEntry.closest('[data-system-field]').hidden,
+        });
+      };
+      poll();
+    })`);
+    assert.deepEqual(crownFields, { securityVisible: true, securitySection: '盘口账号登录', securityLabel: '皇冠登录安全码（登录界面必填；编辑时明文显示）', routeHidden: true, domainVisible: true, entryVisible: true });
     await win.webContents.executeJavaScript(`document.querySelector('.close-dialog').click()`);
     process.stdout.write('Two-level UI smoke test passed\n');
   } catch (error) {

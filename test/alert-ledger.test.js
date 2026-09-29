@@ -2,28 +2,31 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel } = require('../electron/alert-ledger');
 
-test('each positive and negative tier is offered only once, even after a value falls and returns', () => {
+test('each successful entry into a positive or negative tier is offered, including a return to an earlier tier', () => {
   let delivered;
   const first = pendingAlertNotifications(3, delivered);
   assert.deepEqual(first.map((item) => item.level), [1, 2, 3]);
   for (const item of first) delivered = recordAlertLevel(delivered, item.level);
-  assert.deepEqual(delivered, { positiveMax: 3, negativeMax: 0 });
-  assert.deepEqual(pendingAlertNotifications(1, delivered), []);
+  assert.deepEqual(delivered, { currentLevel: 3, positiveLastAlertLevel: 3, negativeLastAlertLevel: 0 });
+  assert.deepEqual(pendingAlertNotifications(1, delivered).map((item) => item.level), [2, 1]);
+  for (const item of pendingAlertNotifications(1, delivered)) delivered = recordAlertLevel(delivered, item.level);
+  assert.equal(delivered.currentLevel, 1);
   assert.deepEqual(pendingAlertNotifications(0, delivered), []);
-  assert.deepEqual(pendingAlertNotifications(3, delivered), []);
-  assert.deepEqual(pendingAlertNotifications(4, delivered).map((item) => item.level), [4]);
+  delivered = recordAlertLevel(delivered, 0);
+  assert.deepEqual(pendingAlertNotifications(1, delivered).map((item) => item.level), [1]);
+  delivered = recordAlertLevel(delivered, 1);
   const negative = pendingAlertNotifications(-2, delivered);
   assert.deepEqual(negative.map((item) => item.level), [-1, -2]);
   for (const item of negative) delivered = recordAlertLevel(delivered, item.level);
-  assert.deepEqual(pendingAlertNotifications(-1, delivered), []);
-  assert.deepEqual(pendingAlertNotifications(-2, delivered), []);
-  assert.deepEqual(delivered, { positiveMax: 3, negativeMax: 2 });
+  assert.deepEqual(pendingAlertNotifications(-1, delivered).map((item) => item.level), [-1]);
+  assert.deepEqual(delivered, { currentLevel: -2, positiveLastAlertLevel: 1, negativeLastAlertLevel: -2 });
 });
 
-test('a large jump is combined into one message and recorded through the reached tier', () => {
-  const notifications = pendingAlertNotifications(50, { positiveMax: 2, negativeMax: 0 });
+test('a large upward or downward jump is combined into one message and records the reached tier', () => {
+  const notifications = pendingAlertNotifications(50, { currentLevel: 2 });
   assert.deepEqual(notifications, [{ level: 50, previousLevel: 2, combined: true, count: 48 }]);
-  assert.deepEqual(recordAlertLevel({ positiveMax: 2, negativeMax: 0 }, 50), { positiveMax: 50, negativeMax: 0 });
+  assert.deepEqual(recordAlertLevel({ currentLevel: 2 }, 50), { currentLevel: 50, positiveLastAlertLevel: 50, negativeLastAlertLevel: 0 });
+  assert.deepEqual(pendingAlertNotifications(1, { currentLevel: 50 }), [{ level: 1, previousLevel: 50, combined: true, count: 49 }]);
 });
 
 test('agent identity and interval both isolate delivered-tier histories', () => {
@@ -32,7 +35,7 @@ test('agent identity and interval both isolate delivered-tier histories', () => 
 });
 
 test('a new report week resets sent tiers while the same week preserves them', () => {
-  const prior = { period: '2026-09-14/2026-09-20', metric: ALERT_METRIC, agents: { known: { positiveMax: 3, negativeMax: 1 } } };
+  const prior = { period: '2026-09-14/2026-09-20', metric: ALERT_METRIC, agents: { known: { currentLevel: 3 } } };
   assert.equal(alertHistoryForPeriod(prior, '2026-09-14/2026-09-20'), prior);
   assert.deepEqual(alertHistoryForPeriod(prior, '2026-09-21/2026-09-27'), {
     period: '2026-09-21/2026-09-27', metric: ALERT_METRIC, agents: {}, migrationPending: false,

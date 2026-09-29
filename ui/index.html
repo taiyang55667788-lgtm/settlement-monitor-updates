@@ -31,7 +31,7 @@
           <div class="summary-grid">
             <article class="summary"><span>本级账号</span><strong id="total-count">0</strong><small>可同时独立登录</small></article>
             <article class="summary"><span>运行正常</span><strong id="ok-count">0</strong><small>最近检查成功</small></article>
-            <article class="summary alert"><span>下级已达阈值</span><strong id="alert-count">0</strong><small>等待你查看</small></article>
+            <article class="summary alert"><span>已达阈值</span><strong id="alert-count">0</strong><small>等待你查看</small></article>
             <article class="summary"><span>异常账号</span><strong id="error-count">0</strong><small>将自动重试</small></article>
           </div>
           <div class="panel">
@@ -107,23 +107,27 @@
         <div class="dialog-head"><div><p class="eyebrow">盘口登录配置</p><h2 id="dialog-title">添加监控账号</h2></div><button type="button" class="icon-button close-dialog">×</button></div>
         <input type="hidden" name="id" />
         <section class="config-section">
-          <div class="config-title"><span>1</span><div><strong>导航与线路识别</strong><small>输入导航、安全码后自动选择最快的代理线路</small></div></div>
+          <div class="config-title"><span>1</span><div><strong>系统与站点</strong><small>166 先以线路安全码进入；皇冠从固定站点直接进入登录界面，无需在此填写安全码</small></div></div>
           <div class="form-grid navigation-grid">
             <label>显示名称<input name="name" required placeholder="例如 一号代理" /></label>
-            <label>导航网址<input name="navUrl" required value="https://166.tt" /></label>
-            <label>安全码（编辑时明文显示）<input name="securityCode" type="text" inputmode="numeric" autocomplete="off" placeholder="输入时直接显示" /></label>
+            <label>系统类型<select name="systemType"><option value="system-166">166 系统</option><option value="crown">皇冠系统</option></select></label>
+            <label data-system-field="system-166">166 固定网址<input name="navUrl" value="https://166.tt" readonly /></label>
+            <label data-system-field="crown" hidden>皇冠站点<select name="crownDomain"><option value="https://ag.hga050.com">ag.hga050.com</option><option value="https://ag.hga030.com">ag.hga030.com</option><option value="https://ag.mos011.com">ag.mos011.com</option></select></label>
+            <div id="security-code-site-slot" class="security-code-slot"><label id="security-code-field"><span class="security-code-label">166 线路安全码（必填；编辑时明文显示）</span><input name="securityCode" type="text" inputmode="numeric" autocomplete="off" placeholder="输入时直接显示" /></label></div>
           </div>
           <div id="route-preview" class="route-preview"><span>保存后将自动测速并显示代理线路</span></div>
         </section>
         <section class="config-section">
-          <div class="config-title"><span>2</span><div><strong>盘口账号登录</strong><small>账号密码自动填写，验证码多图像识别；失败时可使用盘内查看手动登录</small></div></div>
+          <div class="config-title"><span>2</span><div><strong>盘口账号登录</strong><small>166 自动识别数字验证码；皇冠登录需账号、密码和安全码，图形验证时使用盘内查看手动确认</small></div></div>
           <div class="form-grid">
             <label>登录账号<input name="username" required autocomplete="off" /></label>
             <label>登录密码<input name="password" type="password" autocomplete="off" placeholder="编辑时留空表示不更改" /></label>
+            <div id="security-code-login-slot" class="security-code-slot"></div>
+            <label data-system-field="crown" hidden>皇冠登录入口<select name="crownLoginEntry"><option value="login-1">登入一</option><option value="login-2">登入二</option><option value="login-3">登入三</option></select><small>登录入口只决定进入方式；软件固定读取本周总代理明细。</small></label>
           </div>
         </section>
         <section class="config-section">
-          <div class="config-title"><span>3</span><div><strong>两级代理监控</strong><small>读取直属代理及直属代理的下级；在层级表格中展开并分别设备注和提醒间隔</small></div></div>
+          <div class="config-title"><span>3</span><div><strong>检查与提醒频率</strong><small>读取口径由系统和皇冠登录入口决定；固定间隔、Telegram 与静默时间共用</small></div></div>
           <div class="form-grid monitor-grid">
             <label>检查间隔（分钟）<input name="intervalMinutes" type="number" min="1" value="5" required /></label>
           </div>

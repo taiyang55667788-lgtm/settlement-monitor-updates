@@ -4,9 +4,9 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const { SecureStore } = require('./store');
 const { MonitorService } = require('./monitor');
 const { UpdateService } = require('./updater');
-const { normalizeNavigationUrl } = require('./navigation');
 const { agentPathKey } = require('./report-parser');
 const { ALERT_METRIC } = require('./alert-ledger');
+const { SYSTEM_166, SYSTEM_CROWN, accountSystemId, accountBaseUrl, crownLoginEntryId, crownUrl, metricForAccount } = require('./monitor-systems');
 
 let mainWindow;
 let store;
@@ -154,28 +154,47 @@ app.whenReady().then(() => {
     return { ok: true };
   });
   ipcMain.handle('account:save', async (_event, input) => {
+    const systemType = accountSystemId(input);
+    const crownLoginEntry = crownLoginEntryId(input.crownLoginEntry, input.monitorMetric);
+    const crownDomain = crownUrl(input.crownDomain || input.navUrl);
     const clean = {
       name: String(input.name || '').trim(),
-      navUrl: normalizeNavigationUrl(input.navUrl),
+      systemType,
+      navUrl: systemType === SYSTEM_CROWN ? crownDomain : accountBaseUrl({ systemType: SYSTEM_166 }),
+      crownDomain: systemType === SYSTEM_CROWN ? crownDomain : '',
+      crownLoginEntry: systemType === SYSTEM_CROWN ? crownLoginEntry : '',
       username: String(input.username || '').trim(),
       intervalMinutes: Math.max(1, Number(input.intervalMinutes) || 5),
       enabled: input.enabled !== false,
+      monitorMetric: metricForAccount({ systemType, crownLoginEntry }).id,
     };
-    if (!clean.name || !clean.navUrl || !clean.username) {
-      throw new Error('请完整填写账号名称、导航网址和登录账号');
+    if (!clean.name || !clean.username) {
+      throw new Error('请完整填写账号名称和登录账号');
     }
     let savedId;
     store.update((data) => {
       const existing = data.accounts.find((account) => account.id === input.id);
+      const securityCode = String(input.securityCode || '');
       if (existing) {
+        const metricChanged = existing.monitorMetric !== clean.monitorMetric;
         Object.assign(existing, clean);
-        if (String(input.securityCode || '')) existing.securityCode = String(input.securityCode);
+        if (metricChanged) delete existing.alertCandidates;
+        if (systemType === SYSTEM_CROWN || securityCode) existing.securityCode = securityCode;
         if (String(input.password || '')) existing.password = String(input.password);
-        if (!existing.securityCode || !existing.password) throw new Error('安全码和密码不能为空');
+        if (!existing.password) throw new Error('登录密码不能为空');
+        if (systemType === SYSTEM_166 && !existing.securityCode) throw new Error('166 系统的安全码不能为空');
         savedId = existing.id;
       } else {
-        if (!input.securityCode || !input.password) throw new Error('安全码和密码不能为空');
-        const created = { ...clean, id: crypto.randomUUID(), securityCode: String(input.securityCode), password: String(input.password), subagentThresholds: [], alertMetricVersion: ALERT_METRIC };
+        if (!input.password) throw new Error('登录密码不能为空');
+        if (systemType === SYSTEM_166 && !securityCode) throw new Error('166 系统的安全码不能为空');
+        const created = {
+          ...clean,
+          id: crypto.randomUUID(),
+          securityCode,
+          password: String(input.password),
+          subagentThresholds: [],
+          alertMetricVersion: metricForAccount(clean).alertMetric || ALERT_METRIC,
+        };
         data.accounts.push(created);
         savedId = created.id;
       }

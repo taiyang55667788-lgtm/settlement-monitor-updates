@@ -88,7 +88,7 @@ test('amount alerts describe the from-zero interval and crossed levels', async (
   assert.match(message, /🔵 本周应收下线：\+350\.00/);
   assert.match(message, /提醒间隔：每 100 一档/);
   assert.match(message, /上次已提醒档位：\+100/);
-  assert.match(message, /首次跨越：\+200 至 \+300，共 2 档/);
+  assert.match(message, /本次跨越：\+200 至 \+300，共 2 档/);
   assert.match(message, /报表区间：2026-09-14—2026-09-20/);
 });
 
@@ -103,4 +103,18 @@ test('negative receivable-downline uses red marker and migration summary label',
   assert.match(message, /🔴 本周应收下线提醒（首次读取汇总）/);
   assert.match(message, /🔴 本周应收下线：-350\.00/);
   assert.match(message, /共 3 档（已合并为一条消息）/);
+});
+
+test('general-agent detail alerts use only the general-agent result label', async () => {
+  let message = '';
+  const { service } = createService(async (_url, init) => {
+    message = JSON.parse(init.body).text;
+    return jsonResponse({ ok: true, result: { message_id: 4 } });
+  });
+  await service.sendTelegram({ name: 'main-account', systemType: 'crown', crownLoginEntry: 'login-1' }, 250, 2, 0, 'general-a', 100, '', ['general-a'],
+    { start: '2026-09-14', end: '2026-09-20' });
+  assert.match(message, /🔵 总代理结果提醒/);
+  assert.match(message, /总代理：general-a/);
+  assert.match(message, /🔵 总代理结果：\+250\.00/);
+  assert.doesNotMatch(message, /实货量/);
 });

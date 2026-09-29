@@ -25,7 +25,7 @@ app.whenReady().then(() => {
       });
       data.accounts[0].alertHistory = {
         period: '2026-09-14/2026-09-20',
-        agents: { [alertLedgerKey(['parent-01', 'child-01'], 300)]: { positiveMax: 3, negativeMax: 2 } },
+        agents: { [alertLedgerKey(['parent-01', 'child-01'], 300)]: { currentLevel: -2, positiveLastAlertLevel: 3, negativeLastAlertLevel: -2 } },
       };
     });
     const reopened = new SecureStore(directory);
@@ -36,7 +36,7 @@ app.whenReady().then(() => {
     ]);
     assert.deepEqual(reopened.state.accounts[0].alertHistory, {
       period: '2026-09-14/2026-09-20',
-      agents: { [alertLedgerKey(['parent-01', 'child-01'], 300)]: { positiveMax: 3, negativeMax: 2 } },
+      agents: { [alertLedgerKey(['parent-01', 'child-01'], 300)]: { currentLevel: -2, positiveLastAlertLevel: 3, negativeLastAlertLevel: -2 } },
     });
     assert.equal(reopened.publicState().appearance.theme, 'light');
     assert.equal(reopened.publicState().accounts[0].alertHistory, undefined);
@@ -45,8 +45,9 @@ app.whenReady().then(() => {
       reportPeriod: { start: '2026-09-14', end: '2026-09-20' },
       subagents: [{ name: 'child-01', path: ['parent-01', 'child-01'], alertStep: 300, value: -700, readAt: '2026-09-19T06:00:00Z' }],
     }]]));
-    assert.equal(published.accounts[0].subagents[0].alertedPositiveMax, 3);
-    assert.equal(published.accounts[0].subagents[0].alertedNegativeMax, 2);
+    assert.equal(published.accounts[0].subagents[0].alertedPositiveLevel, 3);
+    assert.equal(published.accounts[0].subagents[0].alertedNegativeLevel, -2);
+    assert.equal(published.accounts[0].subagents[0].lastObservedLevel, -2);
     assert.equal(published.accounts[0].subagents[0].readAt, '2026-09-19T06:00:00Z');
     process.stdout.write('Agent settings migration and persistence smoke test passed\n');
   } catch (error) {

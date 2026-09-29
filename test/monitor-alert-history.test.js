@@ -7,13 +7,15 @@ function fixture(state) {
   const context = {
     period: { start: '2026-09-14', end: '2026-09-20' },
     parentValue: 250,
+    parentTurnover: 0,
     childValue: -350,
     childFailure: false,
+    descendantReads: 0,
   };
   const store = {
     state: state || {
       accounts: [{
-        id: 'account-1', name: '本级', enabled: true, intervalMinutes: 5, alertMetricVersion: 'weekly-receivable-downline-v1',
+        id: 'account-1', name: '本级', enabled: true, intervalMinutes: 5, alertMetricVersion: 'weekly-receivable-downline-v2',
         subagentThresholds: [
           { name: 'parent', path: ['parent'], alertStep: 100, remark: '' },
           { name: 'child', path: ['parent', 'child'], alertStep: 100, remark: '' },
@@ -29,8 +31,9 @@ function fixture(state) {
       createSiteClient: () => ({
         get reportPeriod() { return context.period; },
         async open() {},
-        async readThisWeekSettlement() { return { value: context.parentValue, agents: [{ name: 'parent', value: context.parentValue }] }; },
+        async readThisWeekSettlement() { return { value: context.parentValue, agents: [{ name: 'parent', value: context.parentValue, turnover: context.parentTurnover }] }; },
         async readDescendantSettlement() {
+          context.descendantReads += 1;
           if (context.childFailure) throw new Error('下级报表加载失败');
           return { value: context.childValue, agents: [{ name: 'child', value: context.childValue }] };
         },
@@ -45,7 +48,7 @@ function fixture(state) {
   return { alerts, context, store, makeService };
 }
 
-test('monitor sends each weekly tier once across fluctuations and service restart', async () => {
+test('monitor repeats alerts when values return to an earlier tier, while retaining state across restart', async () => {
   const { alerts, context, store, makeService } = fixture();
   const service = makeService();
   await service.check('account-1');
@@ -60,7 +63,7 @@ test('monitor sends each weekly tier once across fluctuations and service restar
   context.parentValue = 250;
   context.childValue = -350;
   await service.check('account-1');
-  assert.equal(alerts.length, 5);
+  assert.equal(alerts.length, 13);
 
   const afterRestart = fixture(structuredClone(store.state));
   await afterRestart.makeService().check('account-1');
@@ -68,6 +71,24 @@ test('monitor sends each weekly tier once across fluctuations and service restar
   afterRestart.context.period = { start: '2026-09-21', end: '2026-09-27' };
   await afterRestart.makeService().check('account-1');
   assert.equal(afterRestart.alerts.length, 5);
+});
+
+test('monitor notifies 20, 40, 20, and 40 again as a value changes direction', async () => {
+  const { alerts, context, store, makeService } = fixture();
+  store.state.accounts[0].subagentThresholds[0].alertStep = 20;
+  context.parentValue = 20;
+  context.childValue = 0;
+  const service = makeService();
+  await service.check('account-1');
+  context.parentValue = 40;
+  await service.check('account-1');
+  context.parentValue = 20;
+  await service.check('account-1');
+  context.parentValue = 40;
+  await service.check('account-1');
+  assert.deepEqual(alerts.filter(([path]) => path === 'parent'), [
+    ['parent', 1], ['parent', 2], ['parent', 1], ['parent', 2],
+  ]);
 });
 
 test('failed delivery retries only unsent tiers', async () => {
@@ -100,7 +121,7 @@ test('metric change archives old tiers and sends one initial summary per agent',
   assert.deepEqual(alerts, [['parent', 2], ['parent/child', -3]]);
   assert.equal(store.state.accounts[0].alertHistoryArchive[0].metric, 'upper-level-settlement-v1');
   assert.equal(store.state.accounts[0].alertHistory.migrationPending, false);
-  assert.equal(store.state.accounts[0].alertMetricVersion, 'weekly-receivable-downline-v1');
+  assert.equal(store.state.accounts[0].alertMetricVersion, 'weekly-receivable-downline-v2');
   assert.equal(service.status('account-1').subagents.every((agent) => Boolean(agent.readAt)), true);
   assert.equal(store.state.accounts[0].agentSnapshot.agents.length, 2);
   const restored = fixture(structuredClone(store.state)).makeService();
@@ -148,4 +169,26 @@ test('confirmation policy holds a new tier until it is read consecutively, while
 test('settlement week switches at Monday 06:00, not midnight', () => {
   assert.deepEqual(settlementWeekRange(new Date(2026, 8, 21, 5, 59)), { start: '2026-09-14', end: '2026-09-20' });
   assert.deepEqual(settlementWeekRange(new Date(2026, 8, 21, 6, 0)), { start: '2026-09-21', end: '2026-09-27' });
+});
+
+test('Crown general-agent details alert each general agent by result without reading descendants', async () => {
+  const { alerts, context, store, makeService } = fixture({
+    accounts: [{
+      id: 'account-1', name: '本级', enabled: true, intervalMinutes: 5,
+      systemType: 'crown', crownLoginEntry: 'login-1', alertMetricVersion: 'weekly-crown-general-agent-details-v2',
+      subagentThresholds: [{ name: 'parent', path: ['parent'], alertStep: 100, remark: '总盘' }],
+    }],
+    telegram: {},
+  });
+  context.parentValue = -250;
+  context.parentTurnover = 99999;
+  const service = makeService();
+  await service.check('account-1');
+  assert.deepEqual(alerts, [['parent', -1], ['parent', -2]]);
+  assert.equal(service.status('account-1').subagentCount, 1);
+  assert.equal(service.status('account-1').subagents[0].value, -250);
+  assert.equal(service.status('account-1').subagents[0].turnover, 99999);
+  assert.equal(context.descendantReads, 0);
+  assert.equal(store.state.accounts[0].agentSnapshot.metric, 'general-agent-result');
+  assert.equal(store.state.accounts[0].agentSnapshot.agents[0].turnover, 99999);
 });

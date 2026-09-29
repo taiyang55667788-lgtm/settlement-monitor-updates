@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { app, BrowserWindow } = require('electron');
-const { SiteClient } = require('../electron/monitor');
+const { SiteClient, settlementWeekRange } = require('../electron/monitor');
 let phase = 'waiting for Electron';
 const deadline = setTimeout(() => {
   process.stderr.write(`Two-level report DOM smoke test timed out while ${phase}\n`);
@@ -26,17 +26,18 @@ app.whenReady().then(async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'settlement-monitor-report-smoke-'));
   const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   const client = new SiteClient({ id: 'fixture' }, { stage: '' });
+  const week = settlementWeekRange();
   client.window = win;
   try {
     const childTableA = table(row('child-01', -230) + row('合计', -230));
     const childTableB = table(row('child-01', 310) + row('合计', 310));
     const rootTable = table(row('parent-01', 540, true) + row('parent-02', 620, true) + row('合计', 1160));
-    const queryHtml = `<input id="txtStartTime" value="2026-09-18"><input id="txtEndTime" value="2026-09-18"><button id="thisWeek" onclick="selectWeek()">本星期</button><button id="btnSelect" onclick="showRoot()">查 询</button><main id="report"></main><script>
+    const queryHtml = `<input id="txtStartTime" value="${week.start}"><input id="txtEndTime" value="${week.start}"><button id="thisWeek" onclick="selectWeek()">本星期</button><button id="btnSelect" onclick="showRoot()">查 询</button><main id="report"></main><script>
       function range() { return [document.querySelector('#txtStartTime').value, document.querySelector('#txtEndTime').value]; }
       function selectWeek() {
         if (window.parent.forceTodayOnWeekButton) return;
-        document.querySelector('#txtStartTime').value = '2026-09-14';
-        document.querySelector('#txtEndTime').value = '2026-09-20';
+        document.querySelector('#txtStartTime').value = ${JSON.stringify(week.start)};
+        document.querySelector('#txtEndTime').value = ${JSON.stringify(week.end)};
       }
       function showRoot() {
         const [start, end] = range();
@@ -60,13 +61,13 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(directory, 'index.html'));
     phase = 'opening root report';
     await client.openThisWeekReport();
-    assert.deepEqual(client.reportPeriod, { start: '2026-09-14', end: '2026-09-20' });
+    assert.deepEqual(client.reportPeriod, week);
     phase = 'reading root report';
     const root = await client.readCurrentSettlement();
     assert.deepEqual(root.agents, [{ name: 'parent-01', value: 540 }, { name: 'parent-02', value: 620 }]);
     phase = 'reading first child report';
     const childrenA = await client.readDescendantSettlement(['parent-01']);
-    assert.deepEqual(client.reportPeriod, { start: '2026-09-14', end: '2026-09-20' });
+    assert.deepEqual(client.reportPeriod, week);
     phase = 'reading second child report';
     const childrenB = await client.readDescendantSettlement(['parent-02']);
     assert.deepEqual(childrenA.agents, [{ name: 'child-01', value: -230 }]);
@@ -75,9 +76,55 @@ app.whenReady().then(async () => {
     await assert.rejects(client.readDescendantSettlement(['parent-01']), /未设定完整一周的日期/);
     await win.webContents.executeJavaScript('window.forceTodayOnWeekButton = false; window.forceTodayOnQuery = true');
     await assert.rejects(client.openThisWeekReport(), /报表日期或代理层级与本周/);
+    const displayPeriod = (() => { const [sy, sm, sd] = week.start.split('-').map(Number); const [ey, em, ed] = week.end.split('-').map(Number); return `${sy}/${sm}/${sd} ~ ${ey}/${em}/${ed}`; })();
+    const crownDetails = `<table><tr>${['总代理帐号', '名称', '总代理结果', '总代理实货量', ...Array(12).fill('其他栏位')].map(label => `<th>${label}</th>`).join('')}</tr><tr>${['总计', '', '-1250', '6000', ...Array(12).fill('0')].map(value => `<td>${value}</td>`).join('')}</tr><tr>${['general-a', '总代 A', '-250', '3000', ...Array(12).fill('0')].map(value => `<td>${value}</td>`).join('')}</tr><tr>${['general-b', '总代 B', '500', '2000', ...Array(12).fill('0')].map(value => `<td>${value}</td>`).join('')}</tr></table>`;
+    const crownReportHtml = `<ul><li onclick="openReports()">常用 报表</li></ul><main id="content"></main><script>
+      function openReports() { document.querySelector('#content').innerHTML = '<select id="result_type_div_600"><option value="N">无结果</option><option value="Y">有结果</option></select><select id="date_div_600"><option value="td">今天</option><option value="tw">本周</option></select><select id="gtype_div_600"><option value="ALL">全部</option></select><button onclick="query()">查询</button>'; }
+      function query() { document.querySelector('#content').innerHTML = '<div>${displayPeriod}</div><button onclick="view()">观看总代理</button>'; }
+      function view() { document.querySelector('#content').innerHTML = ${JSON.stringify(crownDetails)}; }
+    </script>`;
+    fs.writeFileSync(path.join(directory, 'crown-report.html'), crownReportHtml);
+    phase = 'reading Crown general-agent details';
+    const crownReportClient = new SiteClient({ id: 'crown-report', systemType: 'crown', crownLoginEntry: 'login-2' }, { stage: '' });
+    crownReportClient.window = win;
+    await win.loadFile(path.join(directory, 'crown-report.html'));
+    await crownReportClient.openThisWeekReport();
+    const crownReport = await crownReportClient.readCurrentSettlement();
+    assert.deepEqual(crownReport.agents, [{ name: 'general-a', value: -250, turnover: 3000 }, { name: 'general-b', value: 500, turnover: 2000 }]);
+    assert.equal(crownReport.value, -1250);
+    assert.equal(crownReport.turnover, 6000);
+    const crownHtml = `<ul><li id="one" onclick="openLogin()">登入 1</li><li>登入 2</li><li>登入 3</li></ul><script>
+      function openLogin() { document.body.innerHTML = '<input name="username"><input type="password" name="password"><input name="securityCode"><button onclick="complete()">登⼊</button>'; }
+      function complete() { window.crownInputs = [...document.querySelectorAll('input')].map(input => input.value); document.body.innerHTML = '<div id="left_dsearch_user_type"></div><div>绩效概况</div>'; }
+    </script>`;
+    fs.writeFileSync(path.join(directory, 'crown.html'), crownHtml);
+    phase = 'testing Crown login entry';
+    const crownClient = new SiteClient({ id: 'crown-fixture', systemType: 'crown', crownLoginEntry: 'login-1', navUrl: `file://${path.join(directory, 'crown.html')}`, username: 'crown-user', password: 'crown-pass', securityCode: 'crown-code' }, { stage: '' });
+    crownClient.window = win;
+    await crownClient.loginCrown(`file://${path.join(directory, 'crown.html')}`);
+    phase = 'checking Crown login result';
+    assert.equal(await win.webContents.executeJavaScript(`/绩效概况/.test(document.body.innerText)`), true);
+    assert.deepEqual(await win.webContents.executeJavaScript('window.crownInputs'), ['crown-user', 'crown-pass', 'crown-code']);
+    const crownDefaultHtml = `<input name="username"><input type="password" name="password"><input type="password" name="securityCode"><button onclick="complete()">登⼊</button><script>
+      function complete() { window.defaultInputs = [...document.querySelectorAll('input')].map(input => input.value); document.body.innerHTML = '<div id="left_dsearch_user_type"></div><div>绩效概况</div>'; }
+    </script>`;
+    fs.writeFileSync(path.join(directory, 'crown-default.html'), crownDefaultHtml);
+    phase = 'testing Crown default login-one form';
+    const crownDefaultClient = new SiteClient({ id: 'crown-default', systemType: 'crown', crownLoginEntry: 'login-1', username: 'crown-user', password: 'crown-pass', securityCode: 'crown-code' }, { stage: '' });
+    crownDefaultClient.window = win;
+    await crownDefaultClient.loginCrown(`file://${path.join(directory, 'crown-default.html')}`);
+    assert.deepEqual(await win.webContents.executeJavaScript('window.defaultInputs'), ['crown-user', 'crown-pass', 'crown-code']);
+    const crownVerificationHtml = `<ul><li onclick="openLogin()">登入 1</li></ul><script>
+      function openLogin() { document.body.innerHTML = '<label>登录账号<input name="username"></label><label>密码<input type="password" name="password"></label><label>安全码<input name="securityCode"></label><label>图形验证<input name="verifyCode"></label><button>登录</button>'; }
+    </script>`;
+    fs.writeFileSync(path.join(directory, 'crown-verification.html'), crownVerificationHtml);
+    phase = 'detecting Crown human verification';
+    const crownVerificationClient = new SiteClient({ id: 'crown-verification', systemType: 'crown', crownLoginEntry: 'login-1', username: 'crown-user', password: 'crown-pass', securityCode: 'crown-code' }, { stage: '' });
+    crownVerificationClient.window = win;
+    await assert.rejects(crownVerificationClient.loginCrown(`file://${path.join(directory, 'crown-verification.html')}`), /图形验证/);
     process.stdout.write('Two-level report DOM smoke test passed\n');
   } catch (error) {
-    process.stderr.write(`${error.stack || error}\n`);
+    process.stderr.write(`${phase}: ${error.stack || error}\n`);
     process.exitCode = 1;
   } finally {
     clearTimeout(deadline);
