@@ -5,6 +5,7 @@ const path = require('node:path');
 const { app } = require('electron');
 const { SecureStore } = require('../electron/store');
 const { ALERT_METRIC, alertLedgerKey } = require('../electron/alert-ledger');
+const { NotificationOutbox } = require('../electron/reliability');
 
 app.whenReady().then(() => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'settlement-monitor-store-smoke-'));
@@ -57,6 +58,16 @@ app.whenReady().then(() => {
     assert.equal(published.accounts[0].subagents[0].lastObservedLevel, -2);
     assert.equal(published.accounts[0].subagents[0].readAt, '2026-09-19T06:00:00Z');
     assert.equal(published.alertRecords.length, 1);
+    reopened.update(data => { data.telegram = { mode: 'legacy', botToken: 'fixture-token', chatId: 'fixture-chat' }; });
+    const outbox = new NotificationOutbox(reopened, async () => {});
+    const queued = outbox.enqueue('fixture encrypted message', 'amount');
+    outbox.attach(queued, { accountId: 'fixture', agentPath: ['parent-01', 'child-01'], value: 20 });
+    const restoredQueue = new SecureStore(directory);
+    restoredQueue.load();
+    assert.equal(restoredQueue.state.notificationOutbox[0].text, 'fixture encrypted message');
+    assert.equal(restoredQueue.publicState().notificationQueue.pending, 1);
+    assert.equal(restoredQueue.publicState().notificationOutbox, undefined);
+    assert.equal(fs.readFileSync(restoredQueue.filePath, 'utf8').includes('fixture encrypted message'), false);
     process.stdout.write('Agent settings migration and persistence smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

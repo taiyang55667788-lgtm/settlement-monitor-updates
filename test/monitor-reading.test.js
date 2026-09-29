@@ -2,6 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { SiteClient } = require('../electron/monitor');
 
+test('report wait fails promptly on a visible login form rather than waiting thirty seconds', async () => {
+  const client = new SiteClient({}, {});
+  const frame = { isDestroyed: () => false, executeJavaScript: async script => script.includes('input[type=password]') };
+  client.window = { webContents: { mainFrame: frame } };
+  await assert.rejects(client.waitForReportResult('false'), /登录状态已失效/);
+});
+
 test('unchanged healthy report retries once then ends the branch, but errors and logout remain failures', async () => {
   const realNow = Date.now;
   let tick = 0;

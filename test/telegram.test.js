@@ -13,6 +13,7 @@ function createService(fetch, saved = { botToken: 'saved-token', chatId: 'saved-
   const events = [];
   const store = {
     state: { telegram: saved, accounts: [] },
+    update(change) { change(this.state); },
     addEvent: (...args) => events.push(args),
   };
   return {
@@ -82,6 +83,7 @@ test('amount alerts describe the from-zero interval and crossed levels', async (
   });
 
   await service.sendTelegram({ name: 'main-account' }, 350, 3, 1, 'subagent-a', 100, '', ['subagent-a'], { start: '2026-09-14', end: '2026-09-20' });
+  await service.outbox.flush();
 
   assert.match(message, /当前档位：\+300（从 0 起）/);
   assert.match(message, /🔵 本周应收下线提醒/);
@@ -100,6 +102,7 @@ test('negative receivable-downline uses red marker and migration summary label',
   });
   await service.sendTelegram({ name: 'main-account' }, -350, -3, 0, 'subagent-a', 100, '', ['subagent-a'],
     { start: '2026-09-14', end: '2026-09-20' }, { initialSummary: true });
+  await service.outbox.flush();
   assert.match(message, /🔴 本周应收下线提醒（首次读取汇总）/);
   assert.match(message, /🔴 本周应收下线：-350\.00/);
   assert.match(message, /共 3 档（已合并为一条消息）/);
@@ -113,6 +116,7 @@ test('general-agent detail alerts use only the general-agent result label', asyn
   });
   await service.sendTelegram({ name: 'main-account', systemType: 'crown', crownLoginEntry: 'login-1' }, 250, 2, 0, 'general-a', 100, '', ['general-a'],
     { start: '2026-09-14', end: '2026-09-20' });
+  await service.outbox.flush();
   assert.match(message, /🔵 总代理结果提醒/);
   assert.match(message, /总代理：general-a/);
   assert.match(message, /🔵 总代理结果：\+250\.00/);

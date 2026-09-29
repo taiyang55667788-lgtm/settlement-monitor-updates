@@ -58,6 +58,36 @@ function fixture(state) {
   return { alerts, deltaAlerts, context, store, makeService };
 }
 
+test('durable queue captures upward and downward crossings offline without blocking reads or replaying tiers', async () => {
+  const { store, context, makeService } = fixture();
+  store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
+  store.state.accounts[0].subagentThresholds = [{ name: 'parent', path: ['parent'], alertStep: 20 }];
+  let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  for (const value of [20, 40, 20]) { context.parentValue = value; await service.check('account-1'); }
+  assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [1, 2, 1]);
+  assert.equal(store.state.alertRecords?.length || 0, 0, 'queue acceptance is not delivery');
+  service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  await service.check('account-1');
+  assert.equal(store.state.notificationOutbox.length, 3, 'restart does not recreate already queued crossings');
+  let sent = 0; service.deliverOperationalTelegram = async () => { sent++; };
+  await service.outbox.flush();
+  assert.equal(sent, 3); assert.equal(store.state.alertRecords.length, 3);
+});
+
+test('important branches run first and a failed branch is retried only after other branches', async () => {
+  const { store, context, makeService } = fixture();
+  store.state.accounts[0].subagentThresholds = [{ path: ['parent', 'important', 'leaf'], alertStep: 20 }];
+  context.descendants = new Map([['parent', { agents: [{ name: 'important', value: 0 }, { name: 'other', value: 0 }], value: 0 }]]);
+  const reads = []; let failed = false;
+  context.beforeDescendant = async path => {
+    reads.push(path.join('/'));
+    if (path.join('/') === 'parent/important' && !failed) { failed = true; throw new Error('本周报表加载超时'); }
+  };
+  const service = makeService(); await service.check('account-1');
+  assert.deepEqual(reads, ['parent', 'parent/important', 'parent/other', 'parent/important']);
+  assert.equal(service.status('account-1').status, 'ok');
+});
+
 test('publishes and alerts the first layer before a slow descendant finishes, once per check', async () => {
   const { alerts, context, store, makeService } = fixture();
   store.state.alertPolicy = { confirmationReads: 2 };

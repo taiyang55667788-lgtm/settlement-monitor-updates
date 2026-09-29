@@ -227,6 +227,26 @@ app.whenReady().then(async () => {
     const fullScan = new Promise(resolve => ipcMain.once('smoke:full-scan', (_event, id) => resolve(id)));
     await win.webContents.executeJavaScript(`document.querySelector('[data-action="full-scan"]').click()`);
     assert.equal(await fullScan, 'fixture-account');
+    const reliability = await win.webContents.executeJavaScript(`(() => {
+      const next = structuredClone(appState);
+      next.accounts[0].status = 'partial';
+      next.accounts[0].subagents[0].pendingNotifications = 2;
+      next.notificationQueue = { pending: 2, failed: 1, held: 1 };
+      render(next);
+      document.querySelector('[data-view="alerts"]').click();
+      return {
+        status: document.querySelector('.status-wrap .status').textContent,
+        errors: document.querySelector('#error-count').textContent,
+        queue: document.querySelector('#notification-queue').textContent,
+        reason: alertReason(next.accounts[0].subagents[0]),
+      };
+    })()`);
+    assert.equal(reliability.status, '部分读取失败');
+    assert.equal(reliability.errors, '1');
+    assert.match(reliability.queue, /待发送 2 条.*失败待重试 1 条.*暂存 1 条/);
+    assert.equal(reliability.reason, '通知待发送 2 条');
+    await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    if (process.env.SMOKE_QUEUE_SCREENSHOT) fs.writeFileSync(process.env.SMOKE_QUEUE_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
     process.stdout.write('Four-level UI smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

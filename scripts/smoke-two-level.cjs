@@ -8,7 +8,7 @@ let phase = 'waiting for Electron';
 const deadline = setTimeout(() => {
   process.stderr.write(`Four-level report DOM smoke test timed out while ${phase}\n`);
   app.exit(1);
-}, 45000);
+}, 75000);
 
 function row(name, value, clickable = false) {
   const cellAction = clickable ? ` class="account" onclick="showChildren('${name}')" style="cursor:pointer"` : '';
@@ -38,6 +38,7 @@ app.whenReady().then(async () => {
     const tables = { 'parent-01': childTableA, 'parent-02': childTableB, 'parent-01/child-01': thirdTable, 'parent-01/child-01/third-01': fourthTable, 'parent-01/child-01/third-01/fourth-01': fifthTable };
     const queryHtml = `<input id="txtStartTime" value="${week.start}"><input id="txtEndTime" value="${week.start}"><button id="thisWeek" onclick="selectWeek()">本星期</button><button id="btnSelect" onclick="showRoot()">查 询</button><main id="report"></main><script>
       const tables = ${JSON.stringify(tables)}; let reportPath = [];
+      window.parent.queryLoads = (window.parent.queryLoads || 0) + 1;
       function range() { return [document.querySelector('#txtStartTime').value, document.querySelector('#txtEndTime').value]; }
       function selectWeek() {
         if (window.parent.forceTodayOnWeekButton) return;
@@ -45,6 +46,11 @@ app.whenReady().then(async () => {
         document.querySelector('#txtEndTime').value = ${JSON.stringify(week.end)};
       }
       function showRoot() {
+        const delay = window.parent.delayQuery || 0;
+        if (delay) { setTimeout(renderRoot, delay); return; }
+        renderRoot();
+      }
+      function renderRoot() {
         const [start, end] = range();
         reportPath = [];
         window.parent.setReportPeriod(window.parent.forceTodayOnQuery ? '2026-09-18' : start, window.parent.forceTodayOnQuery ? '2026-09-18' : end, ['fixture']);
@@ -87,6 +93,14 @@ app.whenReady().then(async () => {
     await assert.rejects(client.readDescendantSettlement(['parent-01', 'child-01', 'third-01', 'fourth-01']), /最多读取四级/);
     assert.deepEqual(third.agents, [{ name: 'third-01', value: 330 }]);
     assert.deepEqual(fourth.agents, [{ name: 'fourth-01', value: -430 }]);
+    assert.equal(await win.webContents.executeJavaScript('window.queryLoads'), 1, 'healthy report form is reused across siblings');
+    phase = 'waiting for a slow fresh query without accepting the old table';
+    await win.webContents.executeJavaScript('window.delayQuery = 16000');
+    const slowStarted = Date.now();
+    await client.openThisWeekReport();
+    assert.ok(Date.now() - slowStarted >= 15000, 'old table must not satisfy the fresh query');
+    assert.deepEqual((await client.readCurrentSettlement()).agents, root.agents);
+    await win.webContents.executeJavaScript('window.delayQuery = 0');
     await win.webContents.executeJavaScript('window.forceTodayOnWeekButton = true');
     await assert.rejects(client.readDescendantSettlement(['parent-01']), /未设定完整一周的日期/);
     await win.webContents.executeJavaScript('window.forceTodayOnWeekButton = false; window.forceTodayOnQuery = true');

@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, powerMonitor, net } = require('electron');
 const { SecureStore } = require('./store');
 const { MonitorService, MAX_DESCENDANT_DEPTH } = require('./monitor');
 const { UpdateService } = require('./updater');
@@ -55,6 +55,15 @@ app.whenReady().then(() => {
   updater = new UpdateService(store, publish);
   createWindow();
   monitor.start();
+  powerMonitor.on('suspend', () => monitor.suspend());
+  powerMonitor.on('resume', () => monitor.resume());
+  let online = net.isOnline();
+  const networkTimer = setInterval(() => {
+    const next = net.isOnline();
+    if (next && !online) monitor.resume();
+    online = next;
+  }, 10000);
+  networkTimer.unref();
   updater.start();
 
   ipcMain.handle('state:get', () => state());

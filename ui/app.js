@@ -3,7 +3,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
-const statusNames = { waiting: '等待首次检查', checking: '读取中', ok: '运行正常', triggered: '运行正常', error: '读取异常', paused: '已暂停' };
+const statusNames = { waiting: '等待首次检查', checking: '读取中', ok: '运行正常', triggered: '运行正常', error: '读取异常', partial: '部分读取失败', stale: '数据过期', recovering: '正在恢复', manual: '需要手动处理', paused: '已暂停' };
 const thresholdDrafts = new Map();
 const collapsedAgentPaths = new Set();
 const reminderOnlyAccounts = new Set();
@@ -21,8 +21,11 @@ function refreshReadingDetails() {
     `已读取：${account.readProgress?.read || 0} 个代理；待查分支：${account.readProgress?.pendingBranches ?? '—'}`,
     `最近成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功'}`,
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
+    `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `下次检查：${account.nextCheckAt ? new Date(account.nextCheckAt).toLocaleString('zh-CN') : '待安排'}`,
     `异常：${account.error || '无'}`,
+    `过期重点代理：${(account.staleTargets || []).map(path => path.join(' / ')).join('；') || '无'}`,
+    `通知队列：待发 ${appState.notificationQueue?.pending || 0} 条；失败待重试 ${appState.notificationQueue?.failed || 0} 条；收件人已变更暂存 ${appState.notificationQueue?.held || 0} 条`,
     ...(account.phaseTimings?.branches || []).map(item => `${item.path.join(' / ')}：${(item.durationMs / 1000).toFixed(1)} 秒${item.error ? ' · ' + item.error : ''}`),
   ].join('\n') : '账号已删除';
 }
@@ -83,6 +86,7 @@ function notifiedRange(level, step, direction) {
 }
 
 function alertReason(subagent) {
+  if (subagent.pendingNotifications) return `通知待发送 ${subagent.pendingNotifications} 条`;
   if (subagent.notRefreshed) return '本轮未刷新；启用提醒后自动读取';
   if (subagent.stale) return '本次未成功读取，暂停该行提醒';
   if (!Number.isFinite(subagent.alertStep) || subagent.alertStep <= 0) return '未设置提醒间隔';
@@ -322,7 +326,7 @@ function render(state) {
   $('#total-count').textContent = accounts.length;
   $('#ok-count').textContent = accounts.filter((a) => a.enabled !== false && ['ok', 'triggered'].includes(a.status)).length;
   $('#alert-count').textContent = accounts.reduce((count, account) => count + (account.subagents || []).filter(isSubagentTriggered).length, 0);
-  $('#error-count').textContent = accounts.filter((a) => a.status === 'error').length;
+  $('#error-count').textContent = accounts.filter((a) => ['error', 'partial', 'stale', 'manual'].includes(a.status)).length;
   $('#empty').classList.toggle('show', accounts.length === 0);
   const accountMarkup = accounts.map((account) => {
     const metric = monitorMetric(account);
@@ -353,6 +357,7 @@ function render(state) {
   refreshReadingDetails();
   restoreThresholdDraft(thresholdDraft, state);
   $('#events').innerHTML = (state.events || []).map((event) => `<div class="event ${event.type}"><i></i><time>${new Date(event.time).toLocaleString('zh-CN')}</time><span>${escapeHtml(event.message)}</span></div>`).join('') || '<div class="empty show"><p>暂无运行记录</p></div>';
+  $('#notification-queue').textContent = `待发送 ${state.notificationQueue?.pending || 0} 条 · 失败待重试 ${state.notificationQueue?.failed || 0} 条 · 收件人变更暂存 ${state.notificationQueue?.held || 0} 条（暂存消息不会发送给新收件人）`;
   $('#alert-records').innerHTML = (state.alertRecords || []).map((record) => {
     const value = Number(record.value);
     const tier = Number(record.level) * Number(record.alertStep);

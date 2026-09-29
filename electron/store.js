@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { safeStorage } = require('electron');
 const { pruneDeepAgents } = require('./agent-depth');
+const { recipientKey } = require('./reliability');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
 const { alertStepFromLegacy, agentPath } = require('./report-parser');
 const { alertLedgerKey } = require('./alert-ledger');
@@ -18,6 +19,7 @@ const EMPTY_STATE = {
   accounts: [],
   events: [],
   alertRecords: [],
+  notificationOutbox: [],
 };
 
 class SecureStore {
@@ -116,6 +118,11 @@ class SecureStore {
       },
       appearance: { theme: this.state.appearance?.theme || 'ocean' },
       alertPolicy: { ...EMPTY_STATE.alertPolicy, ...(this.state.alertPolicy || {}) },
+      notificationQueue: {
+        pending: (this.state.notificationOutbox || []).length,
+        failed: (this.state.notificationOutbox || []).filter(item => item.attempts > 0).length,
+        held: (this.state.notificationOutbox || []).filter(item => item.recipient !== recipientKey(this.state.telegram)).length,
+      },
       accounts: this.state.accounts.map((account) => {
         const metric = metricForAccount(account);
         const live = runtime.get(account.id) || {};
@@ -127,12 +134,20 @@ class SecureStore {
           ? account.alertHistory : null;
         const subagents = (live.subagents || []).map((agent) => {
           const entry = history?.agents?.[alertLedgerKey(agent.path, agent.alertStep)];
+          const deliveredHistory = account.notificationLedgerVersion ? account.deliveredAlertHistory : history;
+          const sentEntry = deliveredHistory?.period === periodKey && deliveredHistory?.metric === history?.metric
+            ? deliveredHistory.agents?.[alertLedgerKey(agent.path, agent.alertStep)] : null;
+          const pending = (this.state.notificationOutbox || []).filter(item => item.record?.accountId === account.id
+            && JSON.stringify(item.record.agentPath) === JSON.stringify(agent.path));
+          const delivered = this.state.alertRecords.find(item => item.status === 'sent' && item.accountId === account.id
+            && JSON.stringify(item.agentPath) === JSON.stringify(agent.path));
           return {
             ...agent,
-            alertedPositiveLevel: entry?.positiveLastAlertLevel || 0,
-            alertedNegativeLevel: entry?.negativeLastAlertLevel || 0,
+            alertedPositiveLevel: sentEntry?.positiveLastAlertLevel || 0,
+            alertedNegativeLevel: sentEntry?.negativeLastAlertLevel || 0,
             lastObservedLevel: entry?.currentLevel || 0,
-            lastAlertAt: entry?.lastSentAt || '',
+            pendingNotifications: pending.length,
+            lastAlertAt: delivered?.time || sentEntry?.lastSentAt || '',
           };
         });
         return {

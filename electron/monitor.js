@@ -7,6 +7,7 @@ const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotific
 const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
+const { importantBranch, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -575,7 +576,8 @@ class SiteClient {
           await this.loginCrown(agentUrl);
           continue;
         }
-        if (!/报表日期或代理层级|结算周|本周报表/.test(error.message || '') || attempt === 3) throw error;
+        if (!/报表日期或代理层级|结算周|本周报表|报表查询页面|登录状态已失效/.test(error.message || '') || attempt === 3) throw error;
+        if (!await this.isLoggedIn()) await this.login(agentUrl);
         await sleep(800);
       }
     }
@@ -583,10 +585,33 @@ class SiteClient {
   }
 
   async openThisWeekReport() {
+    const startedAt = Date.now();
+    try { return await this.openThisWeekReportPage(); }
+    finally {
+      this.status.lastQueryMs = Date.now() - startedAt;
+    }
+  }
+
+  async waitForReportResult(test, timeoutMs = 30000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await executeInFrames(this.window, `Boolean(${test})`).catch(() => false)) return true;
+      const loginVisible = await executeInFrames(this.window, `Boolean([...document.querySelectorAll('input[type=password]')].some(input => input.getClientRects().length))`).catch(() => false);
+      if (loginVisible) throw new Error('查询本周报表时登录状态已失效');
+      const failure = await this.readLoginFailure();
+      if (failure) throw new Error(`网站提示：${failure}`);
+      await sleep(400);
+    }
+    return false;
+  }
+
+  async openThisWeekReportPage() {
     if (accountSystemId(this.account) === 'crown' && this.metric.id === 'general-agent-result') return this.openCrownGeneralAgentReport();
     this.previousReportText = '';
     this.status.stage = '正在打开报表查询';
-    await executePageAction(this.window, `(() => new Promise((resolve, reject) => {
+    const reusable = !this.reportRefreshNeeded && await executeInFrames(this.window, `Boolean(document.querySelector('#txtStartTime') && document.querySelector('#txtEndTime') && document.querySelector('#thisWeek'))`);
+    this.reportRefreshNeeded = true;
+    if (!reusable) await executePageAction(this.window, `(() => new Promise((resolve, reject) => {
       const link = [...document.querySelectorAll('a')].find(el => /报表查询/.test(el.innerText));
       if (!link) throw new Error('登录后没有找到报表查询入口');
       const frame = document.querySelector('iframe#frame, iframe[name=frame]');
@@ -606,6 +631,11 @@ class SiteClient {
       const control = document.querySelector('#thisWeek') || [...document.querySelectorAll('button, input, a')]
         .find(el => /本星期/.test(el.innerText || el.value || ''));
       if (!control) return false;
+      // A reused form must prove the week button worked, not retain last round's dates.
+      const startInput = document.querySelector('#txtStartTime');
+      const endInput = document.querySelector('#txtEndTime');
+      if (startInput) startInput.value = '';
+      if (endInput) endInput.value = '';
       control.click();
       return true;
     })()`);
@@ -633,14 +663,22 @@ class SiteClient {
       const control = document.querySelector('#btnSelect') || [...document.querySelectorAll('button, input, a')]
         .find(el => compact(el.innerText || el.value) === '查询');
       if (!control) return false;
+      const oldTable = document.querySelector('#mytable');
+      if (oldTable) {
+        oldTable.dataset.monitorPending = 'true';
+        const observer = new MutationObserver(() => { delete oldTable.dataset.monitorPending; observer.disconnect(); });
+        observer.observe(oldTable, { childList: true, subtree: true, characterData: true });
+        setTimeout(() => observer.disconnect(), 31000);
+      }
       control.click();
       return true;
     })()`);
     if (!querySubmitted) throw new Error('没有查询按钮');
-    const ready = await waitUntilAnyFrame(this.window, `Boolean(document.querySelector('#mytable') && /合计/.test(document.querySelector('#mytable').innerText))`, 15000);
+    const ready = await this.waitForReportResult(`Boolean(document.querySelector('#mytable') && !document.querySelector('#mytable').dataset.monitorPending && /合计/.test(document.querySelector('#mytable').innerText))`);
     if (!ready) throw new Error('本周报表加载超时');
     this.reportPeriod = weekRange;
     await this.verifyReportPeriod(this.metric.usesSubagents ? 1 : null);
+    this.reportRefreshNeeded = false;
   }
 
   async dismissCrownSecurityPrompt() {
@@ -1011,6 +1049,13 @@ class MonitorService {
     this.timer = null;
     this.commandTimer = null;
     this.commandPollRunning = false;
+    this.activeReads = new Map();
+    this.suspended = false;
+    this.stopped = false;
+    this.operationTimeoutMs = network.operationTimeoutMs || 150000;
+    this.outbox = new NotificationOutbox(store, text => this.deliverOperationalTelegram(text), {
+      quiet: () => inQuietHours(this.store.state.alertPolicy || {}), changed: onChange,
+    });
   }
 
   async telegramRequest(botToken, method, init = {}) {
@@ -1107,6 +1152,7 @@ class MonitorService {
 
   start() {
     if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => this.tick(), 10000);
     this.commandTimer = setInterval(() => void this.pollTelegramCommands(), 15000);
     void this.tick();
@@ -1114,6 +1160,8 @@ class MonitorService {
   }
 
   stop() {
+    this.stopped = true;
+    for (const controller of this.activeReads.values()) controller.abort();
     clearInterval(this.timer);
     clearInterval(this.commandTimer);
     this.timer = null;
@@ -1126,6 +1174,7 @@ class MonitorService {
   }
 
   async pollTelegramCommands() {
+    if (this.stopped || this.suspended) return;
     if (this.commandPollRunning) return;
     const pairing = this.store.state.telegram.pairing;
     if (this.store.state.telegram.mode !== 'pairing' || !pairing?.paired || !pairing.token) return;
@@ -1275,6 +1324,10 @@ class MonitorService {
         reportPeriod: snapshotMatchesMetric ? snapshot?.period || null : null,
         consecutiveFailures: account?.monitorHealth?.consecutiveFailures || 0,
         lastSuccessAt: account?.monitorHealth?.lastSuccessAt || '',
+        failureNotified: Boolean(account?.monitorHealth?.failureNotified),
+        escalationNotified: Boolean(account?.monitorHealth?.escalationNotified),
+        freshnessNotified: Boolean(account?.monitorHealth?.freshnessNotified),
+        freshnessSince: account?.monitorHealth?.freshnessSince || new Date().toISOString(),
       });
     }
     return this.runtime.get(accountId);
@@ -1300,7 +1353,7 @@ class MonitorService {
       if (shouldSend) {
         try {
           const sign = change > 0 ? '+' : '';
-          await this.sendOperationalTelegram([
+          const receipt = await this.sendOperationalTelegram([
             `↕️ ${metric.valueLabel}变化量提醒`, `账号：${account.name}`,
             metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${subagent.path.join(' / ')}` : `监控项：${metric.label}`,
             subagent.remark ? `备注：${subagent.remark}` : '', `报表区间：${periodKey.replace('/', '—')}`,
@@ -1308,9 +1361,9 @@ class MonitorService {
             `当前值：${subagent.value > 0 ? '+' : ''}${subagent.value.toLocaleString('zh-CN')}`,
             `本次变化：${sign}${change.toLocaleString('zh-CN')}`, `变化提醒阈值：${subagent.deltaAlertStep.toLocaleString('zh-CN')}`,
             `时间：${new Date().toLocaleString('zh-CN')}`,
-          ].filter(Boolean).join('\n'));
-          this.recordAlertAttempt({ status: 'sent', alertType: 'delta', accountId: account.id, accountName: account.name, agentName: subagent.name, agentPath: subagent.path, value: subagent.value, change, alertStep: subagent.deltaAlertStep, remark: subagent.remark, period });
-          this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}：本次变化 ${sign}${change.toLocaleString('zh-CN')} 已发送 Telegram 提醒`, account.id);
+          ].filter(Boolean).join('\n'), 'amount');
+          this.recordAlertAttempt({ status: 'sent', alertType: 'delta', accountId: account.id, accountName: account.name, agentName: subagent.name, agentPath: subagent.path, value: subagent.value, change, alertStep: subagent.deltaAlertStep, remark: subagent.remark, period }, receipt);
+          this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}：本次变化 ${sign}${change.toLocaleString('zh-CN')} ${receipt?.queued ? '已加入通知队列' : '已发送 Telegram 提醒'}`, account.id);
         } catch (error) {
           const message = `${subagent.name}：变化量提醒发送失败：${error.message || error}`;
           notificationFailures.push(message); subagent.alertError = error.message || String(error);
@@ -1370,15 +1423,89 @@ class MonitorService {
   }
 
   async tick() {
+    if (this.suspended || this.stopped) return;
+    void this.outbox.flush().catch(error => this.store.addEvent('error', `通知队列异常：${error.message}`));
+    for (const account of this.store.state.accounts.filter(item => item.enabled)) await this.checkFreshness(account);
     const now = Date.now();
     const due = this.store.state.accounts.filter((account) => {
       const status = this.status(account.id);
-      return account.enabled && !this.openingViews.has(account.id) && !status.running && (!status.nextCheckAt || Date.parse(status.nextCheckAt) <= now);
+      return account.enabled && status.status !== 'manual' && !this.openingViews.has(account.id) && !status.running && (!status.nextCheckAt || Date.parse(status.nextCheckAt) <= now);
     });
     await Promise.allSettled(due.map((account) => this.check(account.id)));
   }
 
+  persistHealth(account, status) {
+    this.store.update(data => {
+      const current = data.accounts.find(item => item.id === account.id);
+      if (current) current.monitorHealth = {
+        lastSuccessAt: status.lastSuccessAt || '', consecutiveFailures: status.consecutiveFailures || 0,
+        failureNotified: Boolean(status.failureNotified), escalationNotified: Boolean(status.escalationNotified),
+        freshnessNotified: Boolean(status.freshnessNotified), freshnessSince: status.freshnessSince,
+      };
+    });
+  }
+
+  async updateHealth(account, status, failed) {
+    status.consecutiveFailures = failed ? Number(status.consecutiveFailures || 0) + 1 : 0;
+    const escalation = Math.max(1, Number(this.store.state.alertPolicy?.failureEscalation) || 3);
+    try {
+      if (failed && (!status.failureNotified || (!status.escalationNotified && status.consecutiveFailures >= escalation))) {
+        const escalated = Boolean(status.failureNotified);
+        await this.sendOperationalTelegram(`⚠️ 交收监控${escalated ? '连续失败升级' : '读取失败'}\n账号：${account.name}\n连续失败：${status.consecutiveFailures} 次\n位置：${status.error}\n时间：${new Date().toLocaleString('zh-CN')}`);
+        status.failureNotified = true;
+        status.escalationNotified = escalated || escalation === 1;
+      } else if (!failed && status.failureNotified) {
+        await this.sendOperationalTelegram(`✅ 交收监控恢复正常\n账号：${account.name}\n时间：${new Date().toLocaleString('zh-CN')}`);
+        status.failureNotified = false;
+        status.escalationNotified = false;
+      }
+    } catch (error) {
+      this.store.addEvent('error', `${account.name}：健康通知入队失败：${error.message}`, account.id);
+    }
+    this.persistHealth(account, status);
+  }
+
+  async checkFreshness(account) {
+    const status = this.status(account.id);
+    const targets = staleTargets(account, status.subagents || [], status.freshnessSince);
+    const changed = Boolean(targets.length) !== Boolean(status.freshnessNotified);
+    status.staleTargets = targets;
+    if (targets.length && ['waiting', 'ok', 'triggered', 'stale'].includes(status.status)) status.status = 'stale';
+    if (!changed) return;
+    try {
+      await this.sendOperationalTelegram(targets.length
+        ? `⚠️ 重点代理数据过期\n账号：${account.name}\n代理：${targets.slice(0, 10).map(path => path.join(' / ')).join('；')}\n超过三个检查间隔（至少五分钟）未成功更新，请查看详情。`
+        : `✅ 重点代理数据已恢复更新\n账号：${account.name}`);
+      status.freshnessNotified = Boolean(targets.length);
+      this.persistHealth(account, status);
+    } catch (error) { this.store.addEvent('error', `新鲜度通知入队失败：${error.message}`, account.id); }
+    this.onChange();
+  }
+
+  suspend() {
+    this.suspended = true;
+    for (const controller of this.activeReads.values()) controller.abort();
+  }
+
+  resume() {
+    if (this.stopped) return;
+    this.suspended = false;
+    for (const account of this.store.state.accounts.filter(item => item.enabled)) {
+      const status = this.status(account.id);
+      if (status.status === 'manual') continue;
+      status.status = 'recovering';
+      status.nextCheckAt = null;
+      if (this.inFlight.has(account.id)) {
+        this.rerunRequested.add(account.id);
+        this.activeReads.get(account.id)?.abort();
+      }
+    }
+    void this.tick();
+    this.onChange();
+  }
+
   async check(accountId) {
+    if (this.suspended || this.stopped) return;
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     if (!storedAccount) throw new Error('账号不存在');
     if (!storedAccount.enabled) return;
@@ -1399,6 +1526,12 @@ class MonitorService {
     status.stage = '准备检查';
     this.onChange();
     const client = this.createSiteClient(account, status);
+    const controller = new AbortController();
+    this.activeReads.set(accountId, controller);
+    const read = operation => boundedOperation(operation, this.operationTimeoutMs, () => {
+      if (client.window && !client.window.isDestroyed()) client.window.destroy();
+      client.currentReportPath = null;
+    }, controller.signal);
     const activeView = this.viewWindows.get(accountId);
     if (activeView && !activeView.isDestroyed()) {
       client.window = activeView;
@@ -1406,8 +1539,8 @@ class MonitorService {
     }
     let manualCrownVerification = false;
     try {
-      if (!client.window) await client.open();
-      const report = await client.readThisWeekSettlement();
+      if (!client.window) await read(() => client.open());
+      const report = await read(() => client.readThisWeekSettlement());
       if (!this.isCurrentCheck(accountId, revision)) return;
       status.reportPeriod = client.reportPeriod;
       const rootReadAt = new Date().toISOString();
@@ -1453,28 +1586,34 @@ class MonitorService {
       };
       await publishBatch(agents.slice());
       const childErrors = [];
+      const retryBranches = [];
+      const retriedBranches = new Set();
       const needsBranch = path => fullScan || path.length === 1 || configuredSubagents.some(setting => {
         const target = setting.path || [setting.name];
         return (Number(setting.alertStep) > 0 || Number(setting.deltaAlertStep) > 0)
           && target.length > path.length && path.every((part, index) => target[index] === part);
       });
       const branches = metric.readsDescendants !== false ? report.agents.map((agent) => [agent.name]) : [];
-      while (branches.length) {
+      while (branches.length || retryBranches.length) {
+        if (!branches.length) branches.push(...retryBranches.splice(0));
+        // pop() retains depth-first navigation within the same priority group.
+        branches.sort((a, b) => Number(importantBranch(a, configuredSubagents)) - Number(importantBranch(b, configuredSubagents)));
         const path = branches.pop();
         if (path.length >= MAX_DESCENDANT_DEPTH) continue;
         if (!this.isCurrentCheck(accountId, revision)) return;
         const parent = agents.find((agent) => agentPathKey(agent.path) === agentPathKey(path));
         if (!parent) continue;
-        status.readProgress = { read: agents.filter(a => !a.stale).length, pendingBranches: branches.length + 1 };
+        status.readProgress = { read: agents.filter(a => !a.stale).length, pendingBranches: branches.length + retryBranches.length + 1 };
         status.stage = `已读取 ${status.readProgress.read} 个代理；正在读取第 ${path.length + 1} 级：${path.join(' / ')}`;
         this.onChange();
         const branchStarted = Date.now();
         try {
           const fresh = [];
-          const childReport = await client.readDescendantSettlement(path);
+          const childReport = await read(() => client.readDescendantSettlement(path));
           if (!this.isCurrentCheck(accountId, revision)) return;
           const childReadAt = new Date().toISOString();
           parent.childCount = childReport.agents.length;
+          delete parent.childError;
           for (const child of childReport.agents) {
             const childPath = [...path, child.name];
             if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(childPath))) {
@@ -1486,7 +1625,14 @@ class MonitorService {
           }
           await publishBatch(fresh);
         } catch (error) {
+          if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG') throw error;
           client.currentReportPath = null;
+          const key = agentPathKey(path);
+          if (!retriedBranches.has(key) && !isCredentialFailure(error.message || '') && !/验证码|图形验证/.test(error.message || '')) {
+            retriedBranches.add(key);
+            retryBranches.push(path);
+            continue;
+          }
           parent.childError = error.message || String(error);
           childErrors.push(`${path.join(' / ')}：${parent.childError}`);
           for (const cached of cachedAgents.filter((item) => item.path?.length > path.length && path.every((part, index) => item.path[index] === part))) {
@@ -1515,10 +1661,7 @@ class MonitorService {
       status.subagentCount = metric.usesSubagents ? report.agents.length : 1;
       status.totalValue = report.value;
       status.lastCheckedAt = new Date().toISOString();
-      status.lastSuccessAt = status.lastCheckedAt;
-      status.consecutiveFailures = 0;
-      const recovered = Boolean(status.failureNotified);
-      status.failureNotified = false;
+      if (!childErrors.length) status.lastSuccessAt = status.lastCheckedAt;
       this.store.update((data) => {
         const current = data.accounts.find((item) => item.id === accountId);
         if (current) {
@@ -1528,14 +1671,12 @@ class MonitorService {
             metric: metric.id,
             agents: agents.map(({ name, path, value, turnover, readAt, childCount, stale, notRefreshed }) => ({ name, path, value, stale: Boolean(stale), notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
           };
-          current.monitorHealth = { lastSuccessAt: status.lastSuccessAt, consecutiveFailures: 0 };
-          const point = { time: status.lastSuccessAt, metric: metric.id, agents: agents.filter((item) => !item.stale).map(({ path, value }) => ({ path, value })) };
+          const point = { time: status.lastCheckedAt, metric: metric.id, agents: agents.filter((item) => !item.stale).map(({ path, value }) => ({ path, value })) };
           current.agentTrend = [...(Array.isArray(current.agentTrend) ? current.agentTrend : []), point]
             .filter((item) => Date.parse(item.time) >= Date.now() - 7 * 86400000).slice(-2016);
         }
       });
       if (fullScan && !childErrors.length && this.isCurrentCheck(accountId, revision)) this.fullScanRequested.delete(accountId);
-      if (recovered) await this.sendOperationalTelegram(`✅ 交收监控恢复正常\n账号：${account.name}\n时间：${new Date().toLocaleString('zh-CN')}`).catch(() => {});
       if (!childErrors.length && !notificationFailures.length && this.store.state.accounts.find((item) => item.id === accountId)?.alertHistory?.migrationPending) {
         this.store.update((data) => {
           const current = data.accounts.find((item) => item.id === accountId);
@@ -1545,13 +1686,15 @@ class MonitorService {
           }
         });
       }
-      status.status = childErrors.length || notificationFailures.length ? 'error' : anyTriggered ? 'triggered' : 'ok';
+      status.status = childErrors.length ? 'partial' : notificationFailures.length ? 'error' : anyTriggered ? 'triggered' : 'ok';
       status.readProgress = { read: agents.filter(a => !a.stale).length, pendingBranches: 0 };
       status.failureKind = childErrors.length ? '部分报表读取或校验' : notificationFailures.length ? 'Telegram 发送' : '';
       status.error = [
         childErrors.length ? `部分下级代理读取失败：${childErrors.slice(0, 3).join('；')}${childErrors.length > 3 ? `；共 ${childErrors.length} 个代理失败` : ''}` : '',
         notificationFailures.length ? `Telegram 提醒失败：${notificationFailures.join('；')}` : '',
       ].filter(Boolean).join('；');
+      await this.updateHealth(account, status, Boolean(childErrors.length || notificationFailures.length));
+      await this.checkFreshness(account);
       if (client.window && !client.window.isDestroyed()) {
         const crownSessionWindow = activeView && !activeView.isDestroyed() ? activeView : client.window;
         this.viewWindows.set(accountId, crownSessionWindow);
@@ -1562,39 +1705,33 @@ class MonitorService {
         if (!activeView) crownSessionWindow.hide();
       }
     } catch (error) {
+      if (error.code === 'READ_INTERRUPTED' || !this.isCurrentCheck(accountId, revision)) {
+        status.status = 'recovering';
+        status.subagents = (status.subagents || []).map(agent => ({ ...agent, stale: true }));
+        return;
+      }
       manualCrownVerification = error?.code === 'CROWN_HUMAN_VERIFICATION_REQUIRED';
-      status.status = 'error';
+      const manualRequired = manualCrownVerification || ['验证码', '账号凭据'].includes(failureKind(error));
+      status.status = manualRequired ? 'manual' : 'error';
       const detail = error.message || String(error);
       status.failureKind = failureKind(error);
       status.error = isTransientScriptError(error)
         ? '网页正在跳转，程序将在下次检查时自动重试'
         : `${status.stage || '检查过程'}：${detail}`;
+      if (manualRequired) status.error += '；请盘内查看完成验证后关闭窗口，或更正账号后点击刷新';
       status.lastCheckedAt = new Date().toISOString();
-      status.consecutiveFailures = Number(status.consecutiveFailures || 0) + 1;
       status.subagents = (status.subagents || []).map((agent) => ({ ...agent, stale: true }));
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
-      const policy = this.store.state.alertPolicy || {};
-      const escalation = Math.max(1, Number(policy.failureEscalation) || 3);
-      this.store.update((data) => {
-        const current = data.accounts.find((item) => item.id === accountId);
-        if (current) current.monitorHealth = { lastSuccessAt: status.lastSuccessAt || '', consecutiveFailures: status.consecutiveFailures };
-      });
-      if (status.consecutiveFailures === 1 || status.consecutiveFailures === escalation) {
-        try {
-          const label = status.consecutiveFailures === 1 ? '读取失败' : '连续失败升级';
-          await this.sendOperationalTelegram(`⚠️ 交收监控${label}\n账号：${account.name}\n连续失败：${status.consecutiveFailures} 次\n位置：${status.error}\n时间：${new Date().toLocaleString('zh-CN')}`);
-          status.failureNotified = true;
-          this.store.addEvent('alert', `${account.name}：${label}已发送 Telegram 通知`, account.id);
-        } catch (noticeError) {
-          this.store.addEvent('error', `${account.name}：连续失败升级通知发送失败：${noticeError.message || noticeError}`, account.id);
-        }
-      }
+      await this.updateHealth(account, status, true);
     } finally {
       status.durationMs = Date.now() - checkStarted;
       const timings = status.phaseTimings;
       const slowest = timings?.branches.reduce((max, item) => !max || item.durationMs > max.durationMs ? item : max, null);
       this.store.addEvent('info', `${account.name}：本轮耗时 ${(status.durationMs / 1000).toFixed(1)} 秒${timings ? `；登录及首层 ${(timings.loginAndRootMs / 1000).toFixed(1)} 秒；分支 ${timings.branches.length} 个` : ''}${slowest ? `；最慢分支 ${slowest.path.join(' / ')} ${(slowest.durationMs / 1000).toFixed(1)} 秒` : ''}${status.failureKind ? `；故障类型：${status.failureKind}` : ''}`, accountId);
-      await client.close();
+      this.activeReads.delete(accountId);
+      await boundedOperation(() => client.close(), 10000, () => {
+        if (client.window && !client.window.isDestroyed()) client.window.destroy();
+      }).catch(() => {});
       const shouldReset = this.resetRequested.has(accountId);
       if (shouldReset) {
         do {
@@ -1624,7 +1761,7 @@ class MonitorService {
         const current = this.store.state.accounts.find((item) => item.id === accountId);
         if (current?.enabled) setImmediate(() => void this.check(accountId));
       } else {
-        status.nextCheckAt = new Date(Math.max(Date.now() + 1000, checkStarted + Math.max(1, Number(account.intervalMinutes)) * 60000)).toISOString();
+        status.nextCheckAt = status.status === 'manual' ? null : new Date(Math.max(Date.now() + 1000, checkStarted + Math.max(1, Number(account.intervalMinutes) || 5) * 60000)).toISOString();
         this.onChange();
       }
     }
@@ -1650,6 +1787,14 @@ class MonitorService {
       });
     }
     let anyTriggered = false;
+    if (persistedAccount && !persistedAccount.notificationLedgerVersion) {
+      this.store.update(data => {
+        const current = data.accounts.find(item => item.id === accountId);
+        if (!current) return;
+        current.deliveredAlertHistory = structuredClone(current.alertHistory);
+        current.notificationLedgerVersion = 1;
+      });
+    }
     const policy = this.store.state.alertPolicy || {};
     const confirmationReads = Math.max(1, Math.min(10, Number(policy.confirmationReads) || 1));
     const quiet = inQuietHours(policy);
@@ -1675,7 +1820,7 @@ class MonitorService {
       for (const notification of pending) {
         if (!this.isCurrentCheck(accountId, revision)) return;
         try {
-          await this.sendTelegram(account, subagent.value, notification.level, notification.previousLevel, subagent.name, subagent.alertStep, subagent.remark, subagent.path, period, notification);
+          const receipt = await this.sendTelegram(account, subagent.value, notification.level, notification.previousLevel, subagent.name, subagent.alertStep, subagent.remark, subagent.path, period, notification);
           this.store.update((data) => {
             const current = data.accounts.find((item) => item.id === accountId);
             if (!current || current.alertHistory?.period !== periodKey) throw new Error('提醒已发送，但报表周期记录发生变化；请检查运行记录');
@@ -1685,10 +1830,10 @@ class MonitorService {
             status: 'sent', accountId: account.id, accountName: account.name,
             agentName: subagent.name, agentPath: subagent.path, value: subagent.value,
             level: notification.level, alertStep: subagent.alertStep, remark: subagent.remark,
-            period,
-          });
+            period, metric: alertMetric,
+          }, receipt);
           if (!this.isCurrentCheck(accountId, revision)) return;
-          status.lastAlertAt = new Date().toISOString();
+          if (!receipt?.queued) status.lastAlertAt = new Date().toISOString();
           this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}${subagent.remark ? `（${subagent.remark}）` : ''}：进入 ${notification.level > 0 ? '+' : ''}${(notification.level * subagent.alertStep).toLocaleString('zh-CN')} 档位${notification.combined ? `（合并 ${notification.count} 档）` : ''}`, account.id);
         } catch (error) {
           notificationFailed = true;
@@ -1718,7 +1863,8 @@ class MonitorService {
     return anyTriggered;
   }
 
-  recordAlertAttempt(record) {
+  recordAlertAttempt(record, receipt) {
+    if (receipt?.queued) { this.outbox.attach(receipt, record); return; }
     if (typeof this.store.addAlertRecord === 'function') this.store.addAlertRecord(record);
   }
 
@@ -1747,15 +1893,22 @@ class MonitorService {
       crossedCount > 1 ? `本次跨越：${firstNewMilestone > 0 ? '+' : ''}${firstNewMilestone.toLocaleString('zh-CN')} 至 ${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}，共 ${crossedCount} 档（已合并为一条消息）` : '已进入此档位',
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].filter(Boolean).join('\n');
-    if (mode === 'pairing') return this.pairingClient.send(pairing.token, text);
-    await this.telegramJson(botToken, 'sendMessage', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
-    });
+    return this.enqueueNotification(text, 'amount');
   }
 
-  async sendOperationalTelegram(text) {
+  async sendOperationalTelegram(text, kind = 'operational') {
+    return this.enqueueNotification(text, kind);
+  }
+
+  enqueueNotification(text, kind) {
+    const receipt = this.outbox.enqueue(text, kind);
+    if (this.timer) setImmediate(() => {
+      if (!this.stopped && !this.suspended) void this.outbox.flush().catch(error => this.store.addEvent('error', `通知队列异常：${error.message}`));
+    });
+    return receipt;
+  }
+
+  async deliverOperationalTelegram(text) {
     const { botToken, chatId, mode, pairing } = this.store.state.telegram;
     if (mode === 'pairing' && pairing?.paired && pairing.token) return this.pairingClient.send(pairing.token, text);
     if (mode === 'legacy' && botToken && chatId) return this.telegramJson(botToken, 'sendMessage', {
