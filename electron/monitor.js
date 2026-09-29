@@ -1,4 +1,5 @@
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { BrowserWindow, session, nativeImage, net } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
 const { splitReportRows, parseSettlementTable, parseCrownGeneralAgentTable, parseCrownDashboardDetails, legacyAlertStep, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
@@ -14,7 +15,7 @@ const {
   loginPrefillScript,
   crownLoginSubmissionScript,
   crownLoginPrefillScript,
-  selectCaptchaCandidate,
+  selectCaptchaCandidateDetails,
   isCredentialFailure,
   loginFailureScript,
 } = require('./navigation');
@@ -56,11 +57,17 @@ function captchaOcrVariants(image) {
   const enlarged = image.resize({ width, height, quality: 'best' });
   const variants = [enlarged.toPNG()];
   const bitmap = enlarged.toBitmap();
-  for (const inverted of [false, true]) {
+  const presets = [
+    { threshold: 118, inverted: false },
+    { threshold: 145, inverted: false },
+    { threshold: 172, inverted: false },
+    { threshold: 145, inverted: true },
+  ];
+  for (const { threshold, inverted } of presets) {
     const processed = Buffer.from(bitmap);
     for (let offset = 0; offset + 3 < processed.length; offset += 4) {
-      const brightness = (processed[offset] + processed[offset + 1] + processed[offset + 2]) / 3;
-      const blackOrWhite = brightness < 165 ? 0 : 255;
+      const brightness = (processed[offset] * 0.299) + (processed[offset + 1] * 0.587) + (processed[offset + 2] * 0.114);
+      const blackOrWhite = brightness < threshold ? 0 : 255;
       const value = inverted ? 255 - blackOrWhite : blackOrWhite;
       processed[offset] = value;
       processed[offset + 1] = value;
@@ -69,6 +76,10 @@ function captchaOcrVariants(image) {
     variants.push(nativeImage.createFromBitmap(processed, { width, height, scaleFactor: 1 }).toPNG());
   }
   return variants;
+}
+
+function captchaFingerprint(image) {
+  return crypto.createHash('sha256').update(image.toPNG()).digest('hex');
 }
 
 function jsString(value) {
@@ -269,6 +280,7 @@ class SiteClient {
       return {
         rect: { x: Math.max(0, Math.floor(r.x)), y: Math.max(0, Math.floor(r.y)), width: Math.ceil(r.width), height: Math.ceil(r.height) },
         expectedLength: expectedLength >= 4 && expectedLength <= 6 ? expectedLength : 0,
+        source: image.currentSrc || image.src || '',
       };
     })()`, true);
     if (!info?.rect) throw new Error('找不到验证码图片');
@@ -283,7 +295,8 @@ class SiteClient {
       const result = await this.ocr.recognize(variant);
       candidates.push({ text: result.data.text, confidence: result.data.confidence });
     }
-    return selectCaptchaCandidate(candidates, info.expectedLength);
+    const candidate = selectCaptchaCandidateDetails(candidates, info.expectedLength);
+    return { ...candidate, fingerprint: captchaFingerprint(image), source: info.source };
   }
 
   async refreshCaptcha() {
@@ -298,7 +311,15 @@ class SiteClient {
         || images.find(sized);
       image?.click();
     })()`);
-    await sleep(800);
+    const ready = await waitUntil(this.window, `(() => {
+      const image = [...document.images].find(img => {
+        const r = img.getBoundingClientRect();
+        return r.width >= 45 && r.width <= 220 && r.height >= 18 && r.height <= 80;
+      });
+      return Boolean(image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0);
+    })()`, 3000);
+    if (!ready) throw new Error('验证码刷新后图片未完成加载');
+    await sleep(350);
   }
 
   async crownHumanVerificationRequired() {
@@ -383,14 +404,28 @@ class SiteClient {
     const formReady = await waitUntil(this.window, `document.querySelectorAll('input').length >= 3`, 12000);
     if (!formReady) throw new Error('代理登录页加载失败');
     let lastFailure = '';
+    let previousCaptchaFingerprint = '';
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       this.status.stage = `正在识别验证码（第 ${attempt}/3 次）`;
-      const captcha = await this.readCaptcha();
-      if (captcha.length < 4) {
+      const recognition = await this.readCaptcha();
+      if (recognition.fingerprint === previousCaptchaFingerprint) {
+        lastFailure = '验证码图片未刷新，已停止重复提交';
+        await this.refreshCaptcha();
+        continue;
+      }
+      previousCaptchaFingerprint = recognition.fingerprint;
+      if (recognition.digits.length < 4) {
         lastFailure = '验证码图片无法识别';
         await this.refreshCaptcha();
         continue;
       }
+      if (!recognition.decisive) {
+        lastFailure = `验证码识别置信度不足（${recognition.votes} 组一致，最高 ${Math.round(recognition.confidence)}%）`;
+        this.status.stage = `${lastFailure}，正在更换图片（第 ${attempt}/3 次）`;
+        await this.refreshCaptcha();
+        continue;
+      }
+      const captcha = recognition.digits;
       const baselineFailure = await this.readLoginFailure();
       await executePageAction(this.window, loginSubmissionScript(this.account.username, this.account.password, captcha));
       const outcome = await this.waitForLoginOutcome(10000, baselineFailure);

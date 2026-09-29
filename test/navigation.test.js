@@ -9,6 +9,7 @@ const {
   loginSubmissionScript,
   loginPrefillScript,
   crownLoginSubmissionScript,
+  selectCaptchaCandidateDetails,
   selectCaptchaCandidate,
   isCredentialFailure,
   loginFailureScript,
@@ -151,6 +152,19 @@ test('chooses captcha OCR consensus and respects the expected length', () => {
   ], 4), '1234');
   assert.equal(selectCaptchaCandidate([{ text: '12345', confidence: 99 }, { text: '4321', confidence: 50 }], 4), '4321');
   assert.equal(selectCaptchaCandidate([{ text: '12', confidence: 99 }]), '');
+});
+
+test('marks only corroborated or clearly decisive captcha results safe for automatic submission', () => {
+  const consensus = selectCaptchaCandidateDetails([
+    { text: '12 34', confidence: 45 },
+    { text: '1234', confidence: 40 },
+    { text: '1284', confidence: 80 },
+  ], 4);
+  assert.deepEqual(consensus, { digits: '1234', expectedLength: 4, confidence: 45, votes: 2, candidates: 3, decisive: true });
+  const uncertain = selectCaptchaCandidateDetails([{ text: '4321', confidence: 50 }], 4);
+  assert.equal(uncertain.decisive, false);
+  const clearSingle = selectCaptchaCandidateDetails([{ text: '6789', confidence: 95 }], 4);
+  assert.equal(clearSingle.decisive, true);
 });
 
 test('distinguishes credential errors from captcha errors', () => {

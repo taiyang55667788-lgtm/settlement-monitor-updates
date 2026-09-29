@@ -120,7 +120,7 @@ function crownLoginPrefillScript(username, password, securityCode = '') {
   return crownLoginFormScript(username, password, securityCode, false);
 }
 
-function selectCaptchaCandidate(candidates, expectedLength = 0) {
+function selectCaptchaCandidateDetails(candidates, expectedLength = 0) {
   const requiredLength = Number(expectedLength) >= 4 && Number(expectedLength) <= 6 ? Number(expectedLength) : 0;
   const normalized = (candidates || [])
     .map((candidate) => ({
@@ -137,8 +137,23 @@ function selectCaptchaCandidate(candidates, expectedLength = 0) {
     current.confidence = Math.max(current.confidence, candidate.confidence);
     scores.set(candidate.digits, current);
   }
-  return [...scores.entries()]
-    .sort((a, b) => (b[1].confidence + b[1].count * 40) - (a[1].confidence + a[1].count * 40))[0]?.[0] || '';
+  const ranked = [...scores.entries()]
+    .sort((a, b) => (b[1].confidence + b[1].count * 40) - (a[1].confidence + a[1].count * 40));
+  const [digits, evidence] = ranked[0] || ['', { count: 0, confidence: 0 }];
+  const runnerUp = ranked[1]?.[1];
+  const decisive = evidence.count >= 2 || (evidence.confidence >= 88 && (!runnerUp || evidence.confidence - runnerUp.confidence >= 18));
+  return {
+    digits,
+    expectedLength: requiredLength,
+    confidence: evidence.confidence,
+    votes: evidence.count,
+    candidates: normalized.length,
+    decisive,
+  };
+}
+
+function selectCaptchaCandidate(candidates, expectedLength = 0) {
+  return selectCaptchaCandidateDetails(candidates, expectedLength).digits;
 }
 
 function isCredentialFailure(message) {
@@ -175,6 +190,7 @@ module.exports = {
   loginPrefillScript,
   crownLoginSubmissionScript,
   crownLoginPrefillScript,
+  selectCaptchaCandidateDetails,
   selectCaptchaCandidate,
   isCredentialFailure,
   loginFailureScript,
