@@ -23,6 +23,10 @@ app.whenReady().then(async () => {
       visible: [...document.querySelectorAll('.subagent-row')].map(row => getComputedStyle(row).display !== 'none'),
       remarks: [...document.querySelectorAll('.subagent-row [data-field="remark"]')].map(input => input.value),
       tiers: [...document.querySelectorAll('.subagent-row .notified-tiers')].map(cell => cell.textContent.trim()),
+      progress: [...document.querySelectorAll('.threshold-progress')].map(cell => cell.textContent.trim()),
+      recentAlerts: [...document.querySelectorAll('.recent-alert')].map(cell => cell.textContent.trim()),
+      status: document.querySelector('.status-wrap .status').textContent.trim(),
+      thresholdState: document.querySelector('.threshold-state').textContent.trim(),
       readTimes: [...document.querySelectorAll('.subagent-row .subagent-name')].map(cell => cell.textContent),
       valueColors: [...document.querySelectorAll('.subagent-value')].map(cell => getComputedStyle(cell).color),
     })`);
@@ -32,6 +36,11 @@ app.whenReady().then(async () => {
     assert.deepEqual(initial.remarks, ['直属备注', '二级备注']);
     assert.match(initial.tiers[0], /\+500（最近）/);
     assert.match(initial.tiers[1], /−200（最近）/);
+    assert.deepEqual(initial.progress, ['距下一正档 +600 还差 60', '距下一负档 −400 还差 170']);
+    assert.equal(initial.recentAlerts.length, 1);
+    assert.match(initial.recentAlerts[0], /^最近提醒：09\/19 \d{2}:03$/);
+    assert.equal(initial.status, '运行正常');
+    assert.equal(initial.thresholdState, '已达阈值：2 个直属代理');
     assert.equal(initial.readTimes.every((text) => text.includes('最后成功读取：')), true);
     assert.notEqual(initial.valueColors[0], initial.valueColors[1]);
     if (process.env.SMOKE_SCREENSHOT) {
@@ -98,7 +107,7 @@ app.whenReady().then(async () => {
         id: 'total-account', name: '总盘账号', username: 'total', enabled: true, systemType: 'crown', crownLoginEntry: 'login-1', monitorMetric: 'general-agent-result',
         status: 'triggered', subagentCount: 1, reportPeriod: { start: '2026-09-21', end: '2026-09-27' },
         subagents: [{ name: 'general-a', path: ['general-a'], value: -1250, turnover: 3000, readAt: '2026-09-22T06:00:00.000Z', remark: '总盘', alertStep: 500, customized: true, alertedPositiveLevel: 0, alertedNegativeLevel: -2, lastObservedLevel: -2 }],
-      }], events: [], telegram: {}, update: {}, updater: {}, appearance: { theme: 'ocean' }, alertPolicy: {},
+      }], events: [], alertRecords: [{ time: '2026-09-22T06:00:00.000Z', status: 'sent', accountName: '总盘账号', agentPath: ['general-a'], value: -1250, level: -2, alertStep: 500 }], telegram: {}, update: {}, updater: {}, appearance: { theme: 'ocean' }, alertPolicy: {},
     })`);
     const totalResult = await win.webContents.executeJavaScript(`({
       heading: document.querySelector('.agent-table th:nth-child(2)').textContent.trim(),
@@ -108,7 +117,7 @@ app.whenReady().then(async () => {
       value: document.querySelector('.subagent-value').textContent,
       turnover: document.querySelector('.subagent-turnover').textContent,
     })`);
-    assert.deepEqual(totalResult, { heading: '总代理结果', label: '本周总代理明细', rows: 1, treeToggle: false, value: '-1,250.00趋势数据积累中', turnover: '3,000.00' });
+    assert.deepEqual(totalResult, { heading: '总代理结果', label: '本周总代理明细', rows: 1, treeToggle: false, value: '-1,250.00趋势数据积累中距下一负档 −1,500 还差 250', turnover: '3,000.00' });
     await win.webContents.executeJavaScript(`document.querySelector('#add-account').click()`);
     const crownFields = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const deadline = Date.now() + 3000;
@@ -131,6 +140,13 @@ app.whenReady().then(async () => {
     })`);
     assert.deepEqual(crownFields, { securityVisible: true, securitySection: '盘口账号登录', securityLabel: '皇冠登录安全码（登录界面必填；编辑时明文显示）', routeHidden: true, domainVisible: true, entryVisible: true });
     await win.webContents.executeJavaScript(`document.querySelector('.close-dialog').click()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-view="alerts"]').click()`);
+    const alertPage = await win.webContents.executeJavaScript(`({
+      visible: document.querySelector('#alerts-view').classList.contains('active'),
+      record: document.querySelector('.alert-record')?.textContent.trim(),
+    })`);
+    assert.equal(alertPage.visible, true);
+    assert.match(alertPage.record, /Telegram 已发送/);
     process.stdout.write('Two-level UI smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

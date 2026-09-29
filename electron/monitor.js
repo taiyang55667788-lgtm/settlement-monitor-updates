@@ -1371,6 +1371,12 @@ class MonitorService {
               if (!current || current.alertHistory?.period !== periodKey) throw new Error('提醒已发送，但报表周期记录发生变化；请检查运行记录');
               current.alertHistory.agents[alertKey] = recordAlertLevel(current.alertHistory.agents[alertKey], notification.level, new Date().toISOString());
             });
+            this.recordAlertAttempt({
+              status: 'sent', accountId: account.id, accountName: account.name,
+              agentName: subagent.name, agentPath: subagent.path, value: subagent.value,
+              level: notification.level, alertStep: subagent.alertStep, remark: subagent.remark,
+              period: client.reportPeriod,
+            });
             if (!this.isCurrentCheck(accountId, revision)) return;
             status.lastAlertAt = new Date().toISOString();
             this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}${subagent.remark ? `（${subagent.remark}）` : ''}：进入 ${notification.level > 0 ? '+' : ''}${(notification.level * subagent.alertStep).toLocaleString('zh-CN')} 档位${notification.combined ? `（合并 ${notification.count} 档）` : ''}`, account.id);
@@ -1379,6 +1385,12 @@ class MonitorService {
             const message = `${subagent.name}：${error.message || String(error)}`;
             subagent.alertError = error.message || String(error);
             notificationFailures.push(message);
+            this.recordAlertAttempt({
+              status: 'failed', accountId: account.id, accountName: account.name,
+              agentName: subagent.name, agentPath: subagent.path, value: subagent.value,
+              level: notification.level, alertStep: subagent.alertStep, remark: subagent.remark,
+              error: subagent.alertError, period: client.reportPeriod,
+            });
             this.store.addEvent('error', `${account.name} / ${message}`, account.id);
             break;
           }
@@ -1477,6 +1489,10 @@ class MonitorService {
         this.onChange();
       }
     }
+  }
+
+  recordAlertAttempt(record) {
+    if (typeof this.store.addAlertRecord === 'function') this.store.addAlertRecord(record);
   }
 
   async sendTelegram(account, value, level, previousLevel, subagentName, alertStep, remark = '', path = [subagentName], period = null, notification = {}) {

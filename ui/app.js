@@ -3,7 +3,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
-const statusNames = { waiting: '等待首次检查', checking: '正在检查', ok: '运行正常', triggered: '已达阈值', error: '检查失败' };
+const statusNames = { waiting: '等待首次检查', checking: '正在检查', ok: '运行正常', triggered: '运行正常', error: '检查失败', paused: '已暂停' };
 const thresholdDrafts = new Map();
 const collapsedAgentPaths = new Set();
 
@@ -46,6 +46,22 @@ function alertReason(subagent) {
   return level === subagent.lastObservedLevel ? '当前档位已通知' : '新档位待通知';
 }
 
+function thresholdProgress(subagent) {
+  if (subagent.stale || !Number.isFinite(subagent.alertStep) || subagent.alertStep <= 0 || !Number.isFinite(subagent.value)) return '';
+  const step = subagent.alertStep;
+  if (subagent.value >= 0) {
+    const next = (Math.trunc(subagent.value / step) + 1) * step;
+    return `<small class="threshold-progress positive">距下一正档 +${compactMoney.format(next)} 还差 ${compactMoney.format(next - subagent.value)}</small>`;
+  }
+  const next = (Math.trunc(subagent.value / step) - 1) * step;
+  return `<small class="threshold-progress negative">距下一负档 −${compactMoney.format(Math.abs(next))} 还差 ${compactMoney.format(Math.abs(next - subagent.value))}</small>`;
+}
+
+function recentAlert(subagent) {
+  if (!subagent.lastAlertAt) return '';
+  return `<small class="recent-alert">最近提醒：${escapeHtml(new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(subagent.lastAlertAt)))}</small>`;
+}
+
 function trendChart(trend, path) {
   const key = pathKey(path);
   const values = (trend || []).map((point) => point.agents?.find((agent) => pathKey(agent.path) === key)?.value).filter(Number.isFinite).slice(-80);
@@ -81,8 +97,8 @@ function totalSettlementList(account) {
   const lastAlert = target.lastAlertAt ? ` · 最近通知：${new Date(target.lastAlertAt).toLocaleString('zh-CN')}` : '';
   return `<div class="agent-table-scroll"><table class="agent-table"><thead><tr><th scope="col">监控项 / 最后成功读取</th><th scope="col">${metric.valueLabel}</th><th scope="col">本周最近提醒档位</th><th scope="col">备注（同步通知）</th><th scope="col">提醒间隔（正负）</th><th scope="col">操作</th></tr></thead><tbody><tr class="subagent-row ${target.stale ? 'stale' : ''}" data-subagent-index="0">
     <td><div class="subagent-name"><span class="tree-leaf" aria-hidden="true">◆</span><div><strong>${escapeHtml(metric.label)}</strong><small>本周交收总额</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${target.stale ? '<small class="child-error">数据已过期</small>' : ''}</div></div></td>
-    <td class="subagent-value ${target.value < 0 ? 'negative' : target.value > 0 ? 'positive' : 'zero'}">${target.value > 0 ? '+' : ''}${money.format(target.value)}${trendChart(account.trend, path)}</td>
-    <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(target))}">${escapeHtml(alertReason(target))}</small></td>
+    <td class="subagent-value ${target.value < 0 ? 'negative' : target.value > 0 ? 'positive' : 'zero'}">${target.value > 0 ? '+' : ''}${money.format(target.value)}${trendChart(account.trend, path)}${thresholdProgress(target)}</td>
+    <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(target))}">${escapeHtml(alertReason(target))}</small>${recentAlert(target)}</td>
     <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(metric.label)}的备注" /></td>
     <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" aria-label="${escapeHtml(metric.label)}的提醒间隔" /></td>
     <td><button class="secondary" data-action="save-subagent">保存</button></td>
@@ -112,9 +128,9 @@ function subagentList(account) {
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
     return `<tr class="subagent-row ${depth ? 'second-level' : 'first-level'} ${subagent.stale ? 'stale' : ''}" data-subagent-index="${index}">
       <td><div class="subagent-name">${depth === 0 && readsDescendants ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${depth ? `二级代理 · 上级 ${escapeHtml(path[0])}` : readsDescendants ? `${agentLabel}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? '<small class="child-error">数据已过期</small>' : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
-      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}</td>
+      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}${thresholdProgress(subagent)}</td>
       ${hasTurnover ? `<td class="subagent-turnover">${Number.isFinite(subagent.turnover) ? money.format(subagent.turnover) : '—'}</td>` : ''}
-      <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small></td>
+      <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small>${recentAlert(subagent)}</td>
       <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(subagent.name)} 的备注" /></td>
       <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" aria-label="${escapeHtml(subagent.name)} 的提醒间隔" /></td>
       <td><button class="secondary" data-action="save-subagent">保存</button></td>
@@ -189,7 +205,7 @@ function render(state) {
   $('#theme-select').value = theme;
   const accounts = state.accounts || [];
   $('#total-count').textContent = accounts.length;
-  $('#ok-count').textContent = accounts.filter((a) => a.status === 'ok').length;
+  $('#ok-count').textContent = accounts.filter((a) => a.enabled !== false && ['ok', 'triggered'].includes(a.status)).length;
   $('#alert-count').textContent = accounts.reduce((count, account) => count + (account.subagents || []).filter(isSubagentTriggered).length, 0);
   $('#error-count').textContent = accounts.filter((a) => a.status === 'error').length;
   $('#empty').classList.toggle('show', accounts.length === 0);
@@ -200,21 +216,31 @@ function render(state) {
     const statusDetail = account.error || (account.status === 'checking' ? account.stage : '') || checked;
     const nextCheck = account.nextCheckAt ? new Date(account.nextCheckAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '待安排';
     const health = account.consecutiveFailures ? `连续失败 ${account.consecutiveFailures} 次` : account.lastSuccessAt ? `最近成功 ${new Date(account.lastSuccessAt).toLocaleString('zh-CN')}` : '等待首次成功读取';
-    const configuredCount = (account.subagents || []).filter((subagent) => subagent.customized && Number.isFinite(subagent.alertStep)).length;
+    const configuredAgents = (account.subagents || []).filter((subagent) => subagent.customized && Number.isFinite(subagent.alertStep) && subagent.alertStep > 0);
+    const configuredCount = configuredAgents.length || (account.subagentThresholds || []).filter((subagent) => Number.isFinite(subagent.alertStep) && subagent.alertStep > 0).length;
+    const reachedCount = configuredAgents.filter(isSubagentTriggered).length;
+    const thresholdState = !configuredCount ? '未设置提醒' : !account.subagents?.length ? '等待首次读取' : reachedCount ? `已达阈值：${reachedCount} 个${agentLabel}` : '未达阈值';
     const period = account.reportPeriod;
     const periodText = period?.start && period?.end ? `${period.start}—${period.end}` : '待读取';
     const periodLabel = !period?.start ? '报表日期' : ['ok', 'triggered'].includes(account.status) ? '已核对本周日期' : '上次报表日期';
     return `<article class="account-row" data-id="${account.id}">
       <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)} · ${escapeHtml(systemLabel(account))}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · ${metric.usesSubagents ? `${agentLabel} ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个` : metric.label}</small></div></div>
       <div class="metric"><small>${metric.usesSubagents ? `${agentLabel}数量` : '监控口径'}</small><strong>${metric.usesSubagents ? (Number.isFinite(account.subagentCount) ? account.subagentCount : '—') : escapeHtml(metric.label)}</strong></div>
-      <div class="threshold"><small>已设置提醒</small><strong>${metric.usesSubagents ? `${configuredCount} 个${agentLabel}` : (configuredCount ? '已设置' : '未设置')}</strong></div>
-      <div class="status-wrap"><span class="status ${account.status || 'waiting'}">${statusNames[account.status] || statusNames.waiting}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small><small class="health-detail" title="${escapeHtml(health)}">${escapeHtml(health)} · 下次 ${escapeHtml(nextCheck)}</small></div>
+      <div class="threshold"><small>已设置提醒</small><strong>${metric.usesSubagents ? `${configuredCount} 个${agentLabel}` : (configuredCount ? '已设置' : '未设置')}</strong><small class="threshold-state ${reachedCount ? '' : 'clear'}">${escapeHtml(thresholdState)}</small></div>
+      <div class="status-wrap"><span class="status ${!account.enabled ? 'paused' : (account.status || 'waiting')}">${!account.enabled ? statusNames.paused : (statusNames[account.status] || statusNames.waiting)}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small><small class="health-detail" title="${escapeHtml(health)}">${escapeHtml(health)} · 下次 ${escapeHtml(nextCheck)}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；图形验证或验证码时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，正负每档每周各一次；${metric.readsDescendants !== false ? '点击直属代理展开下级。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '点击直属代理展开下级。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${subagentList(account)}</div>
     </article>`;
   }).join('');
   restoreThresholdDraft(thresholdDraft, state);
   $('#events').innerHTML = (state.events || []).map((event) => `<div class="event ${event.type}"><i></i><time>${new Date(event.time).toLocaleString('zh-CN')}</time><span>${escapeHtml(event.message)}</span></div>`).join('') || '<div class="empty show"><p>暂无运行记录</p></div>';
+  $('#alert-records').innerHTML = (state.alertRecords || []).map((record) => {
+    const value = Number(record.value);
+    const tier = Number(record.level) * Number(record.alertStep);
+    const agent = record.agentPath?.join(' / ') || record.agentName || '—';
+    const result = record.status === 'sent' ? 'Telegram 已发送' : `发送失败：${record.error || '未知错误'}`;
+    return `<article class="alert-record"><time>${new Date(record.time).toLocaleString('zh-CN')}</time><strong class="${record.status === 'sent' ? 'sent' : 'failed'}">${record.status === 'sent' ? '已发送' : '发送失败'}</strong><div><strong>${escapeHtml(record.accountName || '未知账号')}</strong><small title="${escapeHtml(agent)}">${escapeHtml(agent)}${record.remark ? ` · ${escapeHtml(record.remark)}` : ''}</small></div><strong class="${value < 0 ? 'negative' : value > 0 ? 'positive' : ''}">${Number.isFinite(value) ? `${value > 0 ? '+' : ''}${money.format(value)}` : '—'}</strong><span>${Number.isFinite(tier) ? `${tier > 0 ? '+' : '−'}${compactMoney.format(Math.abs(tier))} 档` : '—'}</span><small class="${record.status === 'sent' ? 'sent' : 'failed'}">${escapeHtml(result)}</small></article>`;
+  }).join('') || '<div class="empty show"><p>暂无金额提醒记录</p></div>';
   $('#telegram-form').elements.chatId.value = state.telegram?.chatId || '';
   const pairing = state.telegram?.pairing;
   const pairingExpired = pairing?.expiresAt && Date.now() >= pairing.expiresAt;

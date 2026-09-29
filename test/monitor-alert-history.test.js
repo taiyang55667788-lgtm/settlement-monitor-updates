@@ -25,6 +25,10 @@ function fixture(state) {
     },
     update(mutator) { mutator(this.state); },
     addEvent() {},
+    addAlertRecord(record) {
+      this.state.alertRecords ||= [];
+      this.state.alertRecords.unshift({ time: new Date().toISOString(), ...record });
+    },
   };
   const makeService = () => {
     const service = new MonitorService(store, () => {}, {
@@ -92,7 +96,7 @@ test('monitor notifies 20, 40, 20, and 40 again as a value changes direction', a
 });
 
 test('failed delivery retries only unsent tiers', async () => {
-  const { alerts, makeService } = fixture();
+  const { alerts, store, makeService } = fixture();
   const service = makeService();
   const send = service.sendTelegram;
   let failOnce = true;
@@ -105,8 +109,10 @@ test('failed delivery retries only unsent tiers', async () => {
   };
   await service.check('account-1');
   assert.equal(service.status('account-1').status, 'error');
+  assert.equal(store.state.alertRecords.some((record) => record.status === 'failed' && record.error === 'network failed'), true);
   await service.check('account-1');
   assert.deepEqual(alerts.filter(([path]) => path === 'parent'), [['parent', 1], ['parent', 2]]);
+  assert.equal(store.state.alertRecords.some((record) => record.status === 'sent' && record.level === 2), true);
 });
 
 test('metric change archives old tiers and sends one initial summary per agent', async () => {

@@ -16,6 +16,7 @@ const EMPTY_STATE = {
   },
   accounts: [],
   events: [],
+  alertRecords: [],
 };
 
 class SecureStore {
@@ -42,6 +43,7 @@ class SecureStore {
         this.state.telegram.mode = 'legacy';
       }
       this.state.update.feedUrl = migrateUpdateFeedUrl(this.state.update.feedUrl);
+      this.state.alertRecords = Array.isArray(this.state.alertRecords) ? this.state.alertRecords.slice(0, 500) : [];
       this.state.accounts = this.state.accounts.map((account) => {
         const systemType = accountSystemId(account);
         const crownLoginEntry = crownLoginEntryId(account.crownLoginEntry, account.monitorMetric);
@@ -153,12 +155,23 @@ class SecureStore {
         };
       }),
       events: this.state.events.slice(0, 100),
+      alertRecords: this.state.alertRecords.slice(0, 500),
     };
   }
 
   addEvent(type, message, accountId = null) {
     this.state.events.unshift({ id: crypto.randomUUID(), time: new Date().toISOString(), type, message, accountId });
     this.state.events = this.state.events.slice(0, 500);
+    this.save();
+  }
+
+  addAlertRecord(record) {
+    this.state.alertRecords.unshift({
+      id: crypto.randomUUID(),
+      time: new Date().toISOString(),
+      ...record,
+    });
+    this.state.alertRecords = this.state.alertRecords.slice(0, 500);
     this.save();
   }
 }

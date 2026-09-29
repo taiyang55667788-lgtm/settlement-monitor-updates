@@ -21,7 +21,7 @@ test('from-zero interval inputs are shared across both systems', () => {
   assert.doesNotMatch(client, /data-field="lowerThreshold"/);
   assert.doesNotMatch(client, /data-field="upperThreshold"/);
   assert.match(client, /data-field="alertStep"/);
-  assert.match(client, /提醒从 0 起，正负每档每周各一次/);
+  assert.match(client, /提醒从 0 起，跨入新档或从高档返回低档都会提醒/);
   assert.match(html, /name="systemType"/);
   assert.match(html, /value="crown"/);
   assert.match(html, /name="crownDomain"/);
@@ -66,4 +66,13 @@ test('exposes alert policy, trend, diagnostics, and encrypted backup controls', 
   assert.match(html, /id="import-backup"/);
   assert.match(client, /trendChart/);
   assert.match(client, /saveAlertPolicy/);
+});
+
+test('separates operational status from alert visibility and exposes alert records', () => {
+  assert.match(client, /triggered: '运行正常'/);
+  assert.match(client, /已达阈值：\$\{reachedCount\} 个/);
+  assert.match(client, /thresholdProgress/);
+  assert.match(client, /recentAlert/);
+  assert.match(html, /data-view="alerts"/);
+  assert.match(html, /id="alert-records"/);
 });

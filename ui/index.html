@@ -14,6 +14,7 @@
         <nav>
           <button class="nav-item active" data-view="dashboard"><span>◫</span>监控面板</button>
           <button class="nav-item" data-view="telegram"><span>↗</span>Telegram</button>
+          <button class="nav-item" data-view="alerts"><span>◷</span>提醒记录</button>
           <button class="nav-item" data-view="events"><span>≡</span>运行记录</button>
           <button class="nav-item" data-view="update"><span>⇧</span>软件更新</button>
           <button class="nav-item" data-view="settings"><span>⚙</span>提醒与维护</button>
@@ -64,6 +65,10 @@
 
         <section id="events-view" class="view">
           <div class="panel"><div class="panel-head"><div><h2>运行记录</h2><p>最近 100 条检查、提醒与错误</p></div></div><div id="events" class="events"></div></div>
+        </section>
+
+        <section id="alerts-view" class="view">
+          <div class="panel"><div class="panel-head"><div><h2>提醒记录</h2><p>仅记录实际尝试发送 Telegram 的金额提醒；最近 500 条保存在本机加密配置中。</p></div></div><div id="alert-records" class="alert-records"></div></div>
         </section>
 
         <section id="update-view" class="view">

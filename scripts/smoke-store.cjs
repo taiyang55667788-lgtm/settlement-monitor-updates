@@ -40,6 +40,9 @@ app.whenReady().then(() => {
     });
     assert.equal(reopened.publicState().appearance.theme, 'light');
     assert.equal(reopened.publicState().accounts[0].alertHistory, undefined);
+    reopened.addAlertRecord({ status: 'sent', accountId: 'fixture', accountName: '测试账号', agentName: 'child-01', agentPath: ['parent-01', 'child-01'], value: -700, level: -2, alertStep: 300, remark: '西区' });
+    assert.equal(reopened.publicState().alertRecords[0].status, 'sent');
+    assert.deepEqual(reopened.publicState().alertRecords[0].agentPath, ['parent-01', 'child-01']);
     reopened.update((data) => { data.accounts[0].alertHistory.metric = ALERT_METRIC; });
     const published = reopened.publicState(new Map([['fixture', {
       reportPeriod: { start: '2026-09-14', end: '2026-09-20' },
@@ -49,6 +52,7 @@ app.whenReady().then(() => {
     assert.equal(published.accounts[0].subagents[0].alertedNegativeLevel, -2);
     assert.equal(published.accounts[0].subagents[0].lastObservedLevel, -2);
     assert.equal(published.accounts[0].subagents[0].readAt, '2026-09-19T06:00:00Z');
+    assert.equal(published.alertRecords.length, 1);
     process.stdout.write('Agent settings migration and persistence smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);
