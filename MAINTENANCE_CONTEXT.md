@@ -2,8 +2,8 @@
 
 更新时间：2026-09-29
 
-当前正式版本：`v1.0.20`
-`v1.0.20` 功能基线提交：`15e9b2b`
+当前正式版本：`v1.0.21`
+`v1.0.21` 功能基线提交：`9c39df8`
 
 ## 项目定位
 
@@ -79,6 +79,8 @@
 - `v1.0.19` 新增按单个盘口账号批量设置：勾选多行后可统一设置金额提醒、变化提醒、备注同步或清除两类提醒，不会跨账号误改。
 - `v1.0.20` 重排代理表格：金额与趋势独立显示，“提醒状态”集中显示最近正负档位、下一档进度及最近通知；进度文字采用短格式并可换行，避免与提醒设置重叠。
 - `v1.0.20` 明确区分“金额档位”和“变化阈值”两个输入；批量设置默认收起、勾选代理后自动展开；行内设置有修改未保存时会高亮提示。
+- `v1.0.21` 验证码改为本机多种图像预处理后交叉识别；只有结果一致或置信度明显足够高才会自动提交，重复的验证码图不会反复盲试，低置信度会换图等待下一次识别。
+- `v1.0.21` “软件更新”页新增固定最新版下载网址，可一键打开或复制，方便在另一台电脑重新安装。
 
 ## 主要代码入口
 
@@ -127,12 +129,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 正式版本：`v1.0.20`
-- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.20-x64.exe`
-- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.20/Settlement-Monitor-Portable-1.0.20-x64.exe`
-- 安装包大小：117,448,069 字节
-- SHA-512：`Qs5JD/bjqtdb9wegunZrcup7xE8m70AmP6Y4rlE/BelmOpcg1YTz4ZdYRXZandtgXpPbSM6m4cTHDT1RWQLSGQ==`
-- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.20`
+- 正式版本：`v1.0.21`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.21-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.21/Settlement-Monitor-Portable-1.0.21-x64.exe`
+- 安装包大小：117,449,137 字节
+- SHA-512：`lYKhyta0wWDEfHGjTm91mP+XIBwW8yTBIWYC7FfQmWMwydpXkYPuuYNTPnasCI2qoIgrUT25CsSYX943hJK/Ew==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.21`
 
 ## 后续维护重点
 
