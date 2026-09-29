@@ -24,6 +24,9 @@ app.whenReady().then(async () => {
       remarks: [...document.querySelectorAll('.subagent-row [data-field="remark"]')].map(input => input.value),
       tiers: [...document.querySelectorAll('.subagent-row .notified-tiers')].map(cell => cell.textContent.trim()),
       progress: [...document.querySelectorAll('.threshold-progress')].map(cell => cell.textContent.trim()),
+      reminderLabels: [...document.querySelectorAll('.subagent-row .reminder-settings')].map(cell => [...cell.querySelectorAll('label > span')].map(label => label.textContent.trim())),
+      batchCollapsed: !document.querySelector('.batch-editor').open,
+      visibleUnsavedHints: [...document.querySelectorAll('.unsaved-hint')].filter(hint => !hint.hidden && getComputedStyle(hint).display !== 'none').length,
       recentAlerts: [...document.querySelectorAll('.recent-alert')].map(cell => cell.textContent.trim()),
       status: document.querySelector('.status-wrap .status').textContent.trim(),
       thresholdState: document.querySelector('.threshold-state').textContent.trim(),
@@ -31,12 +34,15 @@ app.whenReady().then(async () => {
       valueColors: [...document.querySelectorAll('.subagent-value')].map(cell => getComputedStyle(cell).color),
     })`);
     assert.equal(initial.tableCount, 1);
-    assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '本周最近提醒档位', '备注（同步通知）', '提醒间隔（正负）', '操作']);
+    assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '提醒状态', '备注（同步通知）', '提醒设置', '操作']);
     assert.deepEqual(initial.visible, [true, true]);
     assert.deepEqual(initial.remarks, ['直属备注', '二级备注']);
     assert.match(initial.tiers[0], /\+500（最近）/);
     assert.match(initial.tiers[1], /−200（最近）/);
-    assert.deepEqual(initial.progress, ['距下一正档 +600 还差 60', '距下一负档 −400 还差 170']);
+    assert.deepEqual(initial.progress, ['下一档 +600 · 差 60', '下一档 −400 · 差 170']);
+    assert.deepEqual(initial.reminderLabels, [['金额档位', '变化阈值'], ['金额档位', '变化阈值']]);
+    assert.equal(initial.batchCollapsed, true);
+    assert.equal(initial.visibleUnsavedHints, 0);
     assert.equal(initial.recentAlerts.length, 1);
     assert.match(initial.recentAlerts[0], /^最近提醒：09\/19 \d{2}:03$/);
     assert.equal(initial.status, '运行正常');
@@ -81,6 +87,23 @@ app.whenReady().then(async () => {
     await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').click()`);
     const childVisible = await win.webContents.executeJavaScript(`document.querySelector('.second-level').getClientRects().length > 0`);
     assert.equal(childVisible, true);
+    const batch = await win.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('.batch-select');
+      input.checked = true;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      const editor = document.querySelector('.batch-editor');
+      return { open: editor.open, text: editor.textContent };
+    })()`);
+    assert.equal(batch.open, true);
+    assert.match(batch.text, /已选 1 个代理/);
+    const pending = await win.webContents.executeJavaScript(`(() => {
+      const row = document.querySelectorAll('.subagent-row')[1];
+      const input = row.querySelector('[data-field="alertStep"]');
+      input.value = '300';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return { dirty: row.classList.contains('has-unsaved'), button: row.querySelector('[data-action="save-subagent"]').textContent, hint: row.querySelector('.unsaved-hint').textContent };
+    })()`);
+    assert.deepEqual(pending, { dirty: true, button: '保存修改', hint: '未保存' });
     const saved = new Promise((resolve) => ipcMain.once('smoke:save', (_event, settings) => resolve(settings)));
     await win.webContents.executeJavaScript(`(() => {
       const row = document.querySelectorAll('.subagent-row')[1];
@@ -117,7 +140,7 @@ app.whenReady().then(async () => {
       value: document.querySelector('.subagent-value').textContent,
       turnover: document.querySelector('.subagent-turnover').textContent,
     })`);
-    assert.deepEqual(totalResult, { heading: '总代理结果', label: '本周总代理明细', rows: 1, treeToggle: false, value: '-1,250.00趋势数据积累中距下一负档 −1,500 还差 250', turnover: '3,000.00' });
+    assert.deepEqual(totalResult, { heading: '总代理结果', label: '本周总代理明细', rows: 1, treeToggle: false, value: '-1,250.00趋势数据积累中', turnover: '3,000.00' });
     await win.webContents.executeJavaScript(`document.querySelector('#add-account').click()`);
     const crownFields = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const deadline = Date.now() + 3000;
