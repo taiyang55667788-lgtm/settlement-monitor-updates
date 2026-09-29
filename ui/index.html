@@ -44,7 +44,7 @@
 
         <section id="telegram-view" class="view">
           <div class="settings-card">
-            <div><p class="eyebrow">通知通道</p><h2>Telegram 一键配对</h2><p>每台电脑只需配对一次。配对后，提醒文字经 Cloudflare 服务发送；盘口账号、安全码和密码仍只保存在本机。</p><ol class="setup-steps"><li>点击右边的“生成配对码”。</li><li>点击“打开机器人”，在 Telegram 中点“开始”；也可以手动发送配对码。</li><li>软件会自动显示“已绑定”，再点“发送测试消息”。</li></ol></div>
+            <div><p class="eyebrow">通知通道</p><h2>Telegram 官方机器人配对</h2><p>每台电脑只需配对一次。提醒文字由 Cloudflare 服务转发到 Telegram；本机不保存 Bot Token，盘口账号、安全码和密码仍只保存在本机。</p><ol class="setup-steps"><li>点击右边的“生成配对码”。</li><li>私聊：点击“打开机器人”后点开始，或直接发送配对码。</li><li>群聊：把机器人加入群并设为管理员，由群管理员发送 <code>/pair 配对码</code>。</li><li>软件显示“已绑定”后，再点“发送测试消息”。</li></ol></div>
             <div class="pairing-panel">
               <div id="pair-status" class="pair-status">读取绑定状态中…</div>
               <div id="pair-code" class="pair-code">—</div>
@@ -52,7 +52,7 @@
               <div class="form-actions pairing-actions"><button type="button" id="pair-start" class="primary">生成配对码</button><button type="button" id="pair-open-bot" class="secondary" hidden>打开机器人</button><button type="button" id="pair-check" class="secondary" hidden>检查配对</button><button type="button" id="pair-unlink" class="secondary" hidden>解除绑定</button></div>
               <button type="button" id="test-telegram" class="secondary" hidden>发送测试消息</button>
               <details class="advanced-telegram"><summary>高级设置：手动填写 Bot Token 和 Chat ID</summary>
-                <p>已有手动配置继续有效。远程服务器无法连接 Telegram 时，请在 Clash Verge 开启 Windows 系统代理。</p>
+                <p>已有手动配置继续有效，但它会由本机直接访问 Telegram。官方机器人配对模式由 Cloudflare 服务转发，本机无需直接连接 Telegram API。</p>
                 <form id="telegram-form">
                   <label>Bot Token<input name="botToken" type="password" autocomplete="off" placeholder="留空表示保留现有 Token" /></label>
                   <label>Chat ID<input name="chatId" autocomplete="off" placeholder="例如 123456789" /></label>

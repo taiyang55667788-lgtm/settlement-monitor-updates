@@ -75,6 +75,35 @@ function telegramCommand(text) {
   return null;
 }
 
+function pairingCode(text) {
+  const match = String(text || '').trim().match(/^(?:(?:\/start|\/pair)(?:@[A-Za-z0-9_]+)?\s+)?([A-HJ-NP-Z2-9]{10})$/i);
+  return match?.[1]?.toUpperCase() || '';
+}
+
+function groupPairingCommand(text) {
+  return /^\/pair(?:@[A-Za-z0-9_]+)?\s+[A-HJ-NP-Z2-9]{10}$/i.test(String(text || '').trim());
+}
+
+function supportedChat(chat) {
+  return Boolean(chat?.id) && ['private', 'group', 'supergroup'].includes(chat.type);
+}
+
+async function groupAdmin(message, env, fetcher) {
+  if (!message?.from?.id) return false;
+  try {
+    const response = await fetcher(`https://api.telegram.org/bot${env.BOT_TOKEN}/getChatMember`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: message.chat.id, user_id: message.from.id }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const payload = await response.json().catch(() => null);
+    return Boolean(response.ok && payload?.ok && ['administrator', 'creator', 'owner'].includes(payload.result?.status));
+  } catch {
+    return false;
+  }
+}
+
 async function authorizedDevice(request, env) {
   const bearer = request.headers.get('authorization')?.match(/^Bearer ([0-9a-f-]{36})\.([0-9a-f]{64})$/i);
   if (!bearer) return null;
@@ -138,14 +167,37 @@ async function receiveWebhook(request, env, ctx, fetcher) {
   const update = await readJson(request);
   const message = update?.message;
   const chatId = message?.chat?.id;
-  if (message?.chat?.type !== 'private' || !chatId) return json({ ok: true });
+  if (!supportedChat(message?.chat) || !chatId) return json({ ok: true });
   const text = String(message.text || '').trim();
+  const isGroup = message.chat.type !== 'private';
+  const code = pairingCode(text);
+  if (code) {
+    if (isGroup && !groupPairingCommand(text)) return json({ ok: true });
+    if (isGroup && !await groupAdmin(message, env, fetcher)) {
+      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '只有群管理员可以配对。请将机器人设为群管理员后，由群管理员发送：/pair 配对码').catch(() => {}));
+      return json({ ok: true });
+    }
+    const codeHash = await sha256(code);
+    const candidate = await env.DB.prepare('SELECT id FROM pairings WHERE code_hash = ? AND chat_id IS NULL AND expires_at > ?')
+      .bind(codeHash, Date.now()).first();
+    if (!candidate) return json({ ok: true });
+    const result = await env.DB.prepare('UPDATE pairings SET chat_id = ?, paired_at = ?, code_hash = NULL WHERE code_hash = ? AND chat_id IS NULL AND expires_at > ?')
+      .bind(String(chatId), Date.now(), codeHash, Date.now()).run();
+    if (result.meta.changes === 1) {
+      const target = isGroup ? '本群' : '此私聊';
+      const commandHint = isGroup ? '群管理员可使用 /report、/top、/alerts 或 /check。' : '现在可以回到电脑查看状态。';
+      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, `✅ 交收监控已配对到${target}。${commandHint}`).catch(() => {}));
+    }
+    return json({ ok: true });
+  }
   const command = telegramCommand(text);
   if (command) {
-    const owner = await env.DB.prepare('SELECT chat_id FROM bot_owner WHERE id = 1').bind().first();
-    if (owner?.chat_id !== String(chatId)) return json({ ok: true });
+    if (isGroup && !await groupAdmin(message, env, fetcher)) {
+      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '只有群管理员可以执行交收监控指令。').catch(() => {}));
+      return json({ ok: true });
+    }
     if (command.type === 'help') {
-      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '🤖 交收监控指令\n/report 或 /status：刷新并返回当前报表\n/top：返回当前金额绝对值前 10 名\n/alerts：返回最近 10 条提醒\n/check：刷新全部启用账号\n/check 账号名：刷新指定账号').catch(() => {}));
+      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '🤖 交收监控指令\n/report 或 /status：刷新并返回当前报表\n/top：返回当前金额绝对值前 10 名\n/alerts：返回最近 10 条提醒\n/check：刷新全部启用账号\n/check 账号名：刷新指定账号\n群聊中仅群管理员可执行指令。').catch(() => {}));
       return json({ ok: true });
     }
     const devices = await env.DB.prepare('SELECT id FROM pairings WHERE chat_id = ?').bind(String(chatId)).all();
@@ -156,23 +208,6 @@ async function receiveWebhook(request, env, ctx, fetcher) {
     const labels = { report: '报表查询', top: '排行查询', alerts: '提醒记录查询', check: '刷新请求' };
     ctx.waitUntil(sendBotMessage(env, fetcher, chatId, devices.results?.length ? `📊 已收到${labels[command.type]}，正在向在线电脑请求最新数据。` : '当前没有已配对电脑。').catch(() => {}));
     return json({ ok: true });
-  }
-  const code = text.match(/^(?:\/start(?:@[A-Za-z0-9_]+)?\s+)?([A-HJ-NP-Z2-9]{10})$/i)?.[1]?.toUpperCase();
-  if (!code) return json({ ok: true });
-  const codeHash = await sha256(code);
-  const candidate = await env.DB.prepare('SELECT id FROM pairings WHERE code_hash = ? AND chat_id IS NULL AND expires_at > ?')
-    .bind(codeHash, Date.now()).first();
-  if (!candidate) return json({ ok: true });
-  await env.DB.prepare('INSERT OR IGNORE INTO bot_owner (id, chat_id) VALUES (1, ?)').bind(String(chatId)).run();
-  const owner = await env.DB.prepare('SELECT chat_id FROM bot_owner WHERE id = 1').bind().first();
-  if (owner?.chat_id !== String(chatId)) {
-    ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '此机器人已绑定其他 Telegram 用户，无法配对。').catch(() => {}));
-    return json({ ok: true });
-  }
-  const result = await env.DB.prepare('UPDATE pairings SET chat_id = ?, paired_at = ?, code_hash = NULL WHERE code_hash = ? AND chat_id IS NULL AND expires_at > ?')
-    .bind(String(chatId), Date.now(), codeHash, Date.now()).run();
-  if (result.meta.changes === 1) {
-    ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '✅ 交收监控已配对。现在可以回到电脑查看状态。').catch(() => {}));
   }
   return json({ ok: true });
 }

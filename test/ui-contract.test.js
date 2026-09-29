@@ -61,6 +61,8 @@ test('Telegram test sends the currently entered form values', () => {
   assert.match(client, /testTelegram\(values\)/);
   assert.match(html, /id="pair-start"/);
   assert.match(html, /id="telegram-form"/);
+  assert.match(html, /\/pair 配对码/);
+  assert.match(html, /Cloudflare 服务转发/);
 });
 
 test('exposes alert policy, trend, diagnostics, and encrypted backup controls', () => {

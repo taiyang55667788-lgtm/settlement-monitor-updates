@@ -307,12 +307,12 @@ function render(state) {
   const pairingExpired = pairing?.expiresAt && Date.now() >= pairing.expiresAt;
   $('#pair-status').textContent = !state.telegram?.pairingAvailable
     ? '配对服务正在准备中，可继续使用下方高级设置'
-    : pairing?.paired ? '✅ 已绑定 Telegram'
-      : pairing && !pairingExpired ? '等待在 Telegram 机器人中发送配对码…'
+    : pairing?.paired ? '✅ 已绑定 Telegram 通知目的地'
+      : pairing && !pairingExpired ? '等待在 Telegram 私聊发送配对码，或由群管理员发送 /pair 配对码…'
         : pairingExpired ? '配对码已过期，请重新生成' : '尚未绑定';
   $('#pair-code').textContent = pairing?.paired ? '已配对' : pairing && !pairingExpired ? pairing.code : '—';
   $('#pair-expiry').textContent = pairing && !pairing.paired && !pairingExpired
-    ? `配对码有效至 ${new Date(pairing.expiresAt).toLocaleTimeString('zh-CN')}，只可使用一次。`
+    ? `配对码有效至 ${new Date(pairing.expiresAt).toLocaleTimeString('zh-CN')}，只可使用一次；群聊请由群管理员发送 /pair 配对码。`
     : '';
   $('#pair-start').disabled = !state.telegram?.pairingAvailable || pairing?.paired;
   $('#pair-open-bot').hidden = !pairing?.code || pairing?.paired || pairingExpired;
@@ -504,11 +504,11 @@ $('#telegram-form').addEventListener('submit', (event) => {
   const values = Object.fromEntries(new FormData(event.currentTarget).entries());
   action(() => window.monitorApi.saveTelegram(values), 'Telegram 设置已保存');
 });
-$('#pair-start').addEventListener('click', () => action(() => window.monitorApi.startTelegramPairing(), '配对码已生成，请发送给机器人'));
+$('#pair-start').addEventListener('click', () => action(() => window.monitorApi.startTelegramPairing(), '配对码已生成：私聊直接发送；群聊由管理员发送 /pair 配对码'));
 $('#pair-open-bot').addEventListener('click', () => action(() => window.monitorApi.openTelegramPairingBot()));
 $('#pair-check').addEventListener('click', () => action(async () => {
   const result = await window.monitorApi.checkTelegramPairing();
-  toast(result.paired ? 'Telegram 已绑定' : '还未收到配对码，请先在机器人中发送');
+  toast(result.paired ? 'Telegram 已绑定' : '还未收到配对码：私聊直接发送，或由群管理员发送 /pair 配对码');
 }));
 $('#pair-unlink').addEventListener('click', () => {
   if (confirm('确定解除这台电脑的 Telegram 通知绑定吗？')) {

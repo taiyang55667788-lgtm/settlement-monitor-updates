@@ -10,11 +10,6 @@ CREATE TABLE IF NOT EXISTS pairings (
   sent_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS pairings_expires_at ON pairings (expires_at);
-CREATE TABLE IF NOT EXISTS bot_owner (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  chat_id TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS commands (
   id TEXT PRIMARY KEY,
   device_id TEXT NOT NULL,

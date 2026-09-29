@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-async function service({ webhookFails = false } = {}) {
+async function service({ webhookFails = false, groupAdmins = [700] } = {}) {
   const { handleRequest } = await import('../pairing-service/src/index.mjs');
   const db = new DatabaseSync(':memory:');
   db.exec(fs.readFileSync(path.join(__dirname, '..', 'pairing-service', 'schema.sql'), 'utf8'));
@@ -24,6 +24,7 @@ async function service({ webhookFails = false } = {}) {
   };
   const sent = [];
   const webhookCalls = [];
+  const memberChecks = [];
   const pending = [];
   const env = { DB: binding, BOT_TOKEN: 'server-only-token', WEBHOOK_SECRET: 'webhook-secret', BOT_USERNAME: 'SampleMonitorBot' };
   const ctx = { waitUntil(promise) { pending.push(promise); } };
@@ -32,6 +33,11 @@ async function service({ webhookFails = false } = {}) {
       webhookCalls.push(JSON.parse(init.body));
       if (webhookFails) return Response.json({ ok: false }, { status: 401 });
       return Response.json({ ok: true, result: true });
+    }
+    if (url.endsWith('/getChatMember')) {
+      const body = JSON.parse(init.body);
+      memberChecks.push(body);
+      return Response.json({ ok: true, result: { status: groupAdmins.includes(Number(body.user_id)) ? 'administrator' : 'member' } });
     }
     sent.push(JSON.parse(init.body));
     return Response.json({ ok: true, result: { message_id: sent.length } });
@@ -45,7 +51,7 @@ async function service({ webhookFails = false } = {}) {
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
   }), env, ctx, fetcher);
-  return { db, env, sent, webhookCalls, pending, call };
+  return { db, env, sent, webhookCalls, memberChecks, pending, call };
 }
 
 test('one-time code pairs a private Telegram chat and allows authenticated test delivery', async () => {
@@ -85,13 +91,14 @@ test('does not create a pairing code when Telegram rejects webhook setup', async
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM pairings').get().count, 0);
 });
 
-test('webhook rejects wrong secret, group chats, and reused codes', async () => {
+test('webhook rejects wrong secret, ignores unapproved group codes, and rejects reused codes', async () => {
   const { call, sent, pending } = await service();
   const { code, token } = await (await call('POST', '/v1/pairings')).json();
-  const body = { message: { chat: { id: -900, type: 'group' }, text: code } };
+  const body = { message: { chat: { id: -900, type: 'group' }, from: { id: 701 }, text: `/pair ${code}` } };
   assert.equal((await call('POST', '/v1/telegram/webhook', { webhookSecret: 'wrong', body })).status, 401);
   assert.equal((await call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body })).status, 200);
-  assert.equal(sent.length, 0);
+  await Promise.all(pending);
+  assert.match(sent.at(-1).text, /只有群管理员/);
   assert.deepEqual(await (await call('GET', '/v1/pairings/status', { token })).json(), { paired: false });
 
   body.message.chat = { id: 900, type: 'private' };
@@ -115,8 +122,8 @@ test('expired pairing code cannot bind, and unlink revokes a device', async () =
   assert.equal((await call('GET', '/v1/pairings/status', { token: first.token })).status, 401);
 });
 
-test('the first private Telegram chat becomes the owner for every computer', async () => {
-  const { call, pending } = await service();
+test('multiple private Telegram users can independently pair their own computers', async () => {
+  const { call, pending, sent } = await service();
   const first = await (await call('POST', '/v1/pairings')).json();
   const second = await (await call('POST', '/v1/pairings')).json();
   const third = await (await call('POST', '/v1/pairings')).json();
@@ -128,11 +135,13 @@ test('the first private Telegram chat becomes the owner for every computer', asy
   }
   await Promise.all(pending);
   assert.deepEqual(await (await call('GET', '/v1/pairings/status', { token: first.token })).json(), { paired: true });
-  assert.deepEqual(await (await call('GET', '/v1/pairings/status', { token: second.token })).json(), { paired: false });
+  assert.deepEqual(await (await call('GET', '/v1/pairings/status', { token: second.token })).json(), { paired: true });
   assert.deepEqual(await (await call('GET', '/v1/pairings/status', { token: third.token })).json(), { paired: true });
+  await call('POST', '/v1/messages/test', { token: second.token });
+  assert.equal(sent.at(-1).chat_id, '202');
 });
 
-test('only the bot owner can queue a report command for paired computers', async () => {
+test('private commands target only computers paired to that private chat', async () => {
   const { call, pending, sent } = await service();
   const created = await (await call('POST', '/v1/pairings')).json();
   await call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body: { message: { chat: { id: 101, type: 'private' }, text: created.code } } });
@@ -146,4 +155,27 @@ test('only the bot owner can queue a report command for paired computers', async
   await call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body: { message: { chat: { id: 101, type: 'private' }, text: '/help' } } });
   await Promise.all(pending);
   assert.equal(sent.some((message) => /\/top/.test(message.text)), true);
+});
+
+test('a group administrator can pair a computer to a group and queue group commands', async () => {
+  const { call, pending, sent, memberChecks } = await service({ groupAdmins: [700] });
+  const created = await (await call('POST', '/v1/pairings')).json();
+  await call('POST', '/v1/telegram/webhook', {
+    webhookSecret: 'webhook-secret',
+    body: { message: { chat: { id: -900, type: 'supergroup' }, from: { id: 700 }, text: `/pair ${created.code}` } },
+  });
+  await Promise.all(pending);
+  assert.deepEqual(memberChecks, [{ chat_id: -900, user_id: 700 }]);
+  assert.deepEqual(await (await call('GET', '/v1/pairings/status', { token: created.token })).json(), { paired: true });
+  assert.match(sent.at(-1).text, /配对到本群/);
+  await call('POST', '/v1/telegram/webhook', {
+    webhookSecret: 'webhook-secret',
+    body: { message: { chat: { id: -900, type: 'supergroup' }, from: { id: 701 }, text: '/report' } },
+  });
+  assert.deepEqual(await (await call('GET', '/v1/commands/next', { token: created.token })).json(), { command: null });
+  await call('POST', '/v1/telegram/webhook', {
+    webhookSecret: 'webhook-secret',
+    body: { message: { chat: { id: -900, type: 'supergroup' }, from: { id: 700 }, text: '/check 一号盘' } },
+  });
+  assert.deepEqual(await (await call('GET', '/v1/commands/next', { token: created.token })).json(), { command: { type: 'check', argument: '一号盘' } });
 });

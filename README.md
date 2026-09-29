@@ -29,10 +29,10 @@
 - 可导出不含账号密码、安全码和 Telegram 凭据的诊断包；可导出与恢复仅限同一系统账户使用的加密配置备份
 - 不同监控口径的提醒记录自动隔离；切换口径后的首次读取只发送一条已跨档位汇总
 - 深蓝、石墨黑、浅色、高对比四种主题；应用金额正数蓝色、负数红色，Telegram 用蓝红圆点标识正负
-- Telegram 一次性配对码绑定；原 Bot Token + Chat ID 手动方式保留在高级设置
+- Telegram 官方机器人支持多人分别用一次性配对码绑定自己的私聊；群管理员也可把设备绑定到群通知。原 Bot Token + Chat ID 手动方式保留在高级设置
 - 盘口结算周按周一早上 6:00 切换；日期或层级校验异常会自动重读 3 次，首次读取失败与恢复正常均会 Telegram 通知
-- 已配对的 Telegram 私聊可发送 `/report`、`/报表`、`/status` 或 `/状态`，让在线电脑刷新后回传当前最多五级代理数据
-- 已配对的 Telegram 私聊还支持 `/top`、`/alerts`、`/check [账号名]` 和 `/help`；每个代理可选按相邻两次成功读取的单次变化量提醒，并可在同一账号内批量维护提醒设置
+- 已配对的 Telegram 私聊可发送 `/report`、`/报表`、`/status` 或 `/状态`，让在线电脑刷新后回传当前最多五级代理数据；群聊中的这些指令只接受群管理员发送
+- 已配对的 Telegram 私聊或群聊还支持 `/top`、`/alerts`、`/check [账号名]` 和 `/help`；每个代理可选按相邻两次成功读取的单次变化量提醒，并可在同一账号内批量维护提醒设置
 - 敏感配置通过操作系统加密服务保存
 - 启动时和每 6 小时自动检查版本，后台下载并提示重启安装
 - “软件更新”页提供固定的最新版下载网址，可直接打开或复制，方便在另一台电脑重新下载安装
@@ -66,7 +66,9 @@ Windows 版本默认从 Cloudflare R2 检查更新。推送 `v*` 标签后，Git
 
 ## Telegram 配对
 
-配对服务的部署说明见 [pairing-service/README.md](pairing-service/README.md)。Worker 地址已配置在 `electron/pairing-config.js`。应用中点击“生成配对码”→“打开机器人”→在 Telegram 点“开始”即可绑定；首次成功配对的私聊成为该机器人的唯一接收者。Bot Token 仅保存在 Cloudflare Worker Secret，不会进入安装包或桌面应用的本地设置；盘口账号、安全码和密码仍只保存在电脑本机。
+配对服务的部署说明见 [pairing-service/README.md](pairing-service/README.md)。Worker 地址已配置在 `electron/pairing-config.js`。每台电脑在应用中点击“生成配对码”后，可由任意用户私聊官方机器人并发送该码；多人之间的设备和消息按各自 Telegram 私聊隔离。群通知则需要把机器人加入群并设为管理员，再由群管理员发送 `/pair 配对码`。Bot Token 仅保存在 Cloudflare Worker Secret，不会进入安装包或桌面应用的本地设置；盘口账号、安全码和密码仍只保存在电脑本机。
+
+官方机器人配对模式由 Cloudflare Worker 调用 Telegram 官方接口，运行监控的电脑不直接访问 Telegram API；只要电脑可访问配对服务，日常通知无需为 Telegram 单独设置代理。旧的手动 Bot Token 模式仍由本机直连 Telegram，网络受限时可能需要系统代理。
 
 如果配对服务不可用，仍可使用“高级设置”中的原手动方式：
 
