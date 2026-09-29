@@ -528,6 +528,11 @@ $('#update-form').addEventListener('submit', (event) => {
 });
 $('#check-update').addEventListener('click', () => action(() => window.monitorApi.checkForUpdates()));
 $('#install-update').addEventListener('click', () => action(() => window.monitorApi.installUpdate()));
+$('#open-latest-download').addEventListener('click', () => action(() => window.monitorApi.openLatestDownloadPage(), '已打开最新版下载页'));
+$('#copy-latest-download').addEventListener('click', () => action(async () => {
+  const result = await window.monitorApi.copyLatestDownloadUrl();
+  return result;
+}, '下载网址已复制'));
 $('#alert-policy-form').addEventListener('submit', (event) => {
   event.preventDefault();
   action(() => window.monitorApi.saveAlertPolicy(Object.fromEntries(new FormData(event.currentTarget).entries())), '提醒策略已保存');

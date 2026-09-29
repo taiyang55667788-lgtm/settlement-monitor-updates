@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('electron');
 const { SecureStore } = require('./store');
 const { MonitorService } = require('./monitor');
 const { UpdateService } = require('./updater');
@@ -12,6 +12,7 @@ let mainWindow;
 let store;
 let monitor;
 let updater;
+const LATEST_DOWNLOAD_PAGE = 'https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest';
 
 function optionalAmount(value) {
   if (value === '' || value === null || value === undefined) return null;
@@ -152,6 +153,11 @@ app.whenReady().then(() => {
   ipcMain.handle('update:install', () => {
     updater.install();
     return { ok: true };
+  });
+  ipcMain.handle('update:open-download-page', () => shell.openExternal(LATEST_DOWNLOAD_PAGE));
+  ipcMain.handle('update:copy-download-url', () => {
+    clipboard.writeText(LATEST_DOWNLOAD_PAGE);
+    return { url: LATEST_DOWNLOAD_PAGE };
   });
   ipcMain.handle('account:save', async (_event, input) => {
     const systemType = accountSystemId(input);

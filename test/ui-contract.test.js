@@ -5,6 +5,8 @@ const path = require('node:path');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'ui', 'index.html'), 'utf8');
 const client = fs.readFileSync(path.join(__dirname, '..', 'ui', 'app.js'), 'utf8');
+const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8');
+const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
 
 test('security code is visibly entered', () => {
   assert.match(html, /name="securityCode" type="text"/);
@@ -75,4 +77,17 @@ test('separates operational status from alert visibility and exposes alert recor
   assert.match(client, /recentAlert/);
   assert.match(html, /data-view="alerts"/);
   assert.match(html, /id="alert-records"/);
+});
+
+test('offers a stable latest-version download page in software update settings', () => {
+  const url = 'https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest';
+  assert.match(html, /id="latest-download-url"/);
+  assert.match(html, /id="open-latest-download"/);
+  assert.match(html, /id="copy-latest-download"/);
+  assert.ok(html.includes(url));
+  assert.match(client, /openLatestDownloadPage/);
+  assert.match(client, /copyLatestDownloadUrl/);
+  assert.match(preload, /update:open-download-page/);
+  assert.match(preload, /update:copy-download-url/);
+  assert.ok(main.includes(url));
 });

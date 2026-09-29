@@ -23,5 +23,7 @@ contextBridge.exposeInMainWorld('monitorApi', {
   __smokeEmitState: (next) => stateListener(next),
   saveSubagentThreshold: async (settings) => { ipcRenderer.send('smoke:save', settings); },
   saveTheme: async (theme) => { ipcRenderer.send('smoke:theme', theme); },
+  openLatestDownloadPage: async () => { ipcRenderer.send('smoke:open-latest-download'); },
+  copyLatestDownloadUrl: async () => { ipcRenderer.send('smoke:copy-latest-download'); return { url: 'https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest' }; },
   expandSubagent: async () => {},
 });

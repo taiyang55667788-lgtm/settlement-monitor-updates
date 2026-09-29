@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('monitorApi', {
   saveUpdateSettings: (settings) => ipcRenderer.invoke('update:save', settings),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
+  openLatestDownloadPage: () => ipcRenderer.invoke('update:open-download-page'),
+  copyLatestDownloadUrl: () => ipcRenderer.invoke('update:copy-download-url'),
   saveAccount: (account) => ipcRenderer.invoke('account:save', account),
   getAccountSecurityCode: (id) => ipcRenderer.invoke('account:security-code', id),
   saveSubagentThreshold: (settings) => ipcRenderer.invoke('subagent-threshold:save', settings),

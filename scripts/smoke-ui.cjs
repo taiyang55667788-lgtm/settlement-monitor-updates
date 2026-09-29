@@ -170,6 +170,19 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(alertPage.visible, true);
     assert.match(alertPage.record, /Telegram 已发送/);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-view="update"]').click()`);
+    const downloadPage = await win.webContents.executeJavaScript(`({
+      visible: document.querySelector('#update-view').classList.contains('active'),
+      url: document.querySelector('#latest-download-url').textContent.trim(),
+    })`);
+    assert.equal(downloadPage.visible, true);
+    assert.equal(downloadPage.url, 'https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest');
+    const openedDownload = new Promise((resolve) => ipcMain.once('smoke:open-latest-download', resolve));
+    await win.webContents.executeJavaScript(`document.querySelector('#open-latest-download').click()`);
+    await openedDownload;
+    const copiedDownload = new Promise((resolve) => ipcMain.once('smoke:copy-latest-download', resolve));
+    await win.webContents.executeJavaScript(`document.querySelector('#copy-latest-download').click()`);
+    await copiedDownload;
     process.stdout.write('Two-level UI smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);
