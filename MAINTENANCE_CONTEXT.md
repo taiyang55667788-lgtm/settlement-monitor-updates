@@ -2,8 +2,8 @@
 
 更新时间：2026-09-29
 
-当前正式版本：`v1.0.21`
-`v1.0.21` 功能基线提交：`9c39df8`
+当前正式版本：`v1.0.22`
+`v1.0.22` 功能基线提交：`941dc8f`
 
 ## 项目定位
 
@@ -81,6 +81,8 @@
 - `v1.0.20` 明确区分“金额档位”和“变化阈值”两个输入；批量设置默认收起、勾选代理后自动展开；行内设置有修改未保存时会高亮提示。
 - `v1.0.21` 验证码改为本机多种图像预处理后交叉识别；只有结果一致或置信度明显足够高才会自动提交，重复的验证码图不会反复盲试，低置信度会换图等待下一次识别。
 - `v1.0.21` “软件更新”页新增固定最新版下载网址，可一键打开或复制，方便在另一台电脑重新安装。
+- `v1.0.22` 166 监控从二级下级代理扩展为最多五级，逐层读取且不请求第六级。
+- `v1.0.22` Telegram 官方机器人支持多个用户分别配对私聊；群管理员可用 `/pair 配对码` 将设备绑定到群，并且群内查询指令仅管理员可执行。配对服务已部署在 Cloudflare Worker，桌面端通过它转发消息，无需直连 Telegram。
 
 ## 主要代码入口
 
@@ -129,12 +131,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 正式版本：`v1.0.21`
-- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.21-x64.exe`
-- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.21/Settlement-Monitor-Portable-1.0.21-x64.exe`
-- 安装包大小：117,449,137 字节
-- SHA-512：`lYKhyta0wWDEfHGjTm91mP+XIBwW8yTBIWYC7FfQmWMwydpXkYPuuYNTPnasCI2qoIgrUT25CsSYX943hJK/Ew==`
-- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.21`
+- 正式版本：`v1.0.22`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.22-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.22/Settlement-Monitor-Portable-1.0.22-x64.exe`
+- 安装包大小：117,449,436 字节
+- SHA-512：`6/H5BIJ6uc1jAixLTAeMow1DDvVGyOCYWsyN7nnpyQFsLxbuPY6CP9RHTozEvC64UKBSSyXeSTelQ7xvM7sMjw==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.22`
 
 ## 后续维护重点
 
