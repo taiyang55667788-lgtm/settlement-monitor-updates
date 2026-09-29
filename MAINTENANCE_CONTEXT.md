@@ -2,8 +2,8 @@
 
 更新时间：2026-09-29
 
-当前正式版本：`v1.0.19`
-`v1.0.19` 功能基线提交：`1a9536a`
+当前正式版本：`v1.0.20`
+`v1.0.20` 功能基线提交：`15e9b2b`
 
 ## 项目定位
 
@@ -77,6 +77,8 @@
 - `v1.0.19` 新增 Telegram 指令：`/top` 查看当前绝对金额前十、`/alerts` 查看最近十条提醒记录、`/check 账号名` 立即查询指定盘口账号、`/help` 查看指令说明；保留 `/report`、`/status` 及中文别名。
 - `v1.0.19` 每个代理或总代理可额外设置“单次变化提醒阈值”：首次成功读取只建基线，之后相邻两次成功读取的变化量达到阈值才发 Telegram；静默/过期数据不触发。提醒记录会明确标为“变化”。
 - `v1.0.19` 新增按单个盘口账号批量设置：勾选多行后可统一设置金额提醒、变化提醒、备注同步或清除两类提醒，不会跨账号误改。
+- `v1.0.20` 重排代理表格：金额与趋势独立显示，“提醒状态”集中显示最近正负档位、下一档进度及最近通知；进度文字采用短格式并可换行，避免与提醒设置重叠。
+- `v1.0.20` 明确区分“金额档位”和“变化阈值”两个输入；批量设置默认收起、勾选代理后自动展开；行内设置有修改未保存时会高亮提示。
 
 ## 主要代码入口
 
@@ -125,12 +127,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 正式版本：`v1.0.19`
-- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.19-x64.exe`
-- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.19/Settlement-Monitor-Portable-1.0.19-x64.exe`
-- 安装包大小：117,447,568 字节
-- SHA-512：`dyQodjWyj+NEaTUwdJv+Bnz9CRAmvPV+83hXm+Yq3XJ5KIRWTT5Ug7o/y/c6F1MYHumdJoW0+zawzXbUT5rzWw==`
-- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.19`
+- 正式版本：`v1.0.20`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.20-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.20/Settlement-Monitor-Portable-1.0.20-x64.exe`
+- 安装包大小：117,448,069 字节
+- SHA-512：`Qs5JD/bjqtdb9wegunZrcup7xE8m70AmP6Y4rlE/BelmOpcg1YTz4ZdYRXZandtgXpPbSM6m4cTHDT1RWQLSGQ==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.20`
 
 ## 后续维护重点
 
