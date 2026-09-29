@@ -2,18 +2,16 @@
 
 更新时间：2026-09-29
 
-当前正式版本：`v1.0.22`
-`v1.0.22` 功能基线提交：`941dc8f`
+当前正式版本：`v1.0.23`
+`v1.0.23` 功能基线提交：`c768e75`
 
-待发布候选版本：`v1.0.23`（未发布）。保留 166 登录窗口；已有有效会话不再重复打开登录入口。五级下钻采用深度优先，同一路径顺序继续读取，切换兄弟分支或导航异常时回到本周根报表。每批有效数据立即显示并按既有确认/静默/档位规则处理提醒，未读旧数据标记过期。检查间隔从本轮开始计算，耗时超出间隔时仍不重叠执行。界面显示上轮耗时和故障类别，诊断包含首层和各分支耗时。皇冠每轮刷新页面防止复用旧数值，并跳过已识别报表布局的额外等待。实际盘口速度和掉线原因仍需 Windows 实机记录验证；暂未降为四级。
+v1.0.23 已发布：保留 166 登录窗口；已有有效会话不再重复打开登录入口。五级下钻采用深度优先，同一路径顺序继续读取，切换兄弟分支或导航异常时回到本周根报表。每批有效数据立即显示并按既有确认/静默/档位规则处理提醒，未读旧数据标记过期。检查间隔从本轮开始计算，耗时超出间隔时仍不重叠执行。界面显示上轮耗时和故障类别，诊断包含首层和各分支耗时。皇冠每轮刷新页面防止复用旧数值，并跳过已识别报表布局的额外等待。实际盘口速度和掉线原因仍需 Windows 实机记录验证；暂未降为四级。
 
 ## 项目定位
 
-最新候选验证：`c768e75` 包含按需扫描与界面简化；86 项 Node 测试、三项桌面冒烟测试通过，已检查实际渲染截图。Windows 验证工作流 `36550685280` 全部成功（测试、安装版/便携版构建、更新清单校验）。仍未发布，正式版本仍为 v1.0.22。验证地址：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/actions/runs/36550685280`。
+发布验证：`c768e75` 包含按需扫描与界面简化；86 项 Node 测试、三项桌面冒烟测试通过，已检查实际渲染截图。Windows 验证工作流 `36550685280` 和正式发布工作流 `36551210777` 全部成功。R2 安装包已完整下载，大小和 SHA-512 与线上 latest.yml 一致。发布地址：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/actions/runs/36551210777`。
 
-v1.0.23 新增待发布改动：移除批量设置 UI、preload 和 IPC；层级保持逐级展开，新增提醒筛选（保留祖先路径）、收起全部和全量扫描。首次或修改账号配置后的全量扫描成功后，快照保存 `structureVersion: 1`；日常只读前两级及已设置金额/变化提醒的深层路径。首次全量失败会继续全量重试。手动全量请求在当前读取结束后执行，成功才清除。未查询深层数据标记 stale/notRefreshed，不参与告警和趋势；刷新父表后移除已不存在的分支。旧版快照升级后会补做一次全量。新增深层代理由手动全量扫描发现。以下旧候选验证记录不覆盖本批新增改动，需以最新验证记录为准。
-
-v1.0.23 候选验证：功能提交 `900fb87`；84 项 Node 测试和三项 Electron 冒烟测试通过。Windows 验证工作流 `36549614345` 全部成功，安装版、便携版和更新清单校验通过。仅生成验证包，未创建 v1.0.23 标签、未上传正式更新；发布前等待用户确认。验证地址：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/actions/runs/36549614345`。
+v1.0.23 新增改动：移除批量设置 UI、preload 和 IPC；层级保持逐级展开，新增提醒筛选（保留祖先路径）、收起全部和全量扫描。首次或修改账号配置后的全量扫描成功后，快照保存 `structureVersion: 1`；日常只读前两级及已设置金额/变化提醒的深层路径。首次全量失败会继续全量重试。手动全量请求在当前读取结束后执行，成功才清除。未查询深层数据标记 stale/notRefreshed，不参与告警和趋势；刷新父表后移除已不存在的分支。旧版快照升级后会补做一次全量。新增深层代理由手动全量扫描发现。
 
 这是一个 Electron 桌面应用，可在 Windows 等电脑上同时独立登录 166 与皇冠账号系统：166 读取最多五级下级代理的本周应收下线；皇冠按登入一、二、三进入盘口后，读取本周“观看总代理”中的每个总代理账号，并按每个总代理独立设置的金额间隔发送 Telegram 提醒。
 
@@ -139,12 +137,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 正式版本：`v1.0.22`
-- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.22-x64.exe`
-- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.22/Settlement-Monitor-Portable-1.0.22-x64.exe`
-- 安装包大小：117,449,436 字节
-- SHA-512：`6/H5BIJ6uc1jAixLTAeMow1DDvVGyOCYWsyN7nnpyQFsLxbuPY6CP9RHTozEvC64UKBSSyXeSTelQ7xvM7sMjw==`
-- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.22`
+- 正式版本：`v1.0.23`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.23-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.23/Settlement-Monitor-Portable-1.0.23-x64.exe`
+- 安装包大小：117,450,627 字节
+- SHA-512：`i+H1MEtwjONtx8u5YF7eF3+lr6LwXmiLe9VdopBLVYfOKxGrJ6WR9kE+q6PsxmDuwtl+31LNuR72DmFh+D1BZQ==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.23`
 
 ## 后续维护重点
 
