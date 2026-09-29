@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('electron');
 const { SecureStore } = require('./store');
-const { MonitorService } = require('./monitor');
+const { MonitorService, MAX_DESCENDANT_DEPTH } = require('./monitor');
 const { UpdateService } = require('./updater');
 const { agentPathKey } = require('./report-parser');
 const { ALERT_METRIC } = require('./alert-ledger');
@@ -222,7 +222,7 @@ app.whenReady().then(() => {
     if (Number.isNaN(alertStep) || (alertStep !== null && alertStep <= 0)) throw new Error('提醒间隔必须是大于 0 的金额，留空表示关闭');
     if (Number.isNaN(deltaAlertStep) || (deltaAlertStep !== null && deltaAlertStep <= 0)) throw new Error('单次变动提醒必须是大于 0 的金额，留空表示关闭');
     const path = Array.isArray(input.path) ? input.path.map((part) => String(part).trim()) : [String(input.name || '').trim()];
-    if (!path.length || path.some((part) => !part) || path.length > 2) throw new Error('只支持往下两级代理');
+    if (!path.length || path.some((part) => !part) || path.length > MAX_DESCENDANT_DEPTH) throw new Error(`只支持前 ${MAX_DESCENDANT_DEPTH} 级代理`);
     const name = path.at(-1);
     const remark = String(input.remark || '').trim();
     if (remark.length > 100) throw new Error('备注最多 100 个字');
@@ -248,7 +248,7 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('subagent-threshold:batch-save', (_event, input) => {
     const accountId = String(input.accountId || '');
-    const paths = Array.isArray(input.paths) ? input.paths.map((path) => Array.isArray(path) ? path.map((part) => String(part).trim()) : []).filter((path) => path.length && path.length <= 2 && path.every(Boolean)) : [];
+    const paths = Array.isArray(input.paths) ? input.paths.map((path) => Array.isArray(path) ? path.map((part) => String(part).trim()) : []).filter((path) => path.length && path.length <= MAX_DESCENDANT_DEPTH && path.every(Boolean)) : [];
     if (!paths.length) throw new Error('请先选择至少一个代理');
     const hasAlertStep = input.alertStep !== '' && input.alertStep !== null && input.alertStep !== undefined;
     const hasDeltaStep = input.deltaAlertStep !== '' && input.deltaAlertStep !== null && input.deltaAlertStep !== undefined;
@@ -283,7 +283,7 @@ app.whenReady().then(() => {
   ipcMain.handle('subagent:expand', (_event, input) => {
     const accountId = String(input.accountId || '');
     const path = Array.isArray(input.path) ? input.path.map((part) => String(part).trim()) : [];
-    if (path.length !== 1 || path.some((part) => !part)) throw new Error('只能展开直属代理，读取第二级代理');
+    if (!path.length || path.length >= MAX_DESCENDANT_DEPTH || path.some((part) => !part)) throw new Error(`只能展开第 1 至第 ${MAX_DESCENDANT_DEPTH - 1} 级代理`);
     const known = monitor.status(accountId).subagents?.some((item) => agentPathKey(item.path) === agentPathKey(path));
     if (!known) throw new Error('请先刷新报表，再查看该代理的下级');
     store.update((data) => {

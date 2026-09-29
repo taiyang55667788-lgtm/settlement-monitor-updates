@@ -12,6 +12,7 @@ function fixture(state) {
     childValue: -350,
     childFailure: false,
     descendantReads: 0,
+    descendants: null,
   };
   const store = {
     state: state || {
@@ -37,9 +38,11 @@ function fixture(state) {
         get reportPeriod() { return context.period; },
         async open() {},
         async readThisWeekSettlement() { return { value: context.parentValue, agents: [{ name: 'parent', value: context.parentValue, turnover: context.parentTurnover }] }; },
-        async readDescendantSettlement() {
+        async readDescendantSettlement(path) {
           context.descendantReads += 1;
           if (context.childFailure) throw new Error('下级报表加载失败');
+          if (context.descendants) return context.descendants.get(path.join('/')) || { value: 0, agents: [] };
+          if (path.length > 1) return { value: 0, agents: [] };
           return { value: context.childValue, agents: [{ name: 'child', value: context.childValue }] };
         },
         async close() {},
@@ -158,6 +161,23 @@ test('failed descendant read retains its last successful value but does not aler
   assert.equal(child.readAt, childReadAt);
   assert.equal(child.value, -350);
   assert.equal(alerts.length, 5);
+});
+
+test('monitor discovers each downline level through level five without reading a sixth level', async () => {
+  const { context, makeService } = fixture();
+  context.descendants = new Map([
+    ['parent', { value: -200, agents: [{ name: 'child', value: -200 }] }],
+    ['parent/child', { value: 300, agents: [{ name: 'third', value: 300 }] }],
+    ['parent/child/third', { value: -400, agents: [{ name: 'fourth', value: -400 }] }],
+    ['parent/child/third/fourth', { value: 500, agents: [{ name: 'fifth', value: 500 }] }],
+    ['parent/child/third/fourth/fifth', { value: 600, agents: [{ name: 'sixth', value: 600 }] }],
+  ]);
+  const service = makeService();
+  await service.check('account-1');
+  assert.deepEqual(service.status('account-1').subagents.map((agent) => agent.path), [
+    ['parent'], ['parent', 'child'], ['parent', 'child', 'third'], ['parent', 'child', 'third', 'fourth'], ['parent', 'child', 'third', 'fourth', 'fifth'],
+  ]);
+  assert.equal(context.descendantReads, 4);
 });
 
 test('confirmation policy holds a new tier until it is read consecutively, while saving a trend point', async () => {

@@ -7,9 +7,10 @@ const statusNames = { waiting: '等待首次检查', checking: '正在检查', o
 const thresholdDrafts = new Map();
 const collapsedAgentPaths = new Set();
 const selectedAgentPaths = new Map();
+const MAX_AGENT_DEPTH = 5;
 
 const monitorMetrics = {
-  'receivable-downline': { label: '应收下线', sectionLabel: '两级代理应收下线', valueLabel: '本周应收下线', usesSubagents: true },
+  'receivable-downline': { label: '应收下线', sectionLabel: '最多五级代理应收下线', valueLabel: '本周应收下线', usesSubagents: true },
   'general-agent-result': { label: '总代理明细', sectionLabel: '本周总代理明细', valueLabel: '总代理结果', usesSubagents: true, readsDescendants: false, agentLabel: '总代理', hasTurnover: true, turnoverLabel: '总代理实货量' },
   'agent-result': { label: '代理商结果', sectionLabel: '本周代理商交收', valueLabel: '本周代理商交收', usesSubagents: false },
   'member-result': { label: '会员结果', sectionLabel: '本周会员交收', valueLabel: '本周会员交收', usesSubagents: false },
@@ -137,12 +138,21 @@ function subagentList(account) {
   const hasTurnover = metric.hasTurnover === true;
   const agentLabel = metric.agentLabel || '直属代理';
   if (!Number.isFinite(account.subagentCount)) {
-    return '<div class="subagent-empty">登录并完成首次检查后，这里会显示下级代理。</div>';
+    return '<div class="subagent-empty">登录并完成首次检查后，这里会显示最多五级下级代理。</div>';
   }
   if (!account.subagents?.length) return '<div class="subagent-empty">本级账号下暂未发现代理。</div>';
   const indexed = account.subagents.map((subagent, index) => ({ subagent, index }));
-  const renderRow = ({ subagent, index }, depth, expanded = false) => {
+  const childrenOf = (parentPath) => indexed.filter(({ subagent }) => {
     const path = subagent.path || [subagent.name];
+    return path.length === parentPath.length + 1 && parentPath.every((part, index) => path[index] === part);
+  });
+  const isExpanded = (path) => (account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(path))
+    && !collapsedAgentPaths.has(thresholdDraftKey(account.id, path));
+  const renderRow = ({ subagent, index }, expanded = false, childCount = 0) => {
+    const path = subagent.path || [subagent.name];
+    const depth = path.length;
+    const canExpand = readsDescendants && depth < MAX_AGENT_DEPTH
+      && (childCount > 0 || Number(subagent.childCount) > 0 || Boolean(subagent.childError));
     const draft = thresholdDrafts.get(thresholdDraftKey(account.id, path));
     const alertStep = draft ? draft.alertStep : (Number.isFinite(subagent.alertStep) ? subagent.alertStep : '');
     const deltaAlertStep = draft ? draft.deltaAlertStep : (Number.isFinite(subagent.deltaAlertStep) ? subagent.deltaAlertStep : '');
@@ -153,8 +163,8 @@ function subagentList(account) {
     const positiveRange = notifiedRange(subagent.alertedPositiveLevel, subagent.alertStep, 1);
     const negativeRange = notifiedRange(subagent.alertedNegativeLevel, subagent.alertStep, -1);
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
-    return `<tr class="subagent-row ${depth ? 'second-level' : 'first-level'} ${subagent.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="${index}">
-      <td><div class="subagent-name"><input class="batch-select" data-path="${escapeHtml(pathKey(path))}" type="checkbox" ${selectedAgentPaths.get(account.id)?.has(pathKey(path)) ? 'checked' : ''} />${depth === 0 && readsDescendants ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${depth ? `二级代理 · 上级 ${escapeHtml(path[0])}` : readsDescendants ? `${agentLabel}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? '<small class="child-error">数据已过期</small>' : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
+    return `<tr class="subagent-row level-${depth} ${depth === 1 ? 'first-level' : 'nested-level'} ${subagent.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="${index}" data-depth="${depth}" style="--tree-depth:${depth}">
+      <td><div class="subagent-name"><input class="batch-select" data-path="${escapeHtml(pathKey(path))}" type="checkbox" ${selectedAgentPaths.get(account.id)?.has(pathKey(path)) ? 'checked' : ''} />${canExpand ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth > 1 ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${readsDescendants ? `第${depth}级代理${depth > 1 ? ` · 上级 ${escapeHtml(path.at(-2))}` : ''}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? '<small class="child-error">数据已过期</small>' : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
       <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}</td>
       ${hasTurnover ? `<td class="subagent-turnover">${Number.isFinite(subagent.turnover) ? money.format(subagent.turnover) : '—'}</td>` : ''}
       <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small>${thresholdProgress(subagent)}${recentAlert(subagent)}</td>
@@ -167,19 +177,18 @@ function subagentList(account) {
   const header = `<thead><tr><th scope="col">${readsDescendants ? '代理层级' : agentLabel} / 最后成功读取</th><th scope="col">${metric.valueLabel}</th>${hasTurnover ? `<th scope="col">本周${metric.turnoverLabel}</th>` : ''}<th scope="col">提醒状态</th><th scope="col">备注（同步通知）</th><th scope="col">提醒设置</th><th scope="col">操作</th></tr></thead>`;
   const tableClass = `agent-table${hasTurnover ? ' has-turnover' : ''}`;
   if (!readsDescendants) return `<div class="agent-table-scroll"><table class="${tableClass}">${header}<tbody>${indexed.filter(({ subagent }) => (subagent.path || [subagent.name]).length === 1).map((item) => renderRow(item, 0)).join('')}</tbody></table></div>`;
-  const branches = indexed.filter(({ subagent }) => (subagent.path || [subagent.name]).length === 1).map((parent) => {
-    const parentPath = parent.subagent.path || [parent.subagent.name];
-    const expanded = (account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(parentPath))
-      && !collapsedAgentPaths.has(thresholdDraftKey(account.id, parentPath));
-    const children = indexed.filter(({ subagent }) => {
-      const path = subagent.path || [subagent.name];
-      return path.length === 2 && path[0] === parentPath[0];
-    });
-    const childContent = children.length ? children.map((child) => renderRow(child, 1)).join('')
-      : `<tr class="child-placeholder"><td colspan="${columns}">${parent.subagent.childError ? '下级读取失败，请刷新重试' : Number.isFinite(parent.subagent.childCount) ? '暂无下级代理' : '正在读取下级代理…'}</td></tr>`;
-    return `<tbody class="agent-branch">${renderRow(parent, 0, expanded)}</tbody><tbody class="child-group" ${expanded ? '' : 'hidden'}>${childContent}</tbody>`;
-  }).join('');
-  return `<div class="agent-table-scroll"><table class="${tableClass}">${header}${branches}</table></div>`;
+  const renderBranch = (item) => {
+    const path = item.subagent.path || [item.subagent.name];
+    const children = childrenOf(path);
+    const expanded = isExpanded(path);
+    const canExpand = path.length < MAX_AGENT_DEPTH && (children.length || Number(item.subagent.childCount) > 0 || Boolean(item.subagent.childError));
+    const row = renderRow(item, expanded, children.length);
+    if (!canExpand || !expanded) return row;
+    if (!children.length) return `${row}<tr class="child-placeholder"><td colspan="${columns}">${item.subagent.childError ? '下级读取失败，请刷新重试' : '暂无下级代理'}</td></tr>`;
+    return `${row}${children.map(renderBranch).join('')}`;
+  };
+  const roots = indexed.filter(({ subagent }) => (subagent.path || [subagent.name]).length === 1);
+  return `<div class="agent-table-scroll"><table class="${tableClass}">${header}<tbody>${roots.map(renderBranch).join('')}</tbody></table></div>`;
 }
 
 function toast(message) {
@@ -262,6 +271,7 @@ function render(state) {
   $('#accounts').innerHTML = accounts.map((account) => {
     const metric = monitorMetric(account);
     const agentLabel = metric.agentLabel || '直属代理';
+    const alertAgentLabel = metric.readsDescendants !== false ? '下级代理' : agentLabel;
     const checked = account.lastCheckedAt ? new Date(account.lastCheckedAt).toLocaleString('zh-CN') : '尚未检查';
     const statusDetail = account.error || (account.status === 'checking' ? account.stage : '') || checked;
     const nextCheck = account.nextCheckAt ? new Date(account.nextCheckAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '待安排';
@@ -269,17 +279,17 @@ function render(state) {
     const configuredAgents = (account.subagents || []).filter((subagent) => subagent.customized && Number.isFinite(subagent.alertStep) && subagent.alertStep > 0);
     const configuredCount = configuredAgents.length || (account.subagentThresholds || []).filter((subagent) => Number.isFinite(subagent.alertStep) && subagent.alertStep > 0).length;
     const reachedCount = configuredAgents.filter(isSubagentTriggered).length;
-    const thresholdState = !configuredCount ? '未设置提醒' : !account.subagents?.length ? '等待首次读取' : reachedCount ? `已达阈值：${reachedCount} 个${agentLabel}` : '未达阈值';
+    const thresholdState = !configuredCount ? '未设置提醒' : !account.subagents?.length ? '等待首次读取' : reachedCount ? `已达阈值：${reachedCount} 个${alertAgentLabel}` : '未达阈值';
     const period = account.reportPeriod;
     const periodText = period?.start && period?.end ? `${period.start}—${period.end}` : '待读取';
     const periodLabel = !period?.start ? '报表日期' : ['ok', 'triggered'].includes(account.status) ? '已核对本周日期' : '上次报表日期';
     return `<article class="account-row" data-id="${account.id}">
       <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)} · ${escapeHtml(systemLabel(account))}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · ${metric.usesSubagents ? `${agentLabel} ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个` : metric.label}</small></div></div>
       <div class="metric"><small>${metric.usesSubagents ? `${agentLabel}数量` : '监控口径'}</small><strong>${metric.usesSubagents ? (Number.isFinite(account.subagentCount) ? account.subagentCount : '—') : escapeHtml(metric.label)}</strong></div>
-      <div class="threshold"><small>已设置提醒</small><strong>${metric.usesSubagents ? `${configuredCount} 个${agentLabel}` : (configuredCount ? '已设置' : '未设置')}</strong><small class="threshold-state ${reachedCount ? '' : 'clear'}">${escapeHtml(thresholdState)}</small></div>
+      <div class="threshold"><small>已设置提醒</small><strong>${metric.usesSubagents ? `${configuredCount} 个${alertAgentLabel}` : (configuredCount ? '已设置' : '未设置')}</strong><small class="threshold-state ${reachedCount ? '' : 'clear'}">${escapeHtml(thresholdState)}</small></div>
       <div class="status-wrap"><span class="status ${!account.enabled ? 'paused' : (account.status || 'waiting')}">${!account.enabled ? statusNames.paused : (statusNames[account.status] || statusNames.waiting)}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small><small class="health-detail" title="${escapeHtml(health)}">${escapeHtml(health)} · 下次 ${escapeHtml(nextCheck)}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；图形验证或验证码时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '点击直属代理展开下级。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${batchEditor(account)}${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '自动识别最多五级下级代理；点击任一有下级的代理可展开或收起。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${batchEditor(account)}${subagentList(account)}</div>
     </article>`;
   }).join('');
   restoreThresholdDraft(thresholdDraft, state);

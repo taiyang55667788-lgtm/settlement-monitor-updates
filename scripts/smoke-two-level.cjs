@@ -6,7 +6,7 @@ const { app, BrowserWindow } = require('electron');
 const { SiteClient, settlementWeekRange } = require('../electron/monitor');
 let phase = 'waiting for Electron';
 const deadline = setTimeout(() => {
-  process.stderr.write(`Two-level report DOM smoke test timed out while ${phase}\n`);
+  process.stderr.write(`Five-level report DOM smoke test timed out while ${phase}\n`);
   app.exit(1);
 }, 45000);
 
@@ -29,10 +29,15 @@ app.whenReady().then(async () => {
   const week = settlementWeekRange();
   client.window = win;
   try {
-    const childTableA = table(row('child-01', -230) + row('合计', -230));
+    const childTableA = table(row('child-01', -230, true) + row('合计', -230));
     const childTableB = table(row('child-01', 310) + row('合计', 310));
+    const thirdTable = table(row('third-01', 330, true) + row('合计', 330));
+    const fourthTable = table(row('fourth-01', -430, true) + row('合计', -430));
+    const fifthTable = table(row('fifth-01', 530) + row('合计', 530));
     const rootTable = table(row('parent-01', 540, true) + row('parent-02', 620, true) + row('合计', 1160));
+    const tables = { 'parent-01': childTableA, 'parent-02': childTableB, 'parent-01/child-01': thirdTable, 'parent-01/child-01/third-01': fourthTable, 'parent-01/child-01/third-01/fourth-01': fifthTable };
     const queryHtml = `<input id="txtStartTime" value="${week.start}"><input id="txtEndTime" value="${week.start}"><button id="thisWeek" onclick="selectWeek()">本星期</button><button id="btnSelect" onclick="showRoot()">查 询</button><main id="report"></main><script>
+      const tables = ${JSON.stringify(tables)}; let reportPath = [];
       function range() { return [document.querySelector('#txtStartTime').value, document.querySelector('#txtEndTime').value]; }
       function selectWeek() {
         if (window.parent.forceTodayOnWeekButton) return;
@@ -41,13 +46,15 @@ app.whenReady().then(async () => {
       }
       function showRoot() {
         const [start, end] = range();
+        reportPath = [];
         window.parent.setReportPeriod(window.parent.forceTodayOnQuery ? '2026-09-18' : start, window.parent.forceTodayOnQuery ? '2026-09-18' : end, ['fixture']);
         document.querySelector('#report').innerHTML = ${JSON.stringify(rootTable)};
       }
       function showChildren(agent) {
         const [start, end] = range();
-        window.parent.setReportPeriod(start, end, ['fixture', agent]);
-        document.querySelector('#report').innerHTML = agent === 'parent-01' ? ${JSON.stringify(childTableA)} : ${JSON.stringify(childTableB)};
+        reportPath = [...reportPath, agent];
+        window.parent.setReportPeriod(start, end, ['fixture', ...reportPath]);
+        document.querySelector('#report').innerHTML = tables[reportPath.join('/')] || ${JSON.stringify(table(row('合计', 0)))};
       }
     </script>`;
     fs.writeFileSync(path.join(directory, 'query.html'), queryHtml);
@@ -72,6 +79,15 @@ app.whenReady().then(async () => {
     const childrenB = await client.readDescendantSettlement(['parent-02']);
     assert.deepEqual(childrenA.agents, [{ name: 'child-01', value: -230 }]);
     assert.deepEqual(childrenB.agents, [{ name: 'child-01', value: 310 }]);
+    phase = 'reading level three report';
+    const third = await client.readDescendantSettlement(['parent-01', 'child-01']);
+    phase = 'reading level four report';
+    const fourth = await client.readDescendantSettlement(['parent-01', 'child-01', 'third-01']);
+    phase = 'reading level five report';
+    const fifth = await client.readDescendantSettlement(['parent-01', 'child-01', 'third-01', 'fourth-01']);
+    assert.deepEqual(third.agents, [{ name: 'third-01', value: 330 }]);
+    assert.deepEqual(fourth.agents, [{ name: 'fourth-01', value: -430 }]);
+    assert.deepEqual(fifth.agents, [{ name: 'fifth-01', value: 530 }]);
     await win.webContents.executeJavaScript('window.forceTodayOnWeekButton = true');
     await assert.rejects(client.readDescendantSettlement(['parent-01']), /未设定完整一周的日期/);
     await win.webContents.executeJavaScript('window.forceTodayOnWeekButton = false; window.forceTodayOnQuery = true');
@@ -121,7 +137,7 @@ app.whenReady().then(async () => {
     crownVerificationClient.window = win;
     await win.loadFile(path.join(directory, 'crown-verification.html'));
     await assert.rejects(crownVerificationClient.loginCrown(`file://${path.join(directory, 'crown-verification.html')}`), /图形验证/);
-    process.stdout.write('Two-level report DOM smoke test passed\n');
+    process.stdout.write('Five-level report DOM smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${phase}: ${error.stack || error}\n`);
     process.exitCode = 1;

@@ -8,7 +8,7 @@ const METRICS = {
     id: RECEIVABLE_DOWNLINE,
     alertMetric: 'weekly-receivable-downline-v2',
     label: '应收下线',
-    sectionLabel: '两级代理应收下线',
+    sectionLabel: '最多五级代理应收下线',
     valueLabel: '本周应收下线',
     reportOption: '',
     columnLabel: '应收下线',

@@ -37,7 +37,10 @@ test('from-zero interval inputs are shared across both systems', () => {
   assert.match(client, /data-field="remark"/);
   assert.match(client, /data-action="expand-subagent"/);
   assert.match(client, /<table class="agent-table">/);
-  assert.match(client, /<tbody class="child-group"/);
+  assert.match(client, /MAX_AGENT_DEPTH = 5/);
+  assert.match(client, /第\$\{depth\}级代理/);
+  assert.match(main, /MAX_DESCENDANT_DEPTH/);
+  assert.match(main, /前 \$\{MAX_DESCENDANT_DEPTH\} 级代理/);
   assert.match(client, /getAccountSecurityCode\(account\.id\)/);
   assert.match(client, /updateSystemFields/);
 });

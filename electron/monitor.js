@@ -6,6 +6,7 @@ const { splitReportRows, parseSettlementTable, parseCrownGeneralAgentTable, pars
 const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel } = require('./alert-ledger');
 const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
+const MAX_DESCENDANT_DEPTH = 5;
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -894,7 +895,7 @@ class SiteClient {
     return parseCrownGeneralAgentTable(splitReportRows(rawRows, 16));
   }
 
-  async drillIntoAgent(name) {
+  async drillIntoAgent(name, expectedDepth) {
     const target = jsString(name);
     const clicked = await executeInFrames(this.window, `(() => {
       const tables = [...document.querySelectorAll('table')];
@@ -907,21 +908,22 @@ class SiteClient {
       const control = first.querySelector('a,button,[role="button"]')
         || (first.hasAttribute('onclick') ? first : null)
         || (row.hasAttribute('onclick') ? row : null);
-      if (!control) return { error: '该代理在报表中没有可点击的下级入口' };
+      if (!control) return { noDescendants: true };
       const before = table.innerText;
       control.click();
       return { before };
     })()`, (result) => result !== null && result !== undefined);
     if (!clicked) throw new Error(`报表中找不到代理“${name}”`);
-    if (clicked.error) throw new Error(clicked.error);
+    if (clicked.noDescendants) return false;
     const changed = await waitUntilAnyFrame(this.window, `(() => {
       const table = [document.querySelector('#mytable'), ...document.querySelectorAll('table')].filter(Boolean)
         .find(t => /应收下线/.test(t.innerText) && /合计/.test(t.innerText));
       return Boolean(table && table.innerText !== ${jsString(clicked.before)});
     })()`, 12000);
     if (!changed) throw new Error('点击代理后报表没有切换到下级；请提供点击前后的盘口截图');
-    await this.verifyReportPeriod(2);
+    await this.verifyReportPeriod(expectedDepth);
     this.previousReportText = clicked.before;
+    return true;
   }
 
   async readDescendantSettlement(path) {
@@ -930,9 +932,10 @@ class SiteClient {
     if (expectedPeriod && `${this.reportPeriod.start}/${this.reportPeriod.end}` !== expectedPeriod) {
       throw new Error('读取下级时本周日期范围发生变化，已停止读取');
     }
-    for (const name of path) {
+    for (const [index, name] of path.entries()) {
       this.status.stage = `正在读取 ${path.join(' / ')} 的下级`;
-      await this.drillIntoAgent(name);
+      const drilled = await this.drillIntoAgent(name, index + 2);
+      if (!drilled) return { value: 0, agents: [] };
     }
     return this.readCurrentSettlement();
   }
@@ -1357,11 +1360,13 @@ class MonitorService {
         : [{ name: metric.label, path: [metric.label], value: report.value, readAt: rootReadAt }];
       const childErrors = [];
       const branches = metric.readsDescendants !== false ? report.agents.map((agent) => [agent.name]) : [];
-      for (const path of branches) {
+      while (branches.length) {
+        const path = branches.shift();
+        if (path.length > MAX_DESCENDANT_DEPTH) continue;
         if (!this.isCurrentCheck(accountId, revision)) return;
         const parent = agents.find((agent) => agentPathKey(agent.path) === agentPathKey(path));
         if (!parent) continue;
-        status.stage = `正在读取 ${path[0]} 的下级代理`;
+        status.stage = `正在读取第 ${path.length + 1} 级：${path.join(' / ')}`;
         this.onChange();
         try {
           const childReport = await client.readDescendantSettlement(path);
@@ -1370,17 +1375,20 @@ class MonitorService {
           parent.childCount = childReport.agents.length;
           for (const child of childReport.agents) {
             const childPath = [...path, child.name];
-            if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(childPath))) agents.push({ ...child, path: childPath, readAt: childReadAt });
+            if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(childPath))) {
+              agents.push({ ...child, path: childPath, readAt: childReadAt });
+              if (childPath.length < MAX_DESCENDANT_DEPTH) branches.push(childPath);
+            }
           }
         } catch (error) {
           parent.childError = error.message || String(error);
           childErrors.push(`${path.join(' / ')}：${parent.childError}`);
-          for (const cached of cachedAgents.filter((item) => item.path?.length === 2 && item.path[0] === path[0])) {
+          for (const cached of cachedAgents.filter((item) => item.path?.length > path.length && path.every((part, index) => item.path[index] === part))) {
             if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(cached.path))) agents.push({ ...cached, stale: true });
           }
         }
       }
-      status.stage = metric.readsDescendants !== false ? '两级代理报表读取完成' : metric.usesSubagents ? '皇冠总代理明细读取完成' : '报表读取完成';
+      status.stage = metric.readsDescendants !== false ? `最多 ${MAX_DESCENDANT_DEPTH} 级代理报表读取完成` : metric.usesSubagents ? '皇冠总代理明细读取完成' : '报表读取完成';
       let configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
       const legacyStep = legacyAlertStep(account);
       if (metric.usesSubagents && !configuredSubagents.length && report.agents.length && legacyStep !== null) {
@@ -1665,4 +1673,4 @@ class MonitorService {
   }
 }
 
-module.exports = { MonitorService, SiteClient, settlementWeekRange };
+module.exports = { MonitorService, SiteClient, settlementWeekRange, MAX_DESCENDANT_DEPTH };

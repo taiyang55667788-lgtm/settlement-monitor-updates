@@ -14,7 +14,7 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
     await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const deadline = Date.now() + 3000;
-      const poll = () => document.querySelectorAll('.subagent-row').length === 2 ? resolve() : Date.now() > deadline ? reject(new Error('代理列表未显示')) : setTimeout(poll, 25);
+      const poll = () => document.querySelectorAll('.subagent-row').length === 5 ? resolve() : Date.now() > deadline ? reject(new Error('五级代理列表未显示')) : setTimeout(poll, 25);
       poll();
     })`);
     const initial = await win.webContents.executeJavaScript(`({
@@ -32,21 +32,23 @@ app.whenReady().then(async () => {
       thresholdState: document.querySelector('.threshold-state').textContent.trim(),
       readTimes: [...document.querySelectorAll('.subagent-row .subagent-name')].map(cell => cell.textContent),
       valueColors: [...document.querySelectorAll('.subagent-value')].map(cell => getComputedStyle(cell).color),
+      depths: [...document.querySelectorAll('.subagent-row')].map(row => Number(row.dataset.depth)),
     })`);
     assert.equal(initial.tableCount, 1);
     assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '提醒状态', '备注（同步通知）', '提醒设置', '操作']);
-    assert.deepEqual(initial.visible, [true, true]);
-    assert.deepEqual(initial.remarks, ['直属备注', '二级备注']);
+    assert.deepEqual(initial.visible, [true, true, true, true, true]);
+    assert.deepEqual(initial.depths, [1, 2, 3, 4, 5]);
+    assert.deepEqual(initial.remarks, ['直属备注', '二级备注', '三级备注', '四级备注', '五级备注']);
     assert.match(initial.tiers[0], /\+500（最近）/);
     assert.match(initial.tiers[1], /−200（最近）/);
-    assert.deepEqual(initial.progress, ['下一档 +600 · 差 60', '下一档 −400 · 差 170']);
-    assert.deepEqual(initial.reminderLabels, [['金额档位', '变化阈值'], ['金额档位', '变化阈值']]);
+    assert.deepEqual(initial.progress, ['下一档 +600 · 差 60', '下一档 −400 · 差 170', '下一档 +400 · 差 70', '下一档 −500 · 差 70', '下一档 +600 · 差 70']);
+    assert.deepEqual(initial.reminderLabels, Array.from({ length: 5 }, () => ['金额档位', '变化阈值']));
     assert.equal(initial.batchCollapsed, true);
     assert.equal(initial.visibleUnsavedHints, 0);
     assert.equal(initial.recentAlerts.length, 1);
     assert.match(initial.recentAlerts[0], /^最近提醒：09\/19 \d{2}:03$/);
     assert.equal(initial.status, '运行正常');
-    assert.equal(initial.thresholdState, '已达阈值：2 个直属代理');
+    assert.equal(initial.thresholdState, '已达阈值：5 个下级代理');
     assert.equal(initial.readTimes.every((text) => text.includes('最后成功读取：')), true);
     assert.notEqual(initial.valueColors[0], initial.valueColors[1]);
     if (process.env.SMOKE_SCREENSHOT) {
@@ -80,12 +82,12 @@ app.whenReady().then(async () => {
     assert.deepEqual(otherThemes.map((item) => item.background), ['rgb(16, 17, 20)', 'rgb(0, 0, 0)']);
     assert.equal(otherThemes.every((item) => item.positive !== item.negative), true);
     await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').click()`);
-    const collapsed = await win.webContents.executeJavaScript(`document.querySelector('.child-group').hidden`);
+    const collapsed = await win.webContents.executeJavaScript(`document.querySelectorAll('.subagent-row').length === 1`);
     assert.equal(collapsed, true);
-    const childHidden = await win.webContents.executeJavaScript(`document.querySelector('.second-level').getClientRects().length === 0`);
+    const childHidden = await win.webContents.executeJavaScript(`!document.querySelector('.level-2')`);
     assert.equal(childHidden, true);
     await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').click()`);
-    const childVisible = await win.webContents.executeJavaScript(`document.querySelector('.second-level').getClientRects().length > 0`);
+    const childVisible = await win.webContents.executeJavaScript(`document.querySelectorAll('.subagent-row').length === 5 && Boolean(document.querySelector('.level-5'))`);
     assert.equal(childVisible, true);
     const batch = await win.webContents.executeJavaScript(`(() => {
       const input = document.querySelector('.batch-select');
@@ -183,7 +185,7 @@ app.whenReady().then(async () => {
     const copiedDownload = new Promise((resolve) => ipcMain.once('smoke:copy-latest-download', resolve));
     await win.webContents.executeJavaScript(`document.querySelector('#copy-latest-download').click()`);
     await copiedDownload;
-    process.stdout.write('Two-level UI smoke test passed\n');
+    process.stdout.write('Five-level UI smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);
     process.exitCode = 1;
