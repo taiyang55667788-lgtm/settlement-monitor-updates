@@ -22,11 +22,11 @@ contextBridge.exposeInMainWorld('monitorApi', {
   saveAccount: (account) => ipcRenderer.invoke('account:save', account),
   getAccountSecurityCode: (id) => ipcRenderer.invoke('account:security-code', id),
   saveSubagentThreshold: (settings) => ipcRenderer.invoke('subagent-threshold:save', settings),
-  saveSubagentThresholdBatch: (settings) => ipcRenderer.invoke('subagent-threshold:batch-save', settings),
   expandSubagent: (accountId, path) => ipcRenderer.invoke('subagent:expand', { accountId, path }),
   removeAccount: (id) => ipcRenderer.invoke('account:remove', id),
   toggleAccount: (id, enabled) => ipcRenderer.invoke('account:toggle', { id, enabled }),
   checkAccount: (id) => ipcRenderer.invoke('account:check', id),
+  fullScanAccount: (id) => ipcRenderer.invoke('account:full-scan', id),
   openAccountView: (id) => ipcRenderer.invoke('account:view', id),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);

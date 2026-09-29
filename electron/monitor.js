@@ -988,6 +988,7 @@ class MonitorService {
     this.revisions = new Map();
     this.resetRequested = new Set();
     this.rerunRequested = new Set();
+    this.fullScanRequested = new Set();
     this.viewWindows = new Map();
     this.openingViews = new Set();
     this.timer = null;
@@ -1314,6 +1315,8 @@ class MonitorService {
   }
 
   async invalidateAccount(accountId) {
+    if (this.store.state.accounts.some(account => account.id === accountId)) this.fullScanRequested.add(accountId);
+    else this.fullScanRequested.delete(accountId);
     const view = this.viewWindows.get(accountId);
     this.viewWindows.delete(accountId);
     this.openingViews.delete(accountId);
@@ -1335,6 +1338,13 @@ class MonitorService {
     }
     const current = this.store.state.accounts.find((item) => item.id === accountId);
     if (current?.enabled) setImmediate(() => void this.check(accountId));
+  }
+
+  requestFullScan(accountId) {
+    const account = this.store.state.accounts.find(item => item.id === accountId);
+    if (!account?.enabled) throw new Error('请先启用账号，再进行全量扫描');
+    this.fullScanRequested.add(accountId);
+    this.requestRecheck(accountId);
   }
 
   isCurrentCheck(accountId, revision) {
@@ -1386,8 +1396,9 @@ class MonitorService {
       const rootReadAt = new Date().toISOString();
       const periodKey = `${client.reportPeriod.start}/${client.reportPeriod.end}`;
       const cachedSnapshot = this.store.state.accounts.find((item) => item.id === accountId)?.agentSnapshot;
-      const cachedAgents = cachedSnapshot?.period?.start === client.reportPeriod.start
-        && cachedSnapshot?.period?.end === client.reportPeriod.end && cachedSnapshot.metric === metric.id ? cachedSnapshot.agents || [] : [];
+      const cachedAgents = cachedSnapshot?.metric === metric.id ? cachedSnapshot.agents || [] : [];
+      const fullScan = this.fullScanRequested.has(accountId) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1;
+      status.scanMode = fullScan ? '全量扫描' : '按提醒读取';
       const agents = metric.usesSubagents
         ? report.agents.map((agent) => ({ ...agent, path: [agent.name], readAt: rootReadAt }))
         : [{ name: metric.label, path: [metric.label], value: report.value, readAt: rootReadAt }];
@@ -1425,6 +1436,11 @@ class MonitorService {
       };
       await publishBatch(agents.slice());
       const childErrors = [];
+      const needsBranch = path => fullScan || path.length === 1 || configuredSubagents.some(setting => {
+        const target = setting.path || [setting.name];
+        return (Number(setting.alertStep) > 0 || Number(setting.deltaAlertStep) > 0)
+          && target.length > path.length && path.every((part, index) => target[index] === part);
+      });
       const branches = metric.readsDescendants !== false ? report.agents.map((agent) => [agent.name]) : [];
       while (branches.length) {
         const path = branches.pop();
@@ -1448,7 +1464,7 @@ class MonitorService {
               const item = { ...child, path: childPath, readAt: childReadAt };
               agents.push(item);
               fresh.push(item);
-              if (childPath.length < MAX_DESCENDANT_DEPTH) branches.push(childPath);
+              if (childPath.length < MAX_DESCENDANT_DEPTH && needsBranch(childPath)) branches.push(childPath);
             }
           }
           await publishBatch(fresh);
@@ -1457,10 +1473,24 @@ class MonitorService {
           parent.childError = error.message || String(error);
           childErrors.push(`${path.join(' / ')}：${parent.childError}`);
           for (const cached of cachedAgents.filter((item) => item.path?.length > path.length && path.every((part, index) => item.path[index] === part))) {
-            if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(cached.path))) agents.push({ ...cached, stale: true });
+            if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(cached.path))) agents.push({ ...cached, stale: true, notRefreshed: false });
           }
         } finally {
           status.phaseTimings.branches.push({ path: [...path], durationMs: Date.now() - branchStarted, error: parent.childError || '' });
+        }
+      }
+      if (!this.isCurrentCheck(accountId, revision)) return;
+      if (!fullScan) {
+        // Keep unqueried descendants as explicitly stale structure; refreshed parent lists
+        // prune agents which no longer exist, without evaluating cached amounts for alerts.
+        const refreshedParents = new Set(status.phaseTimings.branches.filter(item => !item.error).map(item => agentPathKey(item.path)));
+        refreshedParents.add(agentPathKey([]));
+        for (const cached of [...cachedAgents].sort((a, b) => a.path.length - b.path.length)) {
+          if (agents.some(item => agentPathKey(item.path) === agentPathKey(cached.path))) continue;
+          const parentPath = cached.path.slice(0, -1);
+          if (refreshedParents.has(agentPathKey(parentPath))) continue;
+          if (parentPath.length && !agents.some(item => agentPathKey(item.path) === agentPathKey(parentPath))) continue;
+          agents.push({ ...cached, stale: true, notRefreshed: true });
         }
       }
       status.stage = metric.readsDescendants !== false ? `最多 ${MAX_DESCENDANT_DEPTH} 级代理报表读取完成` : metric.usesSubagents ? '皇冠总代理明细读取完成' : '报表读取完成';
@@ -1476,9 +1506,10 @@ class MonitorService {
         const current = data.accounts.find((item) => item.id === accountId);
         if (current) {
           current.agentSnapshot = {
+            structureVersion: fullScan && !childErrors.length ? 1 : cachedSnapshot?.structureVersion,
             period: client.reportPeriod,
             metric: metric.id,
-            agents: agents.map(({ name, path, value, turnover, readAt, childCount }) => ({ name, path, value, ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
+            agents: agents.map(({ name, path, value, turnover, readAt, childCount, stale, notRefreshed }) => ({ name, path, value, stale: Boolean(stale), notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
           };
           current.monitorHealth = { lastSuccessAt: status.lastSuccessAt, consecutiveFailures: 0 };
           const point = { time: status.lastSuccessAt, metric: metric.id, agents: agents.filter((item) => !item.stale).map(({ path, value }) => ({ path, value })) };
@@ -1486,6 +1517,7 @@ class MonitorService {
             .filter((item) => Date.parse(item.time) >= Date.now() - 7 * 86400000).slice(-2016);
         }
       });
+      if (fullScan && !childErrors.length && this.isCurrentCheck(accountId, revision)) this.fullScanRequested.delete(accountId);
       if (recovered) await this.sendOperationalTelegram(`✅ 交收监控恢复正常\n账号：${account.name}\n时间：${new Date().toLocaleString('zh-CN')}`).catch(() => {});
       if (!childErrors.length && !notificationFailures.length && this.store.state.accounts.find((item) => item.id === accountId)?.alertHistory?.migrationPending) {
         this.store.update((data) => {

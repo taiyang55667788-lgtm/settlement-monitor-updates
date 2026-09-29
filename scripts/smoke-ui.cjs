@@ -25,7 +25,7 @@ app.whenReady().then(async () => {
       tiers: [...document.querySelectorAll('.subagent-row .notified-tiers')].map(cell => cell.textContent.trim()),
       progress: [...document.querySelectorAll('.threshold-progress')].map(cell => cell.textContent.trim()),
       reminderLabels: [...document.querySelectorAll('.subagent-row .reminder-settings')].map(cell => [...cell.querySelectorAll('label > span')].map(label => label.textContent.trim())),
-      batchCollapsed: !document.querySelector('.batch-editor').open,
+      batchRemoved: !document.querySelector('.batch-editor, .batch-select'),
       visibleUnsavedHints: [...document.querySelectorAll('.unsaved-hint')].filter(hint => !hint.hidden && getComputedStyle(hint).display !== 'none').length,
       recentAlerts: [...document.querySelectorAll('.recent-alert')].map(cell => cell.textContent.trim()),
       status: document.querySelector('.status-wrap .status').textContent.trim(),
@@ -43,7 +43,7 @@ app.whenReady().then(async () => {
     assert.match(initial.tiers[1], /−200（最近）/);
     assert.deepEqual(initial.progress, ['下一档 +600 · 差 60', '下一档 −400 · 差 170', '下一档 +400 · 差 70', '下一档 −500 · 差 70', '下一档 +600 · 差 70']);
     assert.deepEqual(initial.reminderLabels, Array.from({ length: 5 }, () => ['金额档位', '变化阈值']));
-    assert.equal(initial.batchCollapsed, true);
+    assert.equal(initial.batchRemoved, true);
     assert.equal(initial.visibleUnsavedHints, 0);
     assert.equal(initial.recentAlerts.length, 1);
     assert.match(initial.recentAlerts[0], /^最近提醒：09\/19 \d{2}:03$/);
@@ -89,15 +89,13 @@ app.whenReady().then(async () => {
     await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').click()`);
     const childVisible = await win.webContents.executeJavaScript(`document.querySelectorAll('.subagent-row').length === 5 && Boolean(document.querySelector('.level-5'))`);
     assert.equal(childVisible, true);
-    const batch = await win.webContents.executeJavaScript(`(() => {
-      const input = document.querySelector('.batch-select');
-      input.checked = true;
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      const editor = document.querySelector('.batch-editor');
-      return { open: editor.open, text: editor.textContent };
+    const filter = await win.webContents.executeJavaScript(`(() => {
+      document.querySelector('[data-action="filter-reminders"]').click();
+      return { rows: document.querySelectorAll('.subagent-row').length, pressed: document.querySelector('[data-action="filter-reminders"]').getAttribute('aria-pressed') };
     })()`);
-    assert.equal(batch.open, true);
-    assert.match(batch.text, /已选 1 个代理/);
+    assert.equal(filter.rows, 5);
+    assert.equal(filter.pressed, 'true');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-action="filter-reminders"]').click()`);
     const pending = await win.webContents.executeJavaScript(`(() => {
       const row = document.querySelectorAll('.subagent-row')[1];
       const input = row.querySelector('[data-field="alertStep"]');
@@ -185,6 +183,26 @@ app.whenReady().then(async () => {
     const copiedDownload = new Promise((resolve) => ipcMain.once('smoke:copy-latest-download', resolve));
     await win.webContents.executeJavaScript(`document.querySelector('#copy-latest-download').click()`);
     await copiedDownload;
+    const filtered = await win.webContents.executeJavaScript(`(async () => {
+      const next = structuredClone(await window.monitorApi.getState());
+      const account = next.accounts[0];
+      account.expandedAgentPaths = [];
+      for (const agent of account.subagents) { agent.alertStep = null; agent.deltaAlertStep = null; }
+      account.subagents.at(-1).deltaAlertStep = 10;
+      account.subagents[2].stale = true;
+      account.subagents[2].notRefreshed = true;
+      account.subagents.push({ name: 'unrelated', path: ['unrelated'], value: 0 });
+      render(next);
+      const defaultRows = document.querySelectorAll('.subagent-row').length;
+      document.querySelector('[data-action="filter-reminders"]').click();
+      return { defaultRows, names: [...document.querySelectorAll('.subagent-name strong')].map(el => el.textContent), stale: document.querySelector('.level-3').textContent };
+    })()`);
+    assert.equal(filtered.defaultRows, 2);
+    assert.deepEqual(filtered.names, ['parent-01', 'child-01', 'third-01', 'fourth-01', 'fifth-01']);
+    assert.match(filtered.stale, /本轮未刷新/);
+    const fullScan = new Promise(resolve => ipcMain.once('smoke:full-scan', (_event, id) => resolve(id)));
+    await win.webContents.executeJavaScript(`document.querySelector('[data-action="full-scan"]').click()`);
+    assert.equal(await fullScan, 'fixture-account');
     process.stdout.write('Five-level UI smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

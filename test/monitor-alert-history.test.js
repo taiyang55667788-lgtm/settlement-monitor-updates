@@ -117,6 +117,69 @@ test('schedules from the start of the check, accounting for time spent reading',
   }
 });
 
+test('discovers all five levels once, then selects only reminder branches and preserves unread data', async () => {
+  const { context, store, alerts, makeService } = fixture();
+  context.descendants = new Map([
+    ['parent', { agents: [{ name: 'child', value: 10 }, { name: 'other', value: 20 }] }],
+    ['parent/child', { agents: [{ name: 'third', value: 30 }] }],
+    ['parent/child/third', { agents: [{ name: 'fourth', value: 40 }] }],
+    ['parent/child/third/fourth', { agents: [{ name: 'fifth', value: 50 }] }],
+    ['parent/other', { agents: [{ name: 'third', value: 99 }] }],
+  ]);
+  const reads = [];
+  context.beforeDescendant = async path => reads.push(path.join('/'));
+  let service = makeService();
+  await service.check('account-1');
+  assert.ok(reads.includes('parent/other'));
+  assert.ok(reads.includes('parent/child/third/fourth'));
+  assert.equal(store.state.accounts[0].agentSnapshot.structureVersion, 1);
+  reads.length = 0;
+  service = makeService(); // structure survives restart
+  await service.check('account-1');
+  assert.deepEqual(reads, ['parent']);
+  assert.equal(service.status('account-1').subagents.find(a => a.name === 'fifth').notRefreshed, true);
+  const leafPath = ['parent', 'child', 'third', 'fourth', 'fifth'];
+  store.state.accounts[0].subagentThresholds.push({ name: 'fifth', path: leafPath, deltaAlertStep: 10 });
+  reads.length = 0;
+  await service.check('account-1');
+  assert.deepEqual(reads, ['parent', 'parent/child', 'parent/child/third', 'parent/child/third/fourth']);
+  assert.equal(service.status('account-1').subagents.find(a => a.name === 'fifth').stale, undefined);
+  assert.equal(service.status('account-1').subagents.find(a => a.path.join('/') === 'parent/other/third').notRefreshed, true);
+  store.state.accounts[0].subagentThresholds.at(-1).deltaAlertStep = null;
+  reads.length = 0;
+  const sent = alerts.length;
+  await service.check('account-1');
+  assert.deepEqual(reads, ['parent']);
+  assert.equal(alerts.length, sent);
+  let scheduled = false;
+  service.requestRecheck = () => { scheduled = true; };
+  service.requestFullScan('account-1');
+  assert.equal(scheduled, true);
+  reads.length = 0;
+  await service.check('account-1');
+  assert.ok(reads.includes('parent/other'));
+  assert.ok(reads.includes('parent/child/third/fourth'));
+  assert.equal(service.fullScanRequested.has('account-1'), false);
+});
+
+test('partial initial discovery retries fully and removed parents prune cached descendants', async () => {
+  const { context, store, makeService } = fixture();
+  const service = makeService();
+  context.childFailure = true;
+  await service.check('account-1');
+  assert.notEqual(store.state.accounts[0].agentSnapshot.structureVersion, 1);
+  context.childFailure = false;
+  context.descendants = new Map([
+    ['parent', { agents: [{ name: 'child', value: 10 }] }],
+    ['parent/child', { agents: [{ name: 'third', value: 30 }] }],
+  ]);
+  await service.check('account-1');
+  assert.equal(store.state.accounts[0].agentSnapshot.structureVersion, 1);
+  context.descendants.set('parent', { agents: [] });
+  await service.check('account-1');
+  assert.deepEqual(service.status('account-1').subagents.map(a => a.name), ['parent']);
+});
+
 test('monitor repeats alerts when values return to an earlier tier, while retaining state across restart', async () => {
   const { alerts, context, store, makeService } = fixture();
   const service = makeService();

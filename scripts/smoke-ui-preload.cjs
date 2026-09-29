@@ -29,4 +29,5 @@ contextBridge.exposeInMainWorld('monitorApi', {
   openLatestDownloadPage: async () => { ipcRenderer.send('smoke:open-latest-download'); },
   copyLatestDownloadUrl: async () => { ipcRenderer.send('smoke:copy-latest-download'); return { url: 'https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest' }; },
   expandSubagent: async () => {},
+  fullScanAccount: async (id) => { ipcRenderer.send('smoke:full-scan', id); },
 });

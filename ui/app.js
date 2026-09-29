@@ -6,11 +6,12 @@ const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }
 const statusNames = { waiting: '等待首次检查', checking: '正在检查', ok: '运行正常', triggered: '运行正常', error: '检查失败', paused: '已暂停' };
 const thresholdDrafts = new Map();
 const collapsedAgentPaths = new Set();
-const selectedAgentPaths = new Map();
+const reminderOnlyAccounts = new Set();
+const filteredCollapsedPaths = new Set();
 const MAX_AGENT_DEPTH = 5;
 
 const monitorMetrics = {
-  'receivable-downline': { label: '应收下线', sectionLabel: '最多五级代理应收下线', valueLabel: '本周应收下线', usesSubagents: true },
+  'receivable-downline': { label: '应收下线', sectionLabel: '代理应收下线', valueLabel: '本周应收下线', usesSubagents: true },
   'general-agent-result': { label: '总代理明细', sectionLabel: '本周总代理明细', valueLabel: '总代理结果', usesSubagents: true, readsDescendants: false, agentLabel: '总代理', hasTurnover: true, turnoverLabel: '总代理实货量' },
   'agent-result': { label: '代理商结果', sectionLabel: '本周代理商交收', valueLabel: '本周代理商交收', usesSubagents: false },
   'member-result': { label: '会员结果', sectionLabel: '本周会员交收', valueLabel: '本周会员交收', usesSubagents: false },
@@ -40,6 +41,7 @@ function notifiedRange(level, step, direction) {
 }
 
 function alertReason(subagent) {
+  if (subagent.notRefreshed) return '本轮未刷新；启用提醒后自动读取';
   if (subagent.stale) return '本次未成功读取，暂停该行提醒';
   if (!Number.isFinite(subagent.alertStep) || subagent.alertStep <= 0) return '未设置提醒间隔';
   if (subagent.alertError) return `通知失败：${subagent.alertError}`;
@@ -77,9 +79,15 @@ function recentAlert(subagent) {
   return `<small class="recent-alert">最近提醒：${escapeHtml(new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(subagent.lastAlertAt)))}</small>`;
 }
 
-function batchEditor(account) {
-  const selected = selectedAgentPaths.get(account.id) || new Set();
-  return `<details class="batch-editor" ${selected.size ? 'open' : ''}><summary><strong>批量设置</strong><small>已选 ${selected.size} 个代理</small></summary><form data-batch-account="${escapeHtml(account.id)}"><p>留空表示不修改；清除操作只作用于已勾选代理。</p><input name="alertStep" type="number" min="0.01" step="0.01" placeholder="金额档位；留空不改" /><input name="deltaAlertStep" type="number" min="0.01" step="0.01" placeholder="变化阈值；留空不改" /><label class="batch-remark"><input name="updateRemark" type="checkbox" /> 同步备注</label><input name="remark" maxlength="100" placeholder="备注（可留空清除）" /><label><input name="clearAlertStep" type="checkbox" /> 关闭金额提醒</label><label><input name="clearDeltaAlertStep" type="checkbox" /> 关闭变动提醒</label><button class="secondary" type="submit" ${selected.size ? '' : 'disabled'}>应用到已选代理</button></form></details>`;
+function hasReminder(agent) {
+  return Number(agent.alertStep) > 0 || Number(agent.deltaAlertStep) > 0;
+}
+
+function agentToolbar(account) {
+  if (!monitorMetric(account).usesSubagents) return '';
+  const only = reminderOnlyAccounts.has(account.id);
+  const descendants = monitorMetric(account).readsDescendants !== false;
+  return `<div class="agent-toolbar"><button class="secondary" data-action="filter-reminders" aria-pressed="${only}">${only ? '显示全部代理' : '只看已设置提醒'}</button>${descendants ? '<button class="secondary" data-action="collapse-agents">收起全部</button><button class="secondary" data-action="full-scan" title="重新发现最多五级代理并刷新全部金额">全量扫描</button>' : ''}<small>${descendants ? `${escapeHtml(account.scanMode || '首次全量扫描')} · 日常读前两级及深层提醒分支` : ''}${only ? ' · 仅显示提醒代理及上级路径' : ''}</small></div>`;
 }
 
 function reminderSettings(name, alertStep, deltaAlertStep) {
@@ -122,7 +130,7 @@ function totalSettlementList(account) {
   const negativeRange = notifiedRange(target.alertedNegativeLevel, target.alertStep, -1);
   const lastAlert = target.lastAlertAt ? ` · 最近通知：${new Date(target.lastAlertAt).toLocaleString('zh-CN')}` : '';
   return `<div class="agent-table-scroll"><table class="agent-table"><thead><tr><th scope="col">监控项 / 最后成功读取</th><th scope="col">${metric.valueLabel}</th><th scope="col">提醒状态</th><th scope="col">备注（同步通知）</th><th scope="col">提醒设置</th><th scope="col">操作</th></tr></thead><tbody><tr class="subagent-row ${target.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="0">
-    <td><div class="subagent-name"><input class="batch-select" data-path="${escapeHtml(pathKey(path))}" type="checkbox" ${selectedAgentPaths.get(account.id)?.has(pathKey(path)) ? 'checked' : ''} /><span class="tree-leaf" aria-hidden="true">◆</span><div><strong>${escapeHtml(metric.label)}</strong><small>本周交收总额</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${target.stale ? '<small class="child-error">数据已过期</small>' : ''}</div></div></td>
+    <td><div class="subagent-name"><span class="tree-leaf" aria-hidden="true">◆</span><div><strong>${escapeHtml(metric.label)}</strong><small>本周交收总额</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${target.stale ? '<small class="child-error">数据已过期</small>' : ''}</div></div></td>
     <td class="subagent-value ${target.value < 0 ? 'negative' : target.value > 0 ? 'positive' : 'zero'}">${target.value > 0 ? '+' : ''}${money.format(target.value)}${trendChart(account.trend, path)}</td>
     <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(target))}">${escapeHtml(alertReason(target))}</small>${thresholdProgress(target)}${recentAlert(target)}</td>
     <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(metric.label)}的备注" /></td>
@@ -141,12 +149,18 @@ function subagentList(account) {
     return '<div class="subagent-empty">登录并完成首次检查后，这里会显示最多五级下级代理。</div>';
   }
   if (!account.subagents?.length) return '<div class="subagent-empty">本级账号下暂未发现代理。</div>';
-  const indexed = account.subagents.map((subagent, index) => ({ subagent, index }));
+  const only = reminderOnlyAccounts.has(account.id);
+  const targets = account.subagents.filter(hasReminder).map(agent => agent.path || [agent.name]);
+  const indexed = account.subagents.map((subagent, index) => ({ subagent, index })).filter(({subagent}) => {
+    const path = subagent.path || [subagent.name];
+    return !only || targets.some(target => target.length >= path.length && path.every((part, index) => target[index] === part));
+  });
+  if (!indexed.length) return '<div class="subagent-empty">暂无已设置提醒的代理；点击“显示全部代理”进行设置。</div>';
   const childrenOf = (parentPath) => indexed.filter(({ subagent }) => {
     const path = subagent.path || [subagent.name];
     return path.length === parentPath.length + 1 && parentPath.every((part, index) => path[index] === part);
   });
-  const isExpanded = (path) => (account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(path))
+  const isExpanded = (path) => only ? !filteredCollapsedPaths.has(thresholdDraftKey(account.id, path)) : (account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(path))
     && !collapsedAgentPaths.has(thresholdDraftKey(account.id, path));
   const renderRow = ({ subagent, index }, expanded = false, childCount = 0) => {
     const path = subagent.path || [subagent.name];
@@ -164,7 +178,7 @@ function subagentList(account) {
     const negativeRange = notifiedRange(subagent.alertedNegativeLevel, subagent.alertStep, -1);
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
     return `<tr class="subagent-row level-${depth} ${depth === 1 ? 'first-level' : 'nested-level'} ${subagent.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="${index}" data-depth="${depth}" style="--tree-depth:${depth}">
-      <td><div class="subagent-name"><input class="batch-select" data-path="${escapeHtml(pathKey(path))}" type="checkbox" ${selectedAgentPaths.get(account.id)?.has(pathKey(path)) ? 'checked' : ''} />${canExpand ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth > 1 ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${readsDescendants ? `第${depth}级代理${depth > 1 ? ` · 上级 ${escapeHtml(path.at(-2))}` : ''}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? '<small class="child-error">数据已过期</small>' : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
+      <td><div class="subagent-name">${canExpand ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth > 1 ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${readsDescendants ? `第${depth}级代理${depth > 1 ? ` · 上级 ${escapeHtml(path.at(-2))}` : ''}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? `<small class="child-error">${subagent.notRefreshed ? '本轮未刷新（保留上次数据）' : '数据已过期'}</small>` : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
       <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}</td>
       ${hasTurnover ? `<td class="subagent-turnover">${Number.isFinite(subagent.turnover) ? money.format(subagent.turnover) : '—'}</td>` : ''}
       <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small>${thresholdProgress(subagent)}${recentAlert(subagent)}</td>
@@ -292,7 +306,7 @@ function render(state) {
       <div class="threshold"><small>已设置提醒</small><strong>${metric.usesSubagents ? `${configuredCount} 个${alertAgentLabel}` : (configuredCount ? '已设置' : '未设置')}</strong><small class="threshold-state ${reachedCount ? '' : 'clear'}">${escapeHtml(thresholdState)}</small></div>
       <div class="status-wrap"><span class="status ${!account.enabled ? 'paused' : (account.status || 'waiting')}">${!account.enabled ? statusNames.paused : (statusNames[account.status] || statusNames.waiting)}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small><small class="health-detail" title="${escapeHtml(health)}">${escapeHtml(health)} · 下次 ${escapeHtml(nextCheck)}</small><small>${escapeHtml([readTiming, account.failureKind].filter(Boolean).join(' · '))}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；图形验证或验证码时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '自动识别最多五级下级代理；点击任一有下级的代理可展开或收起。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${batchEditor(account)}${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '自动识别最多五级下级代理；点击任一有下级的代理可展开或收起。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${agentToolbar(account)}${subagentList(account)}</div>
     </article>`;
   }).join('');
   restoreThresholdDraft(thresholdDraft, state);
@@ -445,6 +459,12 @@ $('#accounts').addEventListener('click', (event) => {
     const subagent = account.subagents[Number(subagentRow.dataset.subagentIndex)];
     const path = subagent.path || [subagent.name];
     const branchKey = thresholdDraftKey(account.id, path);
+    if (reminderOnlyAccounts.has(account.id)) {
+      if (filteredCollapsedPaths.has(branchKey)) filteredCollapsedPaths.delete(branchKey);
+      else filteredCollapsedPaths.add(branchKey);
+      render(appState);
+      return;
+    }
     if ((account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(path))) {
       if (collapsedAgentPaths.has(branchKey)) collapsedAgentPaths.delete(branchKey);
       else collapsedAgentPaths.add(branchKey);
@@ -455,6 +475,20 @@ $('#accounts').addEventListener('click', (event) => {
     return;
   }
   if (button.dataset.action === 'edit') openAccount(account);
+  if (button.dataset.action === 'filter-reminders') {
+    if (reminderOnlyAccounts.has(account.id)) reminderOnlyAccounts.delete(account.id);
+    else reminderOnlyAccounts.add(account.id);
+    render(appState);
+  }
+  if (button.dataset.action === 'collapse-agents') {
+    for (const agent of account.subagents || []) {
+      const key = thresholdDraftKey(account.id, agent.path || [agent.name]);
+      collapsedAgentPaths.add(key);
+      filteredCollapsedPaths.add(key);
+    }
+    render(appState);
+  }
+  if (button.dataset.action === 'full-scan') action(() => window.monitorApi.fullScanAccount(account.id), '已安排全量扫描');
   if (button.dataset.action === 'view') action(() => window.monitorApi.openAccountView(account.id), '正在打开盘内查看');
   if (button.dataset.action === 'check') action(() => window.monitorApi.checkAccount(account.id), '已开始检查');
   if (button.dataset.action === 'toggle') action(() => window.monitorApi.toggleAccount(account.id, !account.enabled));
@@ -483,23 +517,6 @@ $('#accounts').addEventListener('input', (event) => {
   const key = thresholdDraftKey(account.id, subagent.path || [subagent.name]);
   if (updateUnsavedThresholdState(subagentRow, subagent, draft)) thresholdDrafts.set(key, draft);
   else thresholdDrafts.delete(key);
-});
-
-$('#accounts').addEventListener('change', (event) => {
-  if (!event.target.matches('.batch-select')) return;
-  const accountId = event.target.closest('.account-row')?.dataset.id; if (!accountId) return;
-  const selected = selectedAgentPaths.get(accountId) || new Set();
-  if (event.target.checked) selected.add(event.target.dataset.path); else selected.delete(event.target.dataset.path);
-  selectedAgentPaths.set(accountId, selected); render(appState);
-});
-
-$('#accounts').addEventListener('submit', (event) => {
-  if (!event.target.matches('.batch-editor form')) return; event.preventDefault();
-  const accountId = event.target.dataset.batchAccount; const account = appState.accounts.find((item) => item.id === accountId);
-  const paths = [...(selectedAgentPaths.get(accountId) || [])].map((key) => JSON.parse(key));
-  const values = Object.fromEntries(new FormData(event.target).entries()); values.accountId = accountId; values.paths = paths;
-  values.updateRemark = event.target.elements.updateRemark.checked; values.clearAlertStep = event.target.elements.clearAlertStep.checked; values.clearDeltaAlertStep = event.target.elements.clearDeltaAlertStep.checked;
-  action(async () => { const result = await window.monitorApi.saveSubagentThresholdBatch(values); selectedAgentPaths.delete(accountId); return result; }, `已批量更新 ${paths.length} 个代理`);
 });
 
 $('#telegram-form').addEventListener('submit', (event) => {
