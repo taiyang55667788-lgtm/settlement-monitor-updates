@@ -1,9 +1,9 @@
 # 交收监控维护上下文
 
-更新时间：2026-09-20
+更新时间：2026-09-29
 
-当前正式版本：`v1.0.15`
-`v1.0.15` 功能基线提交：`3521984`
+当前正式版本：`v1.0.18`
+`v1.0.18` 功能基线提交：`74e5eab`
 
 ## 项目定位
 
@@ -44,11 +44,11 @@
 
 - 每个代理可独立设置备注和提醒间隔，备注同步到 Telegram。
 - 提醒以 0 为基准，正负方向分别计算。例如间隔 100 时，`+100/+200/+300` 和 `-100/-200/-300` 分别为独立档位。
-- 同一代理、同一间隔、同一报表周、同一正负档位只成功提醒一次；金额回落后再次到达旧档位不会重复提醒。
+- 同一代理、同一间隔、同一报表周以当前档位为准；金额从高档回落到旧档位后会再次提醒，例如 `+20 → +40 → +20 → +40` 会有四次提醒。
 - 一次跨越 20 档以内会逐档发送；超过 20 档会合并成一条消息，并把跨过的档位全部记为已通知。
 - 更换报表周后重新开始记录。不同代理路径和不同提醒间隔的记录互不干扰。
 - `v1.0.14` 从旧“上级交收”口径切换到“应收下线”。旧提醒记录会归档，不能阻止新口径提醒；旧账号第一次成功读取新口径时，每个已越档代理只发送一条首次汇总，之后恢复逐档提醒。
-- 待发布：提醒记录改为最后已确认的当前档位：每次进入新档位都通知，故 `+20 → +40 → +20` 会有三次提醒；归零后再次达到首档也会提醒。旧的“本周最高档位”记录会按提醒口径版本归档。
+- `v1.0.17` 已将提醒记录改为最后已确认的当前档位；旧的“本周最高档位”记录按提醒口径版本归档。
 - Telegram 普通消息不能改变文字颜色，因此正数用 `🔵`，负数用 `🔴`；应用内正数显示蓝色、负数显示红色。
 
 ### 可解释状态
@@ -73,6 +73,7 @@
 - `v1.0.15` 新增提醒策略：连续读取确认次数、连续失败升级次数和可选静默时间。静默默认关闭，即全天即时通知；静默期间未发送的新档位会在结束后的下一次成功读取补发。
 - `v1.0.15` 为成功读取保留最近 7 天趋势，在代理金额下显示简要走势与变化量。
 - `v1.0.15` 新增“提醒与维护”页：可导出不含登录资料和 Telegram 凭据的诊断包；可在同一系统账户恢复加密配置备份。
+- `v1.0.18` 将账号“运行状态”与阈值达标状态分开显示；代理行显示最近提醒时间与下一正负档进度；新增本机加密的提醒记录页，保存最近 500 次 Telegram 金额提醒的发送结果和失败原因。
 
 ## 主要代码入口
 
@@ -121,12 +122,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 正式版本：`v1.0.17`
-- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.17-x64.exe`
-- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.17/Settlement-Monitor-Portable-1.0.17-x64.exe`
-- 安装包大小：117,444,510 字节
-- SHA-512：`Pqa/anglOZN2yt7By/jtf3tvnKOBOn2op2rkUEzKiQtN4Y+yKtpS9HxzvYfjpnfEVn+7H+YM4yso4Q15Jv9+8Q==`
-- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.17`
+- 正式版本：`v1.0.18`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.18-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.18/Settlement-Monitor-Portable-1.0.18-x64.exe`
+- 安装包大小：117,445,553 字节
+- SHA-512：`nKrL2rN9jcSh6yZsD+VB3PiSNGQr8dsetcpiMBO5jDi+M1D9LjvEku47qEdz4Iq8jLol8pYR/OG8emxLz+CwAg==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.18`
 
 ## 后续维护重点
 
