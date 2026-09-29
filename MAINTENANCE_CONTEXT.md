@@ -11,7 +11,7 @@ v1.0.23 已发布：保留 166 登录窗口；已有有效会话不再重复打�
 
 ## 项目定位
 
-v1.0.24 本地验证：功能提交 `6dec73a`；88 项 Node 测试、四级 DOM/UI/设置迁移三项桌面测试通过，固定状态区域和详情弹窗、输入框 DOM/焦点保持均有测试，已检查渲染截图。当前 GitHub TLS 连接持续失败（git/curl SSL_ERROR_SYSCALL、gh EOF、Node ECONNRESET，默认线路和已配置系统代理均失败），尚未推送该提交、尚未启动 Windows 验证构建、尚未发布。网络恢复后先推送 main 并运行 workflow_dispatch，成功后再询问用户发布 v1.0.24；不能沿用旧版构建结果。
+v1.0.24 验证完成，待用户确认发布：功能提交 `6dec73a`；88 项 Node 测试、四级 DOM/UI/设置迁移三项桌面测试通过，固定状态区域和详情弹窗、输入框 DOM/焦点保持均有测试，已检查渲染截图。GitHub 网络已恢复，源码已推送。提交 `e659bde` 的 Windows 验证工作流 `36554378753` 全部成功，包含测试、桌面流程、安装版/便携版构建和更新清单校验。尚未创建 v1.0.24 标签或上传正式更新，当前正式版本仍为 v1.0.23。验证地址：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/actions/runs/36554378753`。
 
 发布验证：`c768e75` 包含按需扫描与界面简化；86 项 Node 测试、三项桌面冒烟测试通过，已检查实际渲染截图。Windows 验证工作流 `36550685280` 和正式发布工作流 `36551210777` 全部成功。R2 安装包已完整下载，大小和 SHA-512 与线上 latest.yml 一致。发布地址：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/actions/runs/36551210777`。
 
