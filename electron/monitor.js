@@ -23,6 +23,10 @@ const {
 } = require('./navigation');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function loginProbeFallback(error) {
+  if (error.code === 'SESSION_CHECK_TIMEOUT' || error.code === 'READ_INTERRUPTED') throw error;
+  return false;
+}
 function failureKind(error) {
   const text = String(error?.message || error);
   if (error?.code === 'CROWN_HUMAN_VERIFICATION_REQUIRED' || /验证码|图形验证/.test(text)) return '验证码';
@@ -198,9 +202,13 @@ class SiteClient {
     this.window = null;
     this.ocr = null;
     this.ownsWindow = true;
+    this.sessionCheckTimeoutMs = 5000;
+    this.cancelled = false;
   }
 
   async open() {
+    this.status.stage = '正在初始化监控窗口';
+    this.onProgress?.();
     const partition = partitionForAccount(this.account.id);
     const crown = accountSystemId(this.account) === 'crown';
     this.window = new BrowserWindow({
@@ -262,10 +270,25 @@ class SiteClient {
   }
 
   async isLoggedIn() {
+    if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
+    const win = this.window;
+    // executeJavaScript can remain pending on a new window with no loaded document.
+    const url = win.webContents.getURL?.();
+    if (url === '' || url === 'about:blank') return false;
+    let timer;
+    try {
+      return await Promise.race([
+        this.readLoginState(win),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('登录会话检查超时（页面无响应）'), { code: 'SESSION_CHECK_TIMEOUT' })), this.sessionCheckTimeoutMs); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
+  async readLoginState(win) {
     if (accountSystemId(this.account) === 'crown') {
-      return Boolean(await executeInFrames(this.window, `Boolean(document.querySelector('#left_dsearch_user_type, #date_div_600, #dashboard_main, .dashboard_main, #data_right_scroll, .data_right_scroll')) || /绩效概况/.test(document.body.innerText)`));
+      return Boolean(await executeInFrames(win, `Boolean(document.querySelector('#left_dsearch_user_type, #date_div_600, #dashboard_main, .dashboard_main, #data_right_scroll, .data_right_scroll')) || /绩效概况/.test(document.body.innerText)`));
     }
-    return this.window.webContents.executeJavaScript(`/报表查询/.test(document.body.innerText) && !/管理员登录/.test(document.body.innerText)`, true);
+    return win.webContents.executeJavaScript(`/报表查询/.test(document.body.innerText) && !/管理员登录/.test(document.body.innerText)`, true);
   }
 
   async readCaptcha() {
@@ -395,7 +418,7 @@ class SiteClient {
   async waitForLoginOutcome(timeoutMs = 10000, ignoredFailure = '') {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (await this.isLoggedIn().catch(() => false)) return { loggedIn: true, failure: '' };
+      if (await this.isLoggedIn().catch(loginProbeFallback)) return { loggedIn: true, failure: '' };
       const failure = await this.readLoginFailure();
       if (failure && failure !== ignoredFailure) return { loggedIn: false, failure };
       await sleep(350);
@@ -405,13 +428,16 @@ class SiteClient {
 
   async login(agentUrl) {
     if (accountSystemId(this.account) === 'crown') return this.loginCrown(agentUrl);
-    if (await this.isLoggedIn().catch(() => false)) return;
+    this.status.stage = '正在检查登录会话';
+    this.onProgress?.();
+    if (await this.isLoggedIn().catch(loginProbeFallback)) return;
     if (!this.ownsWindow && this.window.isVisible()) {
       const error = new Error('等待你在“盘内查看”完成验证码登录');
       error.code = 'MANUAL_LOGIN_REQUIRED';
       throw error;
     }
     this.status.stage = '正在打开代理登录页';
+    this.onProgress?.();
     await load(this.window, agentUrl);
     if (await this.isLoggedIn()) {
       this.status.stage = '登录状态有效';
@@ -539,16 +565,41 @@ class SiteClient {
   }
 
   async readThisWeekSettlement() {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { return await this.readThisWeekSettlementAttempt(); }
+      catch (error) {
+        if (error.code !== 'SESSION_CHECK_TIMEOUT' || attempt === 1 || this.cancelled) throw error;
+        this.status.stage = '登录会话无响应，正在重建页面（重试 1/1）';
+        this.onProgress?.();
+        const previous = this.window;
+        if (previous && !previous.isDestroyed()) previous.destroy();
+        this.currentReportPath = null;
+        this.reportRefreshNeeded = true;
+        this.ownsWindow = true;
+        if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
+        await this.open();
+        if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
+        if (this.status.agentUrl) {
+          this.status.stage = '正在重新加载代理登录页';
+          this.onProgress?.();
+          await load(this.window, this.status.agentUrl);
+        }
+      }
+    }
+  }
+
+  async readThisWeekSettlementAttempt() {
     let agentUrl = this.status.agentUrl;
     if (!agentUrl) agentUrl = await this.discoverAgentUrl();
     this.status.agentUrl = agentUrl;
     // 皇冠首页可能直接展示旧报表；保留会话的同时重新加载页面以获取本轮数据。
-    if (accountSystemId(this.account) === 'crown' && await this.isLoggedIn().catch(() => false)) {
+    if (accountSystemId(this.account) === 'crown' && await this.isLoggedIn().catch(loginProbeFallback)) {
       await load(this.window, this.window.webContents.getURL());
     }
     try {
       await this.login(agentUrl);
     } catch (error) {
+      if (error.code === 'SESSION_CHECK_TIMEOUT' || error.code === 'READ_INTERRUPTED') throw error;
       if (failureKind(error) !== '网络或加载超时') throw error;
       agentUrl = await this.discoverAgentUrl();
       this.status.agentUrl = agentUrl;
@@ -1523,12 +1574,15 @@ class MonitorService {
     status.failureKind = '';
     status.phaseTimings = null;
     status.readProgress = null;
+    status.lastQueryMs = null;
     status.stage = '准备检查';
     this.onChange();
     const client = this.createSiteClient(account, status);
+    client.onProgress = this.onChange;
     const controller = new AbortController();
     this.activeReads.set(accountId, controller);
     const read = operation => boundedOperation(operation, this.operationTimeoutMs, () => {
+      client.cancelled = true;
       if (client.window && !client.window.isDestroyed()) client.window.destroy();
       client.currentReportPath = null;
     }, controller.signal);

@@ -2,6 +2,64 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { SiteClient } = require('../electron/monitor');
 
+test('blank windows skip JavaScript login probing entirely', async () => {
+  for (const url of ['', 'about:blank']) {
+    const client = new SiteClient({}, {});
+    client.window = { webContents: { getURL: () => url, executeJavaScript() { throw new Error('must not probe blank document'); } } };
+    assert.equal(await client.isLoggedIn(), false);
+  }
+});
+
+test('an unresponsive session probe has its own timeout and is not swallowed by login', async () => {
+  const client = new SiteClient({}, {}); client.sessionCheckTimeoutMs = 5;
+  client.window = { webContents: { getURL: () => 'https://example.com', executeJavaScript: () => new Promise(() => {}) } };
+  await assert.rejects(client.login('https://example.com'), { code: 'SESSION_CHECK_TIMEOUT' });
+  assert.equal(client.status.stage, '正在检查登录会话');
+});
+
+test('session timeout destroys the old page before rebuilding, with only one retry', async () => {
+  for (const alwaysFail of [false, true]) {
+    const client = new SiteClient({}, {}); const sequence = []; let calls = 0;
+    client.window = { isDestroyed: () => false, destroy() { sequence.push('destroy'); } };
+    client.open = async () => { sequence.push('open'); client.window = { isDestroyed: () => false, destroy() {} }; };
+    client.readThisWeekSettlementAttempt = async () => {
+      sequence.push('read'); calls++;
+      if (calls === 1 || alwaysFail) throw Object.assign(new Error('session timeout'), { code: 'SESSION_CHECK_TIMEOUT' });
+      return { agents: [] };
+    };
+    if (alwaysFail) await assert.rejects(client.readThisWeekSettlement(), { code: 'SESSION_CHECK_TIMEOUT' });
+    else assert.deepEqual(await client.readThisWeekSettlement(), { agents: [] });
+    assert.deepEqual(sequence, ['read', 'destroy', 'open', 'read']);
+    assert.equal(client.ownsWindow, true);
+  }
+});
+
+test('cancelled reads cannot rebuild a page after their outer watchdog fires', async () => {
+  const client = new SiteClient({}, {});
+  client.readThisWeekSettlementAttempt = async () => {
+    client.cancelled = true;
+    throw Object.assign(new Error('timeout'), { code: 'SESSION_CHECK_TIMEOUT' });
+  };
+  client.open = () => { throw new Error('must not resurrect cancelled read'); };
+  await assert.rejects(client.readThisWeekSettlement(), { code: 'SESSION_CHECK_TIMEOUT' });
+});
+
+test('recovery loads the known site before the second session probe', async () => {
+  const client = new SiteClient({}, { agentUrl: 'https://example.com/report' });
+  let url = ''; let calls = 0;
+  client.window = { isDestroyed: () => false, destroy() {} };
+  client.open = async () => {
+    client.window = { async loadURL(target) { url = target; }, webContents: { getURL: () => url } };
+  };
+  client.readThisWeekSettlementAttempt = async () => {
+    if (++calls === 1) throw Object.assign(new Error('timeout'), { code: 'SESSION_CHECK_TIMEOUT' });
+    assert.equal(url, 'https://example.com/report');
+    return { agents: [] };
+  };
+  await client.readThisWeekSettlement();
+  assert.equal(calls, 2);
+});
+
 test('report wait fails promptly on a visible login form rather than waiting thirty seconds', async () => {
   const client = new SiteClient({}, {});
   const frame = { isDestroyed: () => false, executeJavaScript: async script => script.includes('input[type=password]') };

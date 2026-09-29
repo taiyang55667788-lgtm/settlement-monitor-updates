@@ -29,6 +29,8 @@ app.whenReady().then(async () => {
   const week = settlementWeekRange();
   client.window = win;
   try {
+    phase = 'checking a new blank window without hanging';
+    assert.equal(await client.isLoggedIn(), false);
     const childTableA = table(row('child-01', -230, true) + row('合计', -230));
     const childTableB = table(row('child-01', 310) + row('合计', 310));
     const thirdTable = table(row('third-01', 330, true) + row('合计', 330));
