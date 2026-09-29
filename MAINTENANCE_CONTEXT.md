@@ -121,9 +121,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 待发布版本：`v1.0.17`（Windows GitHub Actions 验证与安装包生成中）
-- 上一正式版本：`v1.0.16`
-- GitHub Releases：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases`
+- 正式版本：`v1.0.17`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.17-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.17/Settlement-Monitor-Portable-1.0.17-x64.exe`
+- 安装包大小：117,444,510 字节
+- SHA-512：`Pqa/anglOZN2yt7By/jtf3tvnKOBOn2op2rkUEzKiQtN4Y+yKtpS9HxzvYfjpnfEVn+7H+YM4yso4Q15Jv9+8Q==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.17`
 
 ## 后续维护重点
 
