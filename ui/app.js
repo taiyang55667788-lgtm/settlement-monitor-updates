@@ -6,6 +6,7 @@ const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }
 const statusNames = { waiting: '等待首次检查', checking: '正在检查', ok: '运行正常', triggered: '运行正常', error: '检查失败', paused: '已暂停' };
 const thresholdDrafts = new Map();
 const collapsedAgentPaths = new Set();
+const selectedAgentPaths = new Map();
 
 const monitorMetrics = {
   'receivable-downline': { label: '应收下线', sectionLabel: '两级代理应收下线', valueLabel: '本周应收下线', usesSubagents: true },
@@ -62,6 +63,11 @@ function recentAlert(subagent) {
   return `<small class="recent-alert">最近提醒：${escapeHtml(new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(subagent.lastAlertAt)))}</small>`;
 }
 
+function batchEditor(account) {
+  const selected = selectedAgentPaths.get(account.id) || new Set();
+  return `<form class="batch-editor" data-batch-account="${escapeHtml(account.id)}"><strong>批量设置</strong><small>已选择 ${selected.size} 个代理</small><input name="alertStep" type="number" min="0.01" step="0.01" placeholder="金额间隔；留空不改" /><input name="deltaAlertStep" type="number" min="0.01" step="0.01" placeholder="单次变动；留空不改" /><label class="batch-remark"><input name="updateRemark" type="checkbox" /> 同步备注</label><input name="remark" maxlength="100" placeholder="备注（可留空清除）" /><label><input name="clearAlertStep" type="checkbox" /> 关闭金额提醒</label><label><input name="clearDeltaAlertStep" type="checkbox" /> 关闭变动提醒</label><button class="secondary" type="submit">应用到已选代理</button></form>`;
+}
+
 function trendChart(trend, path) {
   const key = pathKey(path);
   const values = (trend || []).map((point) => point.agents?.find((agent) => pathKey(agent.path) === key)?.value).filter(Number.isFinite).slice(-80);
@@ -96,11 +102,11 @@ function totalSettlementList(account) {
   const negativeRange = notifiedRange(target.alertedNegativeLevel, target.alertStep, -1);
   const lastAlert = target.lastAlertAt ? ` · 最近通知：${new Date(target.lastAlertAt).toLocaleString('zh-CN')}` : '';
   return `<div class="agent-table-scroll"><table class="agent-table"><thead><tr><th scope="col">监控项 / 最后成功读取</th><th scope="col">${metric.valueLabel}</th><th scope="col">本周最近提醒档位</th><th scope="col">备注（同步通知）</th><th scope="col">提醒间隔（正负）</th><th scope="col">操作</th></tr></thead><tbody><tr class="subagent-row ${target.stale ? 'stale' : ''}" data-subagent-index="0">
-    <td><div class="subagent-name"><span class="tree-leaf" aria-hidden="true">◆</span><div><strong>${escapeHtml(metric.label)}</strong><small>本周交收总额</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${target.stale ? '<small class="child-error">数据已过期</small>' : ''}</div></div></td>
+    <td><div class="subagent-name"><input class="batch-select" data-path="${escapeHtml(pathKey(path))}" type="checkbox" ${selectedAgentPaths.get(account.id)?.has(pathKey(path)) ? 'checked' : ''} /><span class="tree-leaf" aria-hidden="true">◆</span><div><strong>${escapeHtml(metric.label)}</strong><small>本周交收总额</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${target.stale ? '<small class="child-error">数据已过期</small>' : ''}</div></div></td>
     <td class="subagent-value ${target.value < 0 ? 'negative' : target.value > 0 ? 'positive' : 'zero'}">${target.value > 0 ? '+' : ''}${money.format(target.value)}${trendChart(account.trend, path)}${thresholdProgress(target)}</td>
     <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(target))}">${escapeHtml(alertReason(target))}</small>${recentAlert(target)}</td>
     <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(metric.label)}的备注" /></td>
-    <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" aria-label="${escapeHtml(metric.label)}的提醒间隔" /></td>
+    <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="金额间隔；留空关闭" aria-label="${escapeHtml(metric.label)}的提醒间隔" /><input data-field="deltaAlertStep" type="number" min="0.01" step="0.01" value="${Number.isFinite(target.deltaAlertStep) ? target.deltaAlertStep : ''}" placeholder="单次变动；留空关闭" aria-label="${escapeHtml(metric.label)}的变化量提醒" /></td>
     <td><button class="secondary" data-action="save-subagent">保存</button></td>
   </tr></tbody></table></div>`;
 }
@@ -127,12 +133,12 @@ function subagentList(account) {
     const negativeRange = notifiedRange(subagent.alertedNegativeLevel, subagent.alertStep, -1);
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
     return `<tr class="subagent-row ${depth ? 'second-level' : 'first-level'} ${subagent.stale ? 'stale' : ''}" data-subagent-index="${index}">
-      <td><div class="subagent-name">${depth === 0 && readsDescendants ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${depth ? `二级代理 · 上级 ${escapeHtml(path[0])}` : readsDescendants ? `${agentLabel}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? '<small class="child-error">数据已过期</small>' : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
+      <td><div class="subagent-name"><input class="batch-select" data-path="${escapeHtml(pathKey(path))}" type="checkbox" ${selectedAgentPaths.get(account.id)?.has(pathKey(path)) ? 'checked' : ''} />${depth === 0 && readsDescendants ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${depth ? `二级代理 · 上级 ${escapeHtml(path[0])}` : readsDescendants ? `${agentLabel}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? '<small class="child-error">数据已过期</small>' : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
       <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}${thresholdProgress(subagent)}</td>
       ${hasTurnover ? `<td class="subagent-turnover">${Number.isFinite(subagent.turnover) ? money.format(subagent.turnover) : '—'}</td>` : ''}
       <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small>${recentAlert(subagent)}</td>
       <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(subagent.name)} 的备注" /></td>
-      <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="例如 100；留空关闭" aria-label="${escapeHtml(subagent.name)} 的提醒间隔" /></td>
+      <td><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="金额间隔；留空关闭" aria-label="${escapeHtml(subagent.name)} 的提醒间隔" /><input data-field="deltaAlertStep" type="number" min="0.01" step="0.01" value="${Number.isFinite(subagent.deltaAlertStep) ? subagent.deltaAlertStep : ''}" placeholder="单次变动；留空关闭" aria-label="${escapeHtml(subagent.name)} 的变化量提醒" /></td>
       <td><button class="secondary" data-action="save-subagent">保存</button></td>
     </tr>`;
   };
@@ -180,6 +186,7 @@ function captureThresholdDraft() {
     path: subagent.path || [subagent.name],
     focusedField: active.dataset.field,
     alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
+    deltaAlertStep: subagentRow.querySelector('[data-field="deltaAlertStep"]').value,
     remark: subagentRow.querySelector('[data-field="remark"]').value,
   };
 }
@@ -193,6 +200,7 @@ function restoreThresholdDraft(draft, state) {
   const subagentRow = accountRow?.querySelector(`[data-subagent-index="${index}"]`);
   if (!subagentRow) return;
   subagentRow.querySelector('[data-field="alertStep"]').value = draft.alertStep;
+  subagentRow.querySelector('[data-field="deltaAlertStep"]').value = draft.deltaAlertStep || '';
   subagentRow.querySelector('[data-field="remark"]').value = draft.remark;
   subagentRow.querySelector(`[data-field="${draft.focusedField}"]`)?.focus();
 }
@@ -229,7 +237,7 @@ function render(state) {
       <div class="threshold"><small>已设置提醒</small><strong>${metric.usesSubagents ? `${configuredCount} 个${agentLabel}` : (configuredCount ? '已设置' : '未设置')}</strong><small class="threshold-state ${reachedCount ? '' : 'clear'}">${escapeHtml(thresholdState)}</small></div>
       <div class="status-wrap"><span class="status ${!account.enabled ? 'paused' : (account.status || 'waiting')}">${!account.enabled ? statusNames.paused : (statusNames[account.status] || statusNames.waiting)}</span><small title="${escapeHtml(statusDetail)}">${escapeHtml(statusDetail)}</small><small class="health-detail" title="${escapeHtml(health)}">${escapeHtml(health)} · 下次 ${escapeHtml(nextCheck)}</small></div>
       <div class="actions"><button data-action="view" title="打开盘口；图形验证或验证码时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
-      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '点击直属代理展开下级。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${subagentList(account)}</div>
+      <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '点击直属代理展开下级。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${batchEditor(account)}${subagentList(account)}</div>
     </article>`;
   }).join('');
   restoreThresholdDraft(thresholdDraft, state);
@@ -239,7 +247,8 @@ function render(state) {
     const tier = Number(record.level) * Number(record.alertStep);
     const agent = record.agentPath?.join(' / ') || record.agentName || '—';
     const result = record.status === 'sent' ? 'Telegram 已发送' : `发送失败：${record.error || '未知错误'}`;
-    return `<article class="alert-record"><time>${new Date(record.time).toLocaleString('zh-CN')}</time><strong class="${record.status === 'sent' ? 'sent' : 'failed'}">${record.status === 'sent' ? '已发送' : '发送失败'}</strong><div><strong>${escapeHtml(record.accountName || '未知账号')}</strong><small title="${escapeHtml(agent)}">${escapeHtml(agent)}${record.remark ? ` · ${escapeHtml(record.remark)}` : ''}</small></div><strong class="${value < 0 ? 'negative' : value > 0 ? 'positive' : ''}">${Number.isFinite(value) ? `${value > 0 ? '+' : ''}${money.format(value)}` : '—'}</strong><span>${Number.isFinite(tier) ? `${tier > 0 ? '+' : '−'}${compactMoney.format(Math.abs(tier))} 档` : '—'}</span><small class="${record.status === 'sent' ? 'sent' : 'failed'}">${escapeHtml(result)}</small></article>`;
+    const detail = record.alertType === 'delta' ? `变化 ${record.change > 0 ? '+' : ''}${compactMoney.format(Math.abs(record.change || 0))} / 阈值 ${compactMoney.format(record.alertStep)}` : (Number.isFinite(tier) ? `${tier > 0 ? '+' : '−'}${compactMoney.format(Math.abs(tier))} 档` : '—');
+    return `<article class="alert-record"><time>${new Date(record.time).toLocaleString('zh-CN')}</time><strong class="${record.status === 'sent' ? 'sent' : 'failed'}">${record.status === 'sent' ? '已发送' : '发送失败'}</strong><div><strong>${escapeHtml(record.accountName || '未知账号')}</strong><small title="${escapeHtml(agent)}">${escapeHtml(agent)}${record.remark ? ` · ${escapeHtml(record.remark)}` : ''}</small></div><strong class="${value < 0 ? 'negative' : value > 0 ? 'positive' : ''}">${Number.isFinite(value) ? `${value > 0 ? '+' : ''}${money.format(value)}` : '—'}</strong><span>${escapeHtml(detail)}</span><small class="${record.status === 'sent' ? 'sent' : 'failed'}">${escapeHtml(result)}</small></article>`;
   }).join('') || '<div class="empty show"><p>暂无金额提醒记录</p></div>';
   $('#telegram-form').elements.chatId.value = state.telegram?.chatId || '';
   const pairing = state.telegram?.pairing;
@@ -367,6 +376,7 @@ $('#accounts').addEventListener('click', (event) => {
       path: subagent.path || [subagent.name],
       remark: subagentRow.querySelector('[data-field="remark"]').value,
       alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
+      deltaAlertStep: subagentRow.querySelector('[data-field="deltaAlertStep"]').value,
     };
     action(async () => {
       await window.monitorApi.saveSubagentThreshold(settings);
@@ -411,8 +421,26 @@ $('#accounts').addEventListener('input', (event) => {
   if (!account || !subagent) return;
   thresholdDrafts.set(thresholdDraftKey(account.id, subagent.path || [subagent.name]), {
     alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
+    deltaAlertStep: subagentRow.querySelector('[data-field="deltaAlertStep"]').value,
     remark: subagentRow.querySelector('[data-field="remark"]').value,
   });
+});
+
+$('#accounts').addEventListener('change', (event) => {
+  if (!event.target.matches('.batch-select')) return;
+  const accountId = event.target.closest('.account-row')?.dataset.id; if (!accountId) return;
+  const selected = selectedAgentPaths.get(accountId) || new Set();
+  if (event.target.checked) selected.add(event.target.dataset.path); else selected.delete(event.target.dataset.path);
+  selectedAgentPaths.set(accountId, selected); render(appState);
+});
+
+$('#accounts').addEventListener('submit', (event) => {
+  if (!event.target.matches('.batch-editor')) return; event.preventDefault();
+  const accountId = event.target.dataset.batchAccount; const account = appState.accounts.find((item) => item.id === accountId);
+  const paths = [...(selectedAgentPaths.get(accountId) || [])].map((key) => JSON.parse(key));
+  const values = Object.fromEntries(new FormData(event.target).entries()); values.accountId = accountId; values.paths = paths;
+  values.updateRemark = event.target.elements.updateRemark.checked; values.clearAlertStep = event.target.elements.clearAlertStep.checked; values.clearDeltaAlertStep = event.target.elements.clearDeltaAlertStep.checked;
+  action(async () => { const result = await window.monitorApi.saveSubagentThresholdBatch(values); selectedAgentPaths.delete(accountId); return result; }, `已批量更新 ${paths.length} 个代理`);
 });
 
 $('#telegram-form').addEventListener('submit', (event) => {

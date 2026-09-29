@@ -4,6 +4,7 @@ const { MonitorService, settlementWeekRange } = require('../electron/monitor');
 
 function fixture(state) {
   const alerts = [];
+  const deltaAlerts = [];
   const context = {
     period: { start: '2026-09-14', end: '2026-09-20' },
     parentValue: 250,
@@ -47,9 +48,10 @@ function fixture(state) {
     service.sendTelegram = async (_account, _value, level, _previous, _name, _step, _remark, path) => {
       alerts.push([path.join('/'), level]);
     };
+    service.sendOperationalTelegram = async (message) => { deltaAlerts.push(message); };
     return service;
   };
-  return { alerts, context, store, makeService };
+  return { alerts, deltaAlerts, context, store, makeService };
 }
 
 test('monitor repeats alerts when values return to an earlier tier, while retaining state across restart', async () => {
@@ -170,6 +172,20 @@ test('confirmation policy holds a new tier until it is read consecutively, while
   assert.equal(store.state.accounts[0].agentTrend.length, 2);
   assert.equal(service.status('account-1').consecutiveFailures, 0);
   assert.ok(service.status('account-1').lastSuccessAt);
+});
+
+test('single-read change alert waits for a baseline, then records a delivered delta', async () => {
+  const { context, store, deltaAlerts, makeService } = fixture();
+  store.state.accounts[0].subagentThresholds[0].deltaAlertStep = 100;
+  context.childValue = 0;
+  const service = makeService();
+  await service.check('account-1');
+  assert.equal(deltaAlerts.length, 0);
+  context.parentValue = 400;
+  await service.check('account-1');
+  assert.equal(deltaAlerts.length, 1);
+  assert.match(deltaAlerts[0], /本次变化：\+150/);
+  assert.equal(store.state.alertRecords.some((record) => record.alertType === 'delta' && record.status === 'sent'), true);
 });
 
 test('settlement week switches at Monday 06:00, not midnight', () => {

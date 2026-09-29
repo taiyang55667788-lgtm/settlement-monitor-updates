@@ -63,6 +63,18 @@ function constantTimeEqual(left, right) {
   return difference === 0;
 }
 
+function telegramCommand(text) {
+  const match = String(text || '').trim().match(/^\/([^\s@]+)(?:@[A-Za-z0-9_]+)?(?:\s+(.+))?$/u);
+  if (!match) return null;
+  const name = match[1].toLowerCase(); const argument = String(match[2] || '').trim();
+  if (['report', 'status', '报表', '状态'].includes(name)) return { type: 'report' };
+  if (name === 'top') return { type: 'top' };
+  if (name === 'alerts') return { type: 'alerts' };
+  if (name === 'check') return { type: 'check', argument };
+  if (name === 'help') return { type: 'help' };
+  return null;
+}
+
 async function authorizedDevice(request, env) {
   const bearer = request.headers.get('authorization')?.match(/^Bearer ([0-9a-f-]{36})\.([0-9a-f]{64})$/i);
   if (!bearer) return null;
@@ -128,16 +140,21 @@ async function receiveWebhook(request, env, ctx, fetcher) {
   const chatId = message?.chat?.id;
   if (message?.chat?.type !== 'private' || !chatId) return json({ ok: true });
   const text = String(message.text || '').trim();
-  const command = text.match(/^\/(?:report|status|报表|状态)(?:@[A-Za-z0-9_]+)?$/i);
+  const command = telegramCommand(text);
   if (command) {
     const owner = await env.DB.prepare('SELECT chat_id FROM bot_owner WHERE id = 1').bind().first();
     if (owner?.chat_id !== String(chatId)) return json({ ok: true });
+    if (command.type === 'help') {
+      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '🤖 交收监控指令\n/report 或 /status：刷新并返回当前报表\n/top：返回当前金额绝对值前 10 名\n/alerts：返回最近 10 条提醒\n/check：刷新全部启用账号\n/check 账号名：刷新指定账号').catch(() => {}));
+      return json({ ok: true });
+    }
     const devices = await env.DB.prepare('SELECT id FROM pairings WHERE chat_id = ?').bind(String(chatId)).all();
     for (const device of devices.results || []) {
       await env.DB.prepare('INSERT INTO commands (id, device_id, command, created_at) VALUES (?, ?, ?, ?)')
-        .bind(crypto.randomUUID(), device.id, 'report', Date.now()).run();
+        .bind(crypto.randomUUID(), device.id, JSON.stringify(command), Date.now()).run();
     }
-    ctx.waitUntil(sendBotMessage(env, fetcher, chatId, devices.results?.length ? '📊 已收到报表查询，正在向在线电脑请求最新数据。' : '当前没有已配对电脑。').catch(() => {}));
+    const labels = { report: '报表查询', top: '排行查询', alerts: '提醒记录查询', check: '刷新请求' };
+    ctx.waitUntil(sendBotMessage(env, fetcher, chatId, devices.results?.length ? `📊 已收到${labels[command.type]}，正在向在线电脑请求最新数据。` : '当前没有已配对电脑。').catch(() => {}));
     return json({ ok: true });
   }
   const code = text.match(/^(?:\/start(?:@[A-Za-z0-9_]+)?\s+)?([A-HJ-NP-Z2-9]{10})$/i)?.[1]?.toUpperCase();
@@ -164,7 +181,7 @@ async function nextCommand(env, device) {
   const command = await env.DB.prepare('SELECT id, command FROM commands WHERE device_id = ? ORDER BY created_at ASC LIMIT 1').bind(device.id).first();
   if (!command) return json({ command: null });
   await env.DB.prepare('DELETE FROM commands WHERE id = ?').bind(command.id).run();
-  return json({ command: command.command });
+  try { return json({ command: JSON.parse(command.command) }); } catch { return json({ command: { type: command.command } }); }
 }
 
 async function sendFromDevice(request, env, fetcher, device, testOnly) {

@@ -133,13 +133,17 @@ test('the first private Telegram chat becomes the owner for every computer', asy
 });
 
 test('only the bot owner can queue a report command for paired computers', async () => {
-  const { call, pending } = await service();
+  const { call, pending, sent } = await service();
   const created = await (await call('POST', '/v1/pairings')).json();
   await call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body: { message: { chat: { id: 101, type: 'private' }, text: created.code } } });
   await call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body: { message: { chat: { id: 202, type: 'private' }, text: '/report' } } });
   assert.deepEqual(await (await call('GET', '/v1/commands/next', { token: created.token })).json(), { command: null });
   await call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body: { message: { chat: { id: 101, type: 'private' }, text: '/报表' } } });
-  assert.deepEqual(await (await call('GET', '/v1/commands/next', { token: created.token })).json(), { command: 'report' });
+  assert.deepEqual(await (await call('GET', '/v1/commands/next', { token: created.token })).json(), { command: { type: 'report' } });
   assert.deepEqual(await (await call('GET', '/v1/commands/next', { token: created.token })).json(), { command: null });
+  await call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body: { message: { chat: { id: 101, type: 'private' }, text: '/check 一号盘' } } });
+  assert.deepEqual(await (await call('GET', '/v1/commands/next', { token: created.token })).json(), { command: { type: 'check', argument: '一号盘' } });
+  await call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body: { message: { chat: { id: 101, type: 'private' }, text: '/help' } } });
   await Promise.all(pending);
+  assert.equal(sent.some((message) => /\/top/.test(message.text)), true);
 });

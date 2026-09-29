@@ -44,6 +44,11 @@ function inQuietHours(policy, now = new Date()) {
   return from < to ? current >= from && current < to : current >= from || current < to;
 }
 
+function deltaHistoryForPeriod(history, period, metric) {
+  return history?.period === period && history?.metric === metric && history.agents && typeof history.agents === 'object'
+    ? history : { period, metric, agents: {} };
+}
+
 function captchaOcrVariants(image) {
   const size = image.getSize();
   const width = Math.max(180, size.width * 4);
@@ -1043,16 +1048,30 @@ class MonitorService {
     try {
       const command = await this.pairingClient.nextCommand(pairing.token);
       if (!command?.command) return;
-      if (command.command !== 'report') return;
-      await Promise.allSettled(this.store.state.accounts.filter((account) => account.enabled).map((account) => this.check(account.id)));
+      const request = typeof command.command === 'string' ? { type: command.command } : command.command;
+      const enabled = this.store.state.accounts.filter((account) => account.enabled);
+      const requested = request.type === 'check' && request.argument
+        ? enabled.filter((account) => account.name === request.argument) : enabled;
+      if (request.type === 'check' && request.argument && !requested.length) {
+        await this.pairingClient.send(pairing.token, `未找到启用账号：${request.argument}`); return;
+      }
+      if (['report', 'top', 'check'].includes(request.type)) await Promise.allSettled(requested.map((account) => this.check(account.id)));
+      if (request.type === 'alerts') {
+        const rows = (this.store.state.alertRecords || []).slice(0, 10).map((item) => `${item.status === 'sent' ? '✅' : '❌'} ${item.accountName} / ${(item.agentPath || []).join(' / ')} · ${item.alertType === 'delta' ? `变化 ${item.change > 0 ? '+' : ''}${item.change}` : `金额 ${item.value > 0 ? '+' : ''}${item.value}`} · ${new Date(item.time).toLocaleString('zh-CN')}`);
+        await this.pairingClient.send(pairing.token, `🧾 最近提醒记录\n${rows.join('\n') || '暂无记录'}`); return;
+      }
+      if (request.type === 'top') {
+        const rows = requested.flatMap((account) => this.status(account.id).subagents.filter((agent) => !agent.stale).map((agent) => ({ account: account.name, agent, value: agent.value }))).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 10).map((item, index) => `${index + 1}. ${item.account} / ${item.agent.path.join(' / ')}：${item.value > 0 ? '+' : ''}${item.value.toLocaleString('zh-CN')}`);
+        await this.pairingClient.send(pairing.token, `🏆 当前金额前 10 名\n${rows.join('\n') || '暂无成功读取的数据'}`); return;
+      }
       const rows = this.store.state.accounts.map((account) => {
         const status = this.status(account.id);
         const period = status.reportPeriod ? `${status.reportPeriod.start}—${status.reportPeriod.end}` : '未读取';
         const values = (status.subagents || []).filter((agent) => !agent.stale).map((agent) => `${agent.path.join(' / ')} ${agent.value > 0 ? '+' : ''}${agent.value}`).slice(0, 12);
         return [`账号：${account.name} · ${period}`, status.status === 'error' ? `读取失败：${status.error}` : (values.join('\n') || '暂无成功读取的数据')].join('\n');
       });
-      await this.pairingClient.send(pairing.token, `📊 当前盘口报表\n${rows.join('\n\n')}`.slice(0, 3400));
-      this.store.addEvent('success', '已响应 Telegram /report 报表查询指令'); this.onChange();
+      await this.pairingClient.send(pairing.token, `${request.type === 'check' ? '🔄 刷新完成' : '📊 当前盘口报表'}\n${rows.join('\n\n')}`.slice(0, 3400));
+      this.store.addEvent('success', `已响应 Telegram /${request.type} 指令`); this.onChange();
     } catch (error) {
       this.store.addEvent('error', `Telegram 指令处理失败：${error.message || error}`); this.onChange();
     } finally { this.commandPollRunning = false; }
@@ -1176,11 +1195,50 @@ class MonitorService {
     return this.runtime.get(accountId);
   }
 
-  updateSubagentAlertStep(accountId, path, alertStep, remark = '') {
+  updateSubagentAlertStep(accountId, path, alertStep, remark = '', deltaAlertStep = null) {
     const status = this.status(accountId);
     const key = agentPathKey(path);
     const subagent = status.subagents?.find((item) => agentPathKey(item.path) === key);
-    if (subagent) Object.assign(subagent, { alertStep, remark, customized: true });
+    if (subagent) Object.assign(subagent, { alertStep, remark, deltaAlertStep, customized: true });
+  }
+
+  async processDeltaAlerts(account, status, period, metric, quiet, notificationFailures) {
+    const periodKey = `${period.start}/${period.end}`;
+    const stored = this.store.state.accounts.find((item) => item.id === account.id);
+    const history = deltaHistoryForPeriod(stored?.deltaHistory, periodKey, metric.id);
+    for (const subagent of status.subagents.filter((item) => !item.stale && Number.isFinite(item.value))) {
+      const key = agentPathKey(subagent.path);
+      const previous = history.agents[key];
+      const baseline = { value: subagent.value, readAt: subagent.readAt || new Date().toISOString() };
+      const change = Number.isFinite(previous?.value) ? subagent.value - previous.value : null;
+      const shouldSend = !quiet && Number.isFinite(subagent.deltaAlertStep) && subagent.deltaAlertStep > 0 && Number.isFinite(change) && Math.abs(change) >= subagent.deltaAlertStep;
+      if (shouldSend) {
+        try {
+          const sign = change > 0 ? '+' : '';
+          await this.sendOperationalTelegram([
+            `↕️ ${metric.valueLabel}变化量提醒`, `账号：${account.name}`,
+            metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${subagent.path.join(' / ')}` : `监控项：${metric.label}`,
+            subagent.remark ? `备注：${subagent.remark}` : '', `报表区间：${periodKey.replace('/', '—')}`,
+            `上次成功读取：${previous.value > 0 ? '+' : ''}${previous.value.toLocaleString('zh-CN')}`,
+            `当前值：${subagent.value > 0 ? '+' : ''}${subagent.value.toLocaleString('zh-CN')}`,
+            `本次变化：${sign}${change.toLocaleString('zh-CN')}`, `变化提醒阈值：${subagent.deltaAlertStep.toLocaleString('zh-CN')}`,
+            `时间：${new Date().toLocaleString('zh-CN')}`,
+          ].filter(Boolean).join('\n'));
+          this.recordAlertAttempt({ status: 'sent', alertType: 'delta', accountId: account.id, accountName: account.name, agentName: subagent.name, agentPath: subagent.path, value: subagent.value, change, alertStep: subagent.deltaAlertStep, remark: subagent.remark, period });
+          this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}：本次变化 ${sign}${change.toLocaleString('zh-CN')} 已发送 Telegram 提醒`, account.id);
+        } catch (error) {
+          const message = `${subagent.name}：变化量提醒发送失败：${error.message || error}`;
+          notificationFailures.push(message); subagent.alertError = error.message || String(error);
+          this.recordAlertAttempt({ status: 'failed', alertType: 'delta', accountId: account.id, accountName: account.name, agentPath: subagent.path, value: subagent.value, change, alertStep: subagent.deltaAlertStep, remark: subagent.remark, error: subagent.alertError, period });
+          this.store.addEvent('error', `${account.name} / ${message}`, account.id); continue;
+        }
+      }
+      this.store.update((data) => {
+        const current = data.accounts.find((item) => item.id === account.id); if (!current) return;
+        const currentHistory = deltaHistoryForPeriod(current.deltaHistory, periodKey, metric.id);
+        currentHistory.agents[key] = baseline; current.deltaHistory = currentHistory;
+      });
+    }
   }
 
   async clearAccountSession(accountId) {
@@ -1404,6 +1462,7 @@ class MonitorService {
           });
         }
       }
+      await this.processDeltaAlerts(account, status, client.reportPeriod, metric, quiet, notificationFailures);
       if (!childErrors.length && !notificationFailures.length && this.store.state.accounts.find((item) => item.id === accountId)?.alertHistory?.migrationPending) {
         this.store.update((data) => {
           const current = data.accounts.find((item) => item.id === accountId);

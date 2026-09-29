@@ -181,6 +181,7 @@ function applySubagentAlertSteps(agents, configurations) {
       path,
       remark: String(custom?.remark || '').trim(),
       alertStep: alertStepFromLegacy(custom),
+      ...(Number.isFinite(custom?.deltaAlertStep) && custom.deltaAlertStep > 0 ? { deltaAlertStep: custom.deltaAlertStep } : {}),
       customized: Boolean(custom),
     };
   });

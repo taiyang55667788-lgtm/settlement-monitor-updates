@@ -212,7 +212,9 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('subagent-threshold:save', (_event, input) => {
     const alertStep = optionalAmount(input.alertStep);
+    const deltaAlertStep = optionalAmount(input.deltaAlertStep);
     if (Number.isNaN(alertStep) || (alertStep !== null && alertStep <= 0)) throw new Error('提醒间隔必须是大于 0 的金额，留空表示关闭');
+    if (Number.isNaN(deltaAlertStep) || (deltaAlertStep !== null && deltaAlertStep <= 0)) throw new Error('单次变动提醒必须是大于 0 的金额，留空表示关闭');
     const path = Array.isArray(input.path) ? input.path.map((part) => String(part).trim()) : [String(input.name || '').trim()];
     if (!path.length || path.some((part) => !part) || path.length > 2) throw new Error('只支持往下两级代理');
     const name = path.at(-1);
@@ -224,7 +226,7 @@ app.whenReady().then(() => {
       if (!account) throw new Error('账号不存在');
       if (!Array.isArray(account.subagentThresholds)) account.subagentThresholds = [];
       const existing = account.subagentThresholds.find((item) => agentPathKey(item.path || [item.name]) === agentPathKey(path));
-      const values = { name, path, remark, alertStep };
+      const values = { name, path, remark, alertStep, deltaAlertStep };
       if (existing) {
         Object.assign(existing, values);
         delete existing.lowerThreshold;
@@ -232,11 +234,45 @@ app.whenReady().then(() => {
       }
       else account.subagentThresholds.push(values);
     });
-    monitor.updateSubagentAlertStep(accountId, path, alertStep, remark);
+    monitor.updateSubagentAlertStep(accountId, path, alertStep, remark, deltaAlertStep);
     monitor.requestRecheck(accountId);
     store.addEvent('success', `${path.join(' / ')}：备注和提醒设置已保存`, accountId);
     publish();
     return { ok: true };
+  });
+  ipcMain.handle('subagent-threshold:batch-save', (_event, input) => {
+    const accountId = String(input.accountId || '');
+    const paths = Array.isArray(input.paths) ? input.paths.map((path) => Array.isArray(path) ? path.map((part) => String(part).trim()) : []).filter((path) => path.length && path.length <= 2 && path.every(Boolean)) : [];
+    if (!paths.length) throw new Error('请先选择至少一个代理');
+    const hasAlertStep = input.alertStep !== '' && input.alertStep !== null && input.alertStep !== undefined;
+    const hasDeltaStep = input.deltaAlertStep !== '' && input.deltaAlertStep !== null && input.deltaAlertStep !== undefined;
+    const alertStep = hasAlertStep ? optionalAmount(input.alertStep) : undefined;
+    const deltaAlertStep = hasDeltaStep ? optionalAmount(input.deltaAlertStep) : undefined;
+    if (Number.isNaN(alertStep) || (alertStep !== undefined && alertStep !== null && alertStep <= 0)) throw new Error('提醒间隔必须是大于 0 的金额');
+    if (Number.isNaN(deltaAlertStep) || (deltaAlertStep !== undefined && deltaAlertStep !== null && deltaAlertStep <= 0)) throw new Error('单次变动提醒必须是大于 0 的金额');
+    const updateRemark = input.updateRemark === true;
+    const remark = String(input.remark || '').trim();
+    if (remark.length > 100) throw new Error('备注最多 100 个字');
+    const changed = [];
+    store.update((data) => {
+      const account = data.accounts.find((item) => item.id === accountId);
+      if (!account) throw new Error('账号不存在');
+      account.subagentThresholds ||= [];
+      for (const path of paths) {
+        const name = path.at(-1); let setting = account.subagentThresholds.find((item) => agentPathKey(item.path || [item.name]) === agentPathKey(path));
+        if (!setting) { setting = { name, path, remark: '', alertStep: null, deltaAlertStep: null }; account.subagentThresholds.push(setting); }
+        if (hasAlertStep) setting.alertStep = alertStep;
+        if (input.clearAlertStep === true) setting.alertStep = null;
+        if (hasDeltaStep) setting.deltaAlertStep = deltaAlertStep;
+        if (input.clearDeltaAlertStep === true) setting.deltaAlertStep = null;
+        if (updateRemark) setting.remark = remark;
+        changed.push({ path, alertStep: setting.alertStep, deltaAlertStep: setting.deltaAlertStep, remark: setting.remark });
+      }
+    });
+    for (const item of changed) monitor.updateSubagentAlertStep(accountId, item.path, item.alertStep, item.remark, item.deltaAlertStep);
+    monitor.requestRecheck(accountId);
+    store.addEvent('success', `已批量更新 ${changed.length} 个代理的提醒设置`, accountId);
+    publish(); return { ok: true, count: changed.length };
   });
   ipcMain.handle('subagent:expand', (_event, input) => {
     const accountId = String(input.accountId || '');

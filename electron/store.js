@@ -56,7 +56,7 @@ class SecureStore {
           crownLoginEntry: systemType === 'crown' ? crownLoginEntry : '',
           monitorMetric: metricForAccount({ systemType, crownLoginEntry }).id,
         subagentThresholds: Array.isArray(account.subagentThresholds)
-          ? account.subagentThresholds.map((item) => ({ name: item.name, path: agentPath(item), remark: String(item.remark || '').trim(), alertStep: alertStepFromLegacy(item) }))
+          ? account.subagentThresholds.map((item) => ({ name: item.name, path: agentPath(item), remark: String(item.remark || '').trim(), alertStep: alertStepFromLegacy(item), deltaAlertStep: Number.isFinite(item.deltaAlertStep) && item.deltaAlertStep > 0 ? item.deltaAlertStep : null }))
           : [],
         expandedAgentPaths: Array.isArray(account.expandedAgentPaths) ? account.expandedAgentPaths.filter(Array.isArray) : [],
         };
@@ -143,6 +143,7 @@ class SecureStore {
             path: agentPath(item),
             remark: String(item.remark || ''),
             alertStep: Number.isFinite(item.alertStep) && item.alertStep > 0 ? item.alertStep : null,
+            ...(Number.isFinite(item.deltaAlertStep) && item.deltaAlertStep > 0 ? { deltaAlertStep: item.deltaAlertStep } : {}),
           })),
           expandedAgentPaths: account.expandedAgentPaths || [],
           intervalMinutes: account.intervalMinutes,
