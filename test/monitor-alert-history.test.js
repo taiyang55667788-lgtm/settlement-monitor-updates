@@ -58,6 +58,111 @@ function fixture(state) {
   return { alerts, deltaAlerts, context, store, makeService };
 }
 
+test('screenshot amounts stay in the same tier across refresh and service restart; returns from 600k alert again', async () => {
+  const { store, context, makeService } = fixture();
+  store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
+  store.state.accounts[0].subagentThresholds = [{ name: 'parent', path: ['parent'], alertStep: 300000 }];
+  let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  for (const value of [-346872.65, -312104.94, -599999]) { context.parentValue = value; await service.check('account-1'); }
+  assert.equal(store.state.notificationOutbox.length, 1);
+  service.clearAccountSession = async () => {};
+  await service.invalidateAccount('account-1');
+  await service.check('account-1');
+  assert.equal(store.state.notificationOutbox.length, 1, 'session reset and full rescan retain the alert tier');
+  service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  for (const value of [-600000, -610000, -350000, -310000]) { context.parentValue = value; await service.check('account-1'); }
+  assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [-1, -2, -1]);
+  assert.deepEqual(store.state.notificationOutbox.map(item => item.record.previousLevel), [0, -1, -2]);
+  assert.equal(new Set(store.state.notificationOutbox.map(item => item.record.eventId)).size, 3);
+  assert.deepEqual(store.state.accounts[0].tierTransitions.map(item => [item.from, item.to]), [[0, -1], [-1, -2], [-2, -1]]);
+});
+
+test('unchanged tiers do not rewrite the encrypted ledger for every agent', async () => {
+  const { store, makeService } = fixture();
+  const account = store.state.accounts[0]; const service = makeService();
+  const metric = require('../electron/monitor-systems').metricForAccount(account);
+  const batch = Array.from({ length: 200 }, (_, i) => ({ name: `agent-${i}`, path: [`agent-${i}`], value: 1, alertStep: 100 }));
+  const status = service.status(account.id), period = { start: '2026-09-14', end: '2026-09-20' };
+  await service.processFreshBatch(account, status, period, metric, 0, batch, []);
+  let writes = 0; const update = store.update.bind(store);
+  store.update = fn => { writes++; return update(fn); };
+  await service.processFreshBatch(account, status, period, metric, 0, batch, []);
+  assert.equal(writes, 0, '200 unchanged tiers require no persistent state update');
+});
+
+test('an unconfirmed zero-tier reading must not rearm the same tier', async () => {
+  const { store, context, alerts, makeService } = fixture();
+  store.state.alertPolicy = { confirmationReads: 2 };
+  store.state.accounts[0].subagentThresholds = [{ name: 'parent', path: ['parent'], alertStep: 300000 }];
+  const service = makeService();
+  for (const value of [350000, 350000, 290000, 350000, 350000]) { context.parentValue = value; await service.check('account-1'); }
+  assert.deepEqual(alerts, [['parent', 1]]);
+  for (const value of [290000, 290000, 350000, 350000]) { context.parentValue = value; await service.check('account-1'); }
+  assert.deepEqual(alerts, [['parent', 1], ['parent', 1]]);
+});
+
+test('threshold edits do not invalidate in-flight work and next batch uses the new settings', async () => {
+  const { store, context, alerts, makeService } = fixture();
+  const service = makeService();
+  context.beforeDescendant = async path => {
+    if (path.length !== 1) return;
+    store.state.accounts[0].subagentThresholds[1].alertStep = 1000;
+    service.updateSubagentAlertStep('account-1', ['parent', 'child'], 1000);
+    assert.equal(service.revisions.get('account-1') || 0, 0);
+    assert.equal(service.rerunRequested.has('account-1'), true);
+    // Keep this test bounded rather than letting the queued follow-up run.
+    service.rerunRequested.clear();
+  };
+  await service.check('account-1');
+  assert.equal(alerts.some(([path]) => path === 'parent/child'), false);
+  assert.equal(service.status('account-1').subagents.find(item => item.name === 'child').alertStep, 1000);
+});
+
+test('failed full scans resume completed non-focus branches after restart without using cached amounts for alerts', async () => {
+  const { store, context, makeService } = fixture();
+  store.state.accounts[0].subagentThresholds = [];
+  context.descendants = new Map([
+    ['parent', { agents: [{ name: 'bad', value: 1 }, { name: 'good', value: 2 }] }],
+    ['parent/good', { agents: [{ name: 'leaf', value: 3 }] }],
+  ]);
+  let fail = true; const reads = [];
+  context.beforeDescendant = async path => { reads.push(path.join('/')); if (fail && path.join('/') === 'parent/bad') throw new Error('branch offline'); };
+  await makeService().check('account-1');
+  assert.ok(store.state.accounts[0].scanCheckpoint.completed['["parent","good"]']);
+  reads.length = 0; fail = false;
+  const service = makeService(); await service.check('account-1');
+  assert.deepEqual(reads, ['parent', 'parent/bad']);
+  assert.equal(store.state.accounts[0].scanCheckpoint, undefined);
+  assert.equal(service.status('account-1').subagents.find(item => item.name === 'leaf').stale, true);
+});
+
+test('confirmed terminal branches expire and manual full scan bypasses the cache', async () => {
+  const { store, context, makeService } = fixture();
+  store.state.accounts[0].subagentThresholds = [];
+  context.descendants = new Map();
+  const service = makeService(); await service.check('account-1');
+  context.descendantReads = 0;
+  await service.check('account-1'); assert.equal(context.descendantReads, 0);
+  store.state.accounts[0].leafCache.paths['["parent"]'] = Date.now() - 7 * 3600000;
+  await service.check('account-1'); assert.equal(context.descendantReads, 1);
+  service.requestRecheck = () => {};
+  service.requestFullScan('account-1');
+  await service.check('account-1'); assert.equal(context.descendantReads, 2);
+});
+
+test('long full scans interleave fresh priority reads serially before finishing structure', async () => {
+  const { store, context, alerts, makeService } = fixture();
+  store.state.accounts[0].intervalMinutes = 1;
+  store.state.accounts[0].subagentThresholds = [{ path: ['parent'], alertStep: 100 }];
+  const now = Date.now; let elapsed = 0; const started = now();
+  Date.now = () => started + elapsed;
+  try {
+    context.beforeDescendant = async path => { if (path.length === 1) { elapsed = 61000; context.parentValue = 350; } };
+    await makeService().check('account-1');
+    assert.deepEqual(alerts, [['parent', 1], ['parent', 2], ['parent', 3]]);
+  } finally { Date.now = now; }
+});
+
 test('durable queue captures upward and downward crossings offline without blocking reads or replaying tiers', async () => {
   const { store, context, makeService } = fixture();
   store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
@@ -173,7 +278,7 @@ test('discovers all four levels once, then selects only reminder branches and pr
   reads.length = 0;
   await service.check('account-1');
   assert.deepEqual(reads, ['parent', 'parent/child', 'parent/child/third']);
-  assert.equal(service.status('account-1').subagents.find(a => a.name === 'fourth').stale, undefined);
+  assert.equal(Boolean(service.status('account-1').subagents.find(a => a.name === 'fourth').stale), false);
   assert.equal(service.status('account-1').subagents.find(a => a.path.join('/') === 'parent/other/third').notRefreshed, true);
   store.state.accounts[0].subagentThresholds.at(-1).deltaAlertStep = null;
   reads.length = 0;

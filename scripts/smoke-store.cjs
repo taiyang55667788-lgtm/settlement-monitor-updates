@@ -68,6 +68,29 @@ app.whenReady().then(() => {
     assert.equal(restoredQueue.publicState().notificationQueue.pending, 1);
     assert.equal(restoredQueue.publicState().notificationOutbox, undefined);
     assert.equal(fs.readFileSync(restoredQueue.filePath, 'utf8').includes('fixture encrypted message'), false);
+    // A failed durable write must roll back both the queued notification and its ledger.
+    const rename = fs.renameSync;
+    const before = structuredClone(restoredQueue.state);
+    try {
+      fs.renameSync = () => { throw new Error('simulated disk failure'); };
+      const box = new NotificationOutbox(restoredQueue, async () => {});
+      assert.throws(() => box.enqueue('never accepted', 'amount', { commit(data) { data.accounts[0].testTier = 9; } }), /disk failure/);
+      assert.deepEqual(restoredQueue.state, before);
+    } finally { fs.renameSync = rename; }
+    const durable = new SecureStore(directory); durable.load();
+    assert.equal(durable.state.notificationOutbox.length, 1);
+    assert.equal(durable.state.accounts[0].testTier, undefined);
+    // Make a known last-good backup, corrupt the primary, and verify explicit recovery.
+    durable.backupAt = 0;
+    durable.update(data => { data.appearance.theme = 'contrast'; });
+    fs.writeFileSync(durable.filePath, 'broken encrypted file');
+    const recovered = new SecureStore(directory); recovered.load();
+    assert.equal(recovered.loadStatus, 'recovered');
+    assert.equal(recovered.state.appearance.theme, 'light');
+    assert.equal(recovered.state.notificationOutbox.length, 1);
+    assert.ok(recovered.state.events.some(item => /备份恢复/.test(item.message)));
+    assert.equal(fs.readFileSync(`${durable.filePath}.backup`, 'utf8').includes('fixture-token'), false);
+    recovered.flush();
     process.stdout.write('Agent settings migration and persistence smoke test passed\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

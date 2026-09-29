@@ -137,3 +137,10 @@ dialog { width:min(900px,calc(100vw - 40px));max-height:calc(100vh - 40px);borde
 .reading-details { padding:24px; }
 #reading-details-content { white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:13px;line-height:1.7; }
 @media(max-width:1080px){.summary-grid{grid-template-columns:repeat(2,1fr)}.account-row{grid-template-columns:1fr 1fr}.settings-card{grid-template-columns:1fr}}
+.queued-message { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.queued-message small { display: block; color: var(--muted); margin-top: 6px; }
+.queued-message pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; }
+.queued-message button { margin-right: 8px; }
+.recovery-warning { padding: 14px 20px; margin-bottom: 18px; color: var(--red); }
+.recovery-warning button { margin-left: 12px; }
+.queued-message button:disabled, #queue-prev:disabled, #queue-next:disabled { opacity: .4; cursor: not-allowed; }

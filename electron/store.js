@@ -26,14 +26,25 @@ class SecureStore {
   constructor(userDataPath) {
     this.filePath = path.join(userDataPath, 'monitor-settings.bin');
     this.state = structuredClone(EMPTY_STATE);
+    this.loadStatus = 'new';
   }
 
   load() {
     if (!fs.existsSync(this.filePath)) return this.state;
     try {
-      const encrypted = Buffer.from(fs.readFileSync(this.filePath, 'utf8'), 'base64');
       if (!safeStorage.isEncryptionAvailable()) throw new Error('系统加密服务不可用');
-      const saved = JSON.parse(safeStorage.decryptString(encrypted));
+      const decode = file => {
+        const saved = JSON.parse(safeStorage.decryptString(Buffer.from(fs.readFileSync(file, 'utf8'), 'base64')));
+        if (!saved || !Array.isArray(saved.accounts) || saved.accounts.some(account => !account || typeof account !== 'object')) throw new Error('配置结构无效');
+        return saved;
+      };
+      let saved;
+      try { saved = decode(this.filePath); this.loadStatus = 'loaded'; }
+      catch (error) {
+        fs.copyFileSync(this.filePath, `${this.filePath}.unreadable-${Date.now()}`);
+        saved = decode(`${this.filePath}.backup`);
+        this.loadStatus = 'recovered';
+      }
       this.state = {
         ...structuredClone(EMPTY_STATE),
         ...saved,
@@ -69,11 +80,16 @@ class SecureStore {
         depthPruned ||= before !== JSON.stringify(normalized);
         return normalized;
       });
-      if (depthPruned) this.save();
+      if (this.loadStatus === 'recovered') {
+        this.state.recoveryReviewRequired = true;
+        this.state.events.unshift({ id: crypto.randomUUID(), time: new Date().toISOString(), type: 'error', message: '配置损坏，已从加密备份恢复；请核对提醒设置与通知记录。' });
+      }
+      if (depthPruned || this.loadStatus === 'recovered') this.save();
     } catch (error) {
       const backup = `${this.filePath}.unreadable-${Date.now()}`;
       fs.copyFileSync(this.filePath, backup);
       this.state = structuredClone(EMPTY_STATE);
+      this.loadStatus = 'failed';
       this.state.events.unshift({
         id: crypto.randomUUID(),
         time: new Date().toISOString(),
@@ -85,22 +101,44 @@ class SecureStore {
   }
 
   save() {
+    clearTimeout(this.saveTimer); this.saveTimer = null;
+    this.dirty = true;
     if (!safeStorage.isEncryptionAvailable()) throw new Error('系统加密服务不可用，无法安全保存账号');
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const encrypted = safeStorage.encryptString(JSON.stringify(this.state));
     const temporary = `${this.filePath}.tmp`;
     fs.writeFileSync(temporary, encrypted.toString('base64'), { mode: 0o600 });
+    // Preserve the last readable generation. Never replace it with a corrupt file.
+    if (fs.existsSync(this.filePath) && this.loadStatus !== 'recovered' && (!this.backupAt || Date.now() - this.backupAt >= 300000)) {
+      fs.copyFileSync(this.filePath, `${this.filePath}.backup`);
+      this.backupAt = Date.now();
+    }
     fs.renameSync(temporary, this.filePath);
+    this.dirty = false;
   }
 
-  update(mutator) {
-    mutator(this.state);
-    this.save();
+  update(mutator, { deferred = false } = {}) {
+    const previous = structuredClone(this.state);
+    try { mutator(this.state); if (deferred) this.deferSave(); else { this.save(); this.persistenceError = ''; } }
+    catch (error) { this.state = previous; this.persistenceError = `保存失败：${error.message}`; throw error; }
     return this.state;
   }
 
+  deferSave() {
+    this.dirty = true;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      try { this.save(); this.persistenceError = ''; }
+      catch (error) { this.saveTimer = null; this.persistenceError = `保存失败：${error.message}`; }
+    }, 1000);
+    this.saveTimer.unref?.();
+  }
+
+  flush() { if (this.saveTimer || this.dirty) this.save(); }
+
   publicState(runtime = new Map()) {
     return {
+      persistenceError: this.persistenceError || '',
       telegram: {
         chatId: this.state.telegram.chatId,
         hasBotToken: Boolean(this.state.telegram.botToken),
@@ -122,6 +160,11 @@ class SecureStore {
         pending: (this.state.notificationOutbox || []).length,
         failed: (this.state.notificationOutbox || []).filter(item => item.attempts > 0).length,
         held: (this.state.notificationOutbox || []).filter(item => item.recipient !== recipientKey(this.state.telegram)).length,
+        items: (this.state.notificationOutbox || []).map(item => ({
+          id: item.id, text: item.text, createdAt: item.createdAt, attempts: item.attempts,
+          error: item.error || '', nextAttemptAt: item.nextAttemptAt,
+          held: item.recipient !== recipientKey(this.state.telegram),
+        })),
       },
       accounts: this.state.accounts.map((account) => {
         const metric = metricForAccount(account);
@@ -171,6 +214,7 @@ class SecureStore {
           enabled: account.enabled,
           hasSecurityCode: Boolean(account.securityCode),
           hasPassword: Boolean(account.password),
+          tierTransitions: account.tierTransitions || [],
           ...live,
           trend: Array.isArray(account.agentTrend) ? account.agentTrend.filter((point) => !point.metric || point.metric === metric.id) : [],
           subagents,
@@ -184,7 +228,7 @@ class SecureStore {
   addEvent(type, message, accountId = null) {
     this.state.events.unshift({ id: crypto.randomUUID(), time: new Date().toISOString(), type, message, accountId });
     this.state.events = this.state.events.slice(0, 500);
-    this.save();
+    this.deferSave();
   }
 
   addAlertRecord(record) {

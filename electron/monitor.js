@@ -8,6 +8,7 @@ const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = requi
 const { PairingClient } = require('./pairing');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
+const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -1103,6 +1104,7 @@ class MonitorService {
     this.activeReads = new Map();
     this.suspended = false;
     this.stopped = false;
+    this.nextAutomaticStartAt = 0;
     this.operationTimeoutMs = network.operationTimeoutMs || 150000;
     this.outbox = new NotificationOutbox(store, text => this.deliverOperationalTelegram(text), {
       quiet: () => inQuietHours(this.store.state.alertPolicy || {}), changed: onChange,
@@ -1370,7 +1372,7 @@ class MonitorService {
       const cached = snapshotMatchesMetric && Array.isArray(snapshot?.agents) ? snapshot.agents : [];
       this.runtime.set(accountId, {
         status: 'waiting',
-        subagents: applySubagentAlertSteps(cached.map((agent) => ({ ...agent, stale: true })), account?.subagentThresholds),
+        subagents: applySubagentAlertSteps(cached.map((agent) => ({ ...agent, stale: true, staleReason: 'waiting' })), account?.subagentThresholds),
         subagentCount: snapshotMatchesMetric ? cached.filter((agent) => agent.path?.length === 1).length : null,
         reportPeriod: snapshotMatchesMetric ? snapshot?.period || null : null,
         consecutiveFailures: account?.monitorHealth?.consecutiveFailures || 0,
@@ -1389,13 +1391,24 @@ class MonitorService {
     const key = agentPathKey(path);
     const subagent = status.subagents?.find((item) => agentPathKey(item.path) === key);
     if (subagent) Object.assign(subagent, { alertStep, remark, deltaAlertStep, customized: true });
+    for (const candidateKey of Object.keys(status.alertCandidates || {})) {
+      try {
+        const [candidatePath] = JSON.parse(Buffer.from(candidateKey.split(':').at(-1), 'base64url').toString());
+        if (agentPathKey(candidatePath) === key) delete status.alertCandidates[candidateKey];
+      } catch { delete status.alertCandidates[candidateKey]; }
+    }
+    // Coalesce settings edits; never invalidate a healthy in-flight report.
+    if (this.inFlight.has(accountId)) this.rerunRequested.add(accountId);
+    else status.nextCheckAt = new Date(Date.now() + 1000).toISOString();
   }
 
   async processDeltaAlerts(account, status, period, metric, quiet, notificationFailures) {
     const periodKey = `${period.start}/${period.end}`;
     const stored = this.store.state.accounts.find((item) => item.id === account.id);
     const history = deltaHistoryForPeriod(stored?.deltaHistory, periodKey, metric.id);
+    const baselines = {};
     for (const subagent of status.subagents.filter((item) => !item.stale && Number.isFinite(item.value))) {
+      if (!(Number(subagent.deltaAlertStep) > 0)) continue;
       const key = agentPathKey(subagent.path);
       const previous = history.agents[key];
       const baseline = { value: subagent.value, readAt: subagent.readAt || new Date().toISOString() };
@@ -1404,6 +1417,7 @@ class MonitorService {
       if (shouldSend) {
         try {
           const sign = change > 0 ? '+' : '';
+          const record = { alertType: 'delta', accountId: account.id, accountName: account.name, agentName: subagent.name, agentPath: subagent.path, value: subagent.value, change, alertStep: subagent.deltaAlertStep, remark: subagent.remark, period };
           const receipt = await this.sendOperationalTelegram([
             `↕️ ${metric.valueLabel}变化量提醒`, `账号：${account.name}`,
             metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${subagent.path.join(' / ')}` : `监控项：${metric.label}`,
@@ -1412,7 +1426,12 @@ class MonitorService {
             `当前值：${subagent.value > 0 ? '+' : ''}${subagent.value.toLocaleString('zh-CN')}`,
             `本次变化：${sign}${change.toLocaleString('zh-CN')}`, `变化提醒阈值：${subagent.deltaAlertStep.toLocaleString('zh-CN')}`,
             `时间：${new Date().toLocaleString('zh-CN')}`,
-          ].filter(Boolean).join('\n'), 'amount');
+          ].filter(Boolean).join('\n'), 'amount', { record, commit: data => {
+            const current = data.accounts.find(item => item.id === account.id);
+            if (!current) throw new Error('账号已删除');
+            current.deltaHistory = deltaHistoryForPeriod(current.deltaHistory, periodKey, metric.id);
+            current.deltaHistory.agents[key] = baseline;
+          } });
           this.recordAlertAttempt({ status: 'sent', alertType: 'delta', accountId: account.id, accountName: account.name, agentName: subagent.name, agentPath: subagent.path, value: subagent.value, change, alertStep: subagent.deltaAlertStep, remark: subagent.remark, period }, receipt);
           this.store.addEvent('alert', `${account.name} / ${subagent.path.join(' / ')}：本次变化 ${sign}${change.toLocaleString('zh-CN')} ${receipt?.queued ? '已加入通知队列' : '已发送 Telegram 提醒'}`, account.id);
         } catch (error) {
@@ -1422,12 +1441,13 @@ class MonitorService {
           this.store.addEvent('error', `${account.name} / ${message}`, account.id); continue;
         }
       }
-      this.store.update((data) => {
-        const current = data.accounts.find((item) => item.id === account.id); if (!current) return;
-        const currentHistory = deltaHistoryForPeriod(current.deltaHistory, periodKey, metric.id);
-        currentHistory.agents[key] = baseline; current.deltaHistory = currentHistory;
-      });
+      if (previous?.value !== baseline.value) baselines[key] = baseline;
     }
+    if (Object.keys(baselines).length) this.store.update(data => {
+      const current = data.accounts.find(item => item.id === account.id); if (!current) return;
+      current.deltaHistory = deltaHistoryForPeriod(current.deltaHistory, periodKey, metric.id);
+      Object.assign(current.deltaHistory.agents, baselines);
+    });
   }
 
   async clearAccountSession(accountId) {
@@ -1436,6 +1456,10 @@ class MonitorService {
   }
 
   async invalidateAccount(accountId) {
+    this.store.update(data => {
+      const account = data.accounts.find(item => item.id === accountId);
+      if (account) { delete account.scanCheckpoint; delete account.leafCache; }
+    });
     if (this.store.state.accounts.some(account => account.id === accountId)) this.fullScanRequested.add(accountId);
     else this.fullScanRequested.delete(accountId);
     const view = this.viewWindows.get(accountId);
@@ -1465,6 +1489,10 @@ class MonitorService {
     const account = this.store.state.accounts.find(item => item.id === accountId);
     if (!account?.enabled) throw new Error('请先启用账号，再进行全量扫描');
     this.fullScanRequested.add(accountId);
+    this.store.update(data => {
+      const current = data.accounts.find(item => item.id === accountId);
+      delete current.scanCheckpoint; delete current.leafCache;
+    });
     this.requestRecheck(accountId);
   }
 
@@ -1474,7 +1502,7 @@ class MonitorService {
   }
 
   async tick() {
-    if (this.suspended || this.stopped) return;
+    if (this.suspended || this.stopped || this.store.state.recoveryReviewRequired) return;
     void this.outbox.flush().catch(error => this.store.addEvent('error', `通知队列异常：${error.message}`));
     for (const account of this.store.state.accounts.filter(item => item.enabled)) await this.checkFreshness(account);
     const now = Date.now();
@@ -1482,7 +1510,10 @@ class MonitorService {
       const status = this.status(account.id);
       return account.enabled && status.status !== 'manual' && !this.openingViews.has(account.id) && !status.running && (!status.nextCheckAt || Date.parse(status.nextCheckAt) <= now);
     });
-    await Promise.allSettled(due.map((account) => this.check(account.id)));
+    if (due.length && now >= this.nextAutomaticStartAt) {
+      this.nextAutomaticStartAt = now + 3000;
+      await this.check(due[0].id);
+    }
   }
 
   persistHealth(account, status) {
@@ -1556,7 +1587,7 @@ class MonitorService {
   }
 
   async check(accountId) {
-    if (this.suspended || this.stopped) return;
+    if (this.suspended || this.stopped || this.store.state.recoveryReviewRequired) return;
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     if (!storedAccount) throw new Error('账号不存在');
     if (!storedAccount.enabled) return;
@@ -1601,7 +1632,10 @@ class MonitorService {
       const periodKey = `${client.reportPeriod.start}/${client.reportPeriod.end}`;
       const cachedSnapshot = this.store.state.accounts.find((item) => item.id === accountId)?.agentSnapshot;
       const cachedAgents = cachedSnapshot?.metric === metric.id ? cachedSnapshot.agents || [] : [];
-      const fullScan = this.fullScanRequested.has(accountId) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1;
+      const checkpoint = scanState(storedAccount.scanCheckpoint, metric.id, periodKey);
+      const fullScan = this.fullScanRequested.has(accountId) || Boolean(storedAccount.scanCheckpoint) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1;
+      const leafCache = storedAccount.leafCache?.period === periodKey && storedAccount.leafCache.metric === metric.id
+        ? structuredClone(storedAccount.leafCache) : { period: periodKey, metric: metric.id, paths: {} };
       status.scanMode = fullScan ? '全量扫描' : '按提醒读取';
       const agents = metric.usesSubagents
         ? report.agents.map((agent) => ({ ...agent, path: [agent.name], readAt: rootReadAt }))
@@ -1623,7 +1657,8 @@ class MonitorService {
       status.phaseTimings = { loginAndRootMs: Date.now() - checkStarted, branches: [] };
       const publishBatch = async (fresh) => {
         if (!this.isCurrentCheck(accountId, revision)) return;
-        const unread = cachedAgents.filter(old => !agents.some(item => agentPathKey(item.path) === agentPathKey(old.path))).map(old => ({ ...old, stale: true }));
+        configuredSubagents = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
+        const unread = cachedAgents.filter(old => !agents.some(item => agentPathKey(item.path) === agentPathKey(old.path))).map(old => ({ ...old, stale: true, staleReason: 'waiting' }));
         status.subagents = applySubagentAlertSteps([...agents, ...unread], configuredSubagents);
         status.readProgress = { read: agents.filter(a => !a.stale).length };
         status.subagentCount = report.agents.length;
@@ -1648,7 +1683,68 @@ class MonitorService {
           && target.length > path.length && path.every((part, index) => target[index] === part);
       });
       const branches = metric.readsDescendants !== false ? report.agents.map((agent) => [agent.name]) : [];
+      const mergeChildren = (path, children, freshRead = true) => {
+        const parent = agents.find(item => agentPathKey(item.path) === agentPathKey(path));
+        if (!parent) return [];
+        parent.childCount = children.length; delete parent.childError;
+        // Remove vanished children together with their descendants.
+        for (let i = agents.length - 1; i >= 0; i--) {
+          const p = agents[i].path;
+          if (p.length > path.length && path.every((part, j) => p[j] === part) && !children.some(child => child.name === p[path.length])) agents.splice(i, 1);
+        }
+        const fresh = children.map(child => ({ ...child, path: [...path, child.name],
+          ...(freshRead ? { readAt: new Date().toISOString(), stale: false, staleReason: '' } : { stale: true, staleReason: 'checkpoint' }) }));
+        for (const item of fresh) {
+          const existing = agents.find(agent => agentPathKey(agent.path) === agentPathKey(item.path));
+          if (existing) Object.assign(existing, item); else agents.push(item);
+        }
+        return fresh;
+      };
+      const saveBranch = (path, fresh) => {
+        const key = agentPathKey(path);
+        if (!fresh.length) leafCache.paths[key] = Date.now(); else delete leafCache.paths[key];
+        if (fullScan) checkpoint.completed[key] = fresh;
+        this.store.update(data => {
+          const current = data.accounts.find(item => item.id === accountId);
+          if (!current) return;
+          current.leafCache = leafCache;
+          if (fullScan) current.scanCheckpoint = checkpoint;
+        }, { deferred: true });
+      };
+      let lastPriorityAt = Date.now();
+      const refreshPriority = async () => {
+        const settings = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
+        if (!settings.some(item => Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0)) return;
+        status.stage = '全量扫描中，优先更新提醒代理'; this.onChange();
+        const root = await read(() => client.readThisWeekSettlement());
+        if (`${client.reportPeriod.start}/${client.reportPeriod.end}` !== periodKey) throw new Error('扫描过程中结算周已切换，等待下一轮重新读取');
+        const rootFresh = root.agents.map(item => ({ ...item, path: [item.name], readAt: new Date().toISOString(), stale: false }));
+        const roots = new Set(rootFresh.map(item => item.name));
+        for (let i = agents.length - 1; i >= 0; i--) if (!roots.has(agents[i].path[0])) agents.splice(i, 1);
+        for (const item of rootFresh) {
+          const old = agents.find(agent => agentPathKey(agent.path) === agentPathKey(item.path));
+          if (old) Object.assign(old, item); else { agents.push(item); branches.push(item.path); }
+        }
+        await publishBatch(rootFresh);
+        for (const path of priorityPaths(settings)) {
+          if (!this.isCurrentCheck(accountId, revision)) return;
+          if (!agents.some(item => agentPathKey(item.path) === agentPathKey(path))) continue;
+          const result = await read(() => client.readDescendantSettlement(path));
+          const fresh = mergeChildren(path, result.agents);
+          saveBranch(path, fresh); await publishBatch(fresh);
+        }
+        lastPriorityAt = Date.now();
+      };
       while (branches.length || retryBranches.length) {
+        if (fullScan && Date.now() - lastPriorityAt >= Math.max(1, Number(account.intervalMinutes) || 5) * 60000) {
+          try { await refreshPriority(); }
+          catch (error) {
+            if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG' || /结算周已切换/.test(error.message)) throw error;
+            client.currentReportPath = null;
+            this.store.addEvent('error', `${account.name}：重点插读失败，保留原扫描任务：${error.message}`, accountId);
+          }
+          lastPriorityAt = Date.now();
+        }
         if (!branches.length) branches.push(...retryBranches.splice(0));
         // pop() retains depth-first navigation within the same priority group.
         branches.sort((a, b) => Number(importantBranch(a, configuredSubagents)) - Number(importantBranch(b, configuredSubagents)));
@@ -1657,26 +1753,27 @@ class MonitorService {
         if (!this.isCurrentCheck(accountId, revision)) return;
         const parent = agents.find((agent) => agentPathKey(agent.path) === agentPathKey(path));
         if (!parent) continue;
+        const key = agentPathKey(path);
+        const hasTarget = branchHasTarget(path, configuredSubagents);
+        const remembered = fullScan && path.length > 1 && !hasTarget ? checkpoint.completed[key] : null;
+        if (remembered) {
+          const old = mergeChildren(path, remembered, false);
+          for (const item of old) if (item.path.length < MAX_DESCENDANT_DEPTH) branches.push(item.path);
+          continue;
+        }
+        if (!fullScan && !hasTarget && Date.now() - Number(leafCache.paths[key] || 0) < CACHE_MS) {
+          parent.childCount = 0; continue;
+        }
         status.readProgress = { read: agents.filter(a => !a.stale).length, pendingBranches: branches.length + retryBranches.length + 1 };
         status.stage = `已读取 ${status.readProgress.read} 个代理；正在读取第 ${path.length + 1} 级：${path.join(' / ')}`;
         this.onChange();
         const branchStarted = Date.now();
         try {
-          const fresh = [];
           const childReport = await read(() => client.readDescendantSettlement(path));
           if (!this.isCurrentCheck(accountId, revision)) return;
-          const childReadAt = new Date().toISOString();
-          parent.childCount = childReport.agents.length;
-          delete parent.childError;
-          for (const child of childReport.agents) {
-            const childPath = [...path, child.name];
-            if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(childPath))) {
-              const item = { ...child, path: childPath, readAt: childReadAt };
-              agents.push(item);
-              fresh.push(item);
-              if (childPath.length < MAX_DESCENDANT_DEPTH && needsBranch(childPath)) branches.push(childPath);
-            }
-          }
+          const fresh = mergeChildren(path, childReport.agents);
+          saveBranch(path, fresh);
+          for (const child of fresh) if (child.path.length < MAX_DESCENDANT_DEPTH && needsBranch(child.path)) branches.push(child.path);
           await publishBatch(fresh);
         } catch (error) {
           if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG') throw error;
@@ -1690,7 +1787,7 @@ class MonitorService {
           parent.childError = error.message || String(error);
           childErrors.push(`${path.join(' / ')}：${parent.childError}`);
           for (const cached of cachedAgents.filter((item) => item.path?.length > path.length && path.every((part, index) => item.path[index] === part))) {
-            if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(cached.path))) agents.push({ ...cached, stale: true, notRefreshed: false });
+            if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(cached.path))) agents.push({ ...cached, stale: true, notRefreshed: false, staleReason: 'failed' });
           }
         } finally {
           status.phaseTimings.branches.push({ path: [...path], durationMs: Date.now() - branchStarted, error: parent.childError || '' });
@@ -1707,7 +1804,7 @@ class MonitorService {
           const parentPath = cached.path.slice(0, -1);
           if (refreshedParents.has(agentPathKey(parentPath))) continue;
           if (parentPath.length && !agents.some(item => agentPathKey(item.path) === agentPathKey(parentPath))) continue;
-          agents.push({ ...cached, stale: true, notRefreshed: true });
+          agents.push({ ...cached, stale: true, notRefreshed: true, staleReason: 'on-demand' });
         }
       }
       status.stage = metric.readsDescendants !== false ? `最多 ${MAX_DESCENDANT_DEPTH} 级代理报表读取完成` : metric.usesSubagents ? '皇冠总代理明细读取完成' : '报表读取完成';
@@ -1723,8 +1820,9 @@ class MonitorService {
             structureVersion: fullScan && !childErrors.length ? 1 : cachedSnapshot?.structureVersion,
             period: client.reportPeriod,
             metric: metric.id,
-            agents: agents.map(({ name, path, value, turnover, readAt, childCount, stale, notRefreshed }) => ({ name, path, value, stale: Boolean(stale), notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
+            agents: agents.map(({ name, path, value, turnover, readAt, childCount, stale, notRefreshed, staleReason }) => ({ name, path, value, stale: Boolean(stale), staleReason, notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
           };
+          if (fullScan && !childErrors.length) delete current.scanCheckpoint;
           const point = { time: status.lastCheckedAt, metric: metric.id, agents: agents.filter((item) => !item.stale).map(({ path, value }) => ({ path, value })) };
           current.agentTrend = [...(Array.isArray(current.agentTrend) ? current.agentTrend : []), point]
             .filter((item) => Date.parse(item.time) >= Date.now() - 7 * 86400000).slice(-2016);
@@ -1774,7 +1872,8 @@ class MonitorService {
         : `${status.stage || '检查过程'}：${detail}`;
       if (manualRequired) status.error += '；请盘内查看完成验证后关闭窗口，或更正账号后点击刷新';
       status.lastCheckedAt = new Date().toISOString();
-      status.subagents = (status.subagents || []).map((agent) => ({ ...agent, stale: true }));
+      status.subagents = (status.subagents || []).map((agent) => ({ ...agent, stale: true, staleReason: 'failed' }));
+      status.alertCandidates = {};
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
       await this.updateHealth(account, status, true);
     } finally {
@@ -1815,7 +1914,7 @@ class MonitorService {
         const current = this.store.state.accounts.find((item) => item.id === accountId);
         if (current?.enabled) setImmediate(() => void this.check(accountId));
       } else {
-        status.nextCheckAt = status.status === 'manual' ? null : new Date(Math.max(Date.now() + 1000, checkStarted + Math.max(1, Number(account.intervalMinutes) || 5) * 60000)).toISOString();
+        status.nextCheckAt = status.status === 'manual' ? null : new Date(Math.max(Date.now() + 1000, checkStarted + retryDelay(this.store.state.accounts.find(item => item.id === accountId) || account, status.consecutiveFailures))).toISOString();
         this.onChange();
       }
     }
@@ -1852,20 +1951,16 @@ class MonitorService {
     const policy = this.store.state.alertPolicy || {};
     const confirmationReads = Math.max(1, Math.min(10, Number(policy.confirmationReads) || 1));
     const quiet = inQuietHours(policy);
-    for (const { subagent, level } of evaluateSubagentAlertLevels(batch.filter((agent) => !agent.stale))) {
+    for (const { subagent, level } of evaluateSubagentAlertLevels(batch.filter((agent) => !agent.stale && Number.isFinite(agent.value) && Number.isFinite(agent.alertStep) && agent.alertStep > 0))) {
       if (!this.isCurrentCheck(accountId, revision)) return;
       const alertKey = alertLedgerKey(subagent.path, subagent.alertStep);
       const history = this.store.state.accounts.find((item) => item.id === accountId)?.alertHistory;
-      let confirmed = true;
-      this.store.update((data) => {
-        const current = data.accounts.find((item) => item.id === accountId);
-        if (!current) return;
-        current.alertCandidates ||= {};
-        const previous = current.alertCandidates[alertKey];
-        const count = previous?.level === level ? Number(previous.count || 0) + 1 : 1;
-        current.alertCandidates[alertKey] = { level, count, updatedAt: new Date().toISOString() };
-        confirmed = level === 0 || count >= confirmationReads;
-      });
+      status.alertCandidates ||= {};
+      const candidateKey = `${periodKey}:${alertMetric}:${alertKey}`;
+      const previousCandidate = status.alertCandidates[candidateKey];
+      const count = previousCandidate?.level === level ? Math.min(confirmationReads, previousCandidate.count + 1) : 1;
+      status.alertCandidates[candidateKey] = { level, count };
+      const confirmed = count >= confirmationReads;
       const pending = !confirmed || quiet ? [] : pendingAlertNotifications(level, history?.agents?.[alertKey], undefined, {
         initialSummary: history?.migrationPending === true,
       });
@@ -1875,7 +1970,7 @@ class MonitorService {
         if (!this.isCurrentCheck(accountId, revision)) return;
         try {
           const receipt = await this.sendTelegram(account, subagent.value, notification.level, notification.previousLevel, subagent.name, subagent.alertStep, subagent.remark, subagent.path, period, notification);
-          this.store.update((data) => {
+          if (!receipt?.queued) this.store.update((data) => {
             const current = data.accounts.find((item) => item.id === accountId);
             if (!current || current.alertHistory?.period !== periodKey) throw new Error('提醒已发送，但报表周期记录发生变化；请检查运行记录');
             current.alertHistory.agents[alertKey] = recordAlertLevel(current.alertHistory.agents[alertKey], notification.level, new Date().toISOString());
@@ -1904,11 +1999,11 @@ class MonitorService {
           break;
         }
       }
-      if (confirmed && !quiet && !notificationFailed) {
+      if (confirmed && !quiet && !notificationFailed && (this.store.state.accounts.find(item => item.id === accountId)?.alertHistory?.agents?.[alertKey]?.currentLevel ?? 0) !== level) {
         this.store.update((data) => {
           const current = data.accounts.find((item) => item.id === accountId);
           if (current?.alertHistory?.period === periodKey) {
-            current.alertHistory.agents[alertKey] = recordAlertLevel(current.alertHistory.agents[alertKey], level);
+            this.recordTierTransition(current, alertKey, level, subagent.value);
           }
         });
       }
@@ -1920,6 +2015,15 @@ class MonitorService {
   recordAlertAttempt(record, receipt) {
     if (receipt?.queued) { this.outbox.attach(receipt, record); return; }
     if (typeof this.store.addAlertRecord === 'function') this.store.addAlertRecord(record);
+  }
+
+  recordTierTransition(account, key, level, value, sentAt = '') {
+    const entry = account.alertHistory.agents[key];
+    account.tierTransitions = [...(account.tierTransitions || []), {
+      key, period: account.alertHistory.period, metric: account.alertHistory.metric,
+      from: entry?.currentLevel ?? 0, to: level, value, time: new Date().toISOString(),
+    }].slice(-100);
+    account.alertHistory.agents[key] = recordAlertLevel(entry, level, sentAt);
   }
 
   async sendTelegram(account, value, level, previousLevel, subagentName, alertStep, remark = '', path = [subagentName], period = null, notification = {}) {
@@ -1943,19 +2047,29 @@ class MonitorService {
       `${direction} ${metric.valueLabel}：${signedValue}`,
       `当前档位：${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}（从 0 起）`,
       `提醒间隔：每 ${alertStep.toLocaleString('zh-CN')} 一档`,
-      previousLevel ? `上次已提醒档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上次已提醒档位：0',
+      previousLevel ? `上次确认档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上次确认档位：0（未达首档或首次读取）',
       crossedCount > 1 ? `本次跨越：${firstNewMilestone > 0 ? '+' : ''}${firstNewMilestone.toLocaleString('zh-CN')} 至 ${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}，共 ${crossedCount} 档（已合并为一条消息）` : '已进入此档位',
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].filter(Boolean).join('\n');
-    return this.enqueueNotification(text, 'amount');
+    const metricId = metric.alertMetric || ALERT_METRIC;
+    const record = { accountId: account.id, accountName: account.name, agentName: subagentName,
+      agentPath: path, value, level, previousLevel, alertStep, remark, period, metric: metricId };
+    return this.enqueueNotification(text, 'amount', { record, commit: data => {
+      if (!account.id) return; // Standalone message formatting/test calls have no monitored account.
+      const current = data.accounts.find(item => item.id === account.id);
+      if (!current || current.alertHistory?.period !== `${period.start}/${period.end}` || current.alertHistory.metric !== metricId) {
+        throw new Error('报表周期已变化，未接受此通知');
+      }
+      this.recordTierTransition(current, alertLedgerKey(path, alertStep), level, value, new Date().toISOString());
+    } });
   }
 
-  async sendOperationalTelegram(text, kind = 'operational') {
-    return this.enqueueNotification(text, kind);
+  async sendOperationalTelegram(text, kind = 'operational', options) {
+    return this.enqueueNotification(text, kind, options);
   }
 
-  enqueueNotification(text, kind) {
-    const receipt = this.outbox.enqueue(text, kind);
+  enqueueNotification(text, kind, options) {
+    const receipt = this.outbox.enqueue(text, kind, options);
     if (this.timer) setImmediate(() => {
       if (!this.stopped && !this.suspended) void this.outbox.flush().catch(error => this.store.addEvent('error', `通知队列异常：${error.message}`));
     });

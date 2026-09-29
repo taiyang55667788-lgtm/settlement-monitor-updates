@@ -8,6 +8,50 @@ function fixture() {
     update(fn) { fn(this.state); }, addEvent() {}, addAlertRecord(item) { this.state.alertRecords.push(item); } };
 }
 
+test('queue metadata and tier mutation are committed together before any delivery', () => {
+  const store = fixture(); let writes = 0;
+  store.update = fn => { const draft = structuredClone(store.state); fn(draft); store.state = draft; writes++; };
+  const box = new NotificationOutbox(store, async () => {});
+  box.enqueue('amount', 'amount', { record: { level: 1 }, commit: data => { data.testLevel = 1; } });
+  assert.equal(writes, 1); assert.equal(store.state.testLevel, 1);
+  assert.equal(store.state.notificationOutbox[0].record.level, 1);
+  assert.throws(() => box.enqueue('bad', 'amount', { commit() { throw new Error('save failed'); } }), /save failed/);
+  assert.equal(store.state.notificationOutbox.length, 1);
+});
+
+test('confirmed delivery with failed local commit retries persistence without resending', async () => {
+  const store = fixture(); let calls = 0; let failSave = false;
+  store.update = fn => { const draft = structuredClone(store.state); fn(draft); if (failSave) throw new Error('disk'); store.state = draft; };
+  const box = new NotificationOutbox(store, async () => { calls++; failSave = true; });
+  box.enqueue('amount', 'amount', { record: { accountId: 'a', level: 1 } });
+  await box.flush(); assert.equal(calls, 1); assert.equal(store.state.notificationOutbox.length, 1);
+  failSave = false; await box.flush();
+  assert.equal(calls, 1); assert.equal(store.state.notificationOutbox.length, 0);
+  assert.equal(store.state.alertRecords.length, 1); assert.equal(store.state.alertRecords[0].status, 'sent');
+});
+
+test('queue supports specific retry and cancellation, but not reassignment or cancellation in flight', async () => {
+  const store = fixture(); let release; const delivered = [];
+  const box = new NotificationOutbox(store, text => { delivered.push(text); return new Promise(resolve => { release = resolve; }); });
+  const first = box.enqueue('first'); const second = box.enqueue('second');
+  const flushing = box.flush(second.queueId);
+  assert.throws(() => box.manage(second.queueId, 'cancel'), /正在发送/);
+  release(); await flushing;
+  assert.deepEqual(delivered, ['second']);
+  store.state.telegram.chatId = 'new';
+  assert.throws(() => box.manage(first.queueId, 'retry'), /收件人/);
+  box.manage(first.queueId, 'cancel');
+  assert.equal(store.state.notificationOutbox.length, 0);
+});
+
+test('automatic checks are staggered rather than all started together', async () => {
+  const store = fixture(); store.state.accounts = [{ id: 'a', enabled: true }, { id: 'b', enabled: true }];
+  const service = new MonitorService(store, () => {}); const calls = [];
+  service.check = async id => { calls.push(id); service.status(id).nextCheckAt = new Date(Date.now() + 60000).toISOString(); };
+  await service.tick(); await service.tick(); assert.deepEqual(calls, ['a']);
+  service.nextAutomaticStartAt = 0; await service.tick(); assert.deepEqual(calls, ['a', 'b']);
+});
+
 test('outbox persists before delivery, survives restart, backs off, and records only attempts', async () => {
   const store = fixture(); let now = Date.now(); let calls = 0;
   const box = new NotificationOutbox(store, async () => { calls++; throw new Error('offline'); }, { now: () => now });
@@ -23,7 +67,7 @@ test('outbox persists before delivery, survives restart, backs off, and records 
   await restarted.flush();
   assert.match(sent[0], /延迟补发，原始时间/);
   assert.equal(store.state.notificationOutbox.length, 0);
-  assert.equal(store.state.alertRecords.at(-1).status, 'sent');
+  assert.equal(store.state.alertRecords[0].status, 'sent');
 });
 
 test('outbox respects quiet hours and never transfers messages to a newly paired recipient', async () => {

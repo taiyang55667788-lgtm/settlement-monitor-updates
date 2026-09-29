@@ -6,12 +6,18 @@ const { MonitorService, MAX_DESCENDANT_DEPTH } = require('./monitor');
 const { UpdateService } = require('./updater');
 const { agentPathKey } = require('./report-parser');
 const { ALERT_METRIC } = require('./alert-ledger');
+const { startupCheck } = require('./continuous-monitor');
 const { SYSTEM_166, SYSTEM_CROWN, accountSystemId, accountBaseUrl, crownLoginEntryId, crownUrl, metricForAccount } = require('./monitor-systems');
 
 let mainWindow;
 let store;
 let monitor;
 let updater;
+const startupAt = Date.now();
+let upgraded = false;
+const hasInstanceLock = app.requestSingleInstanceLock();
+if (!hasInstanceLock) app.quit();
+app.on('second-instance', () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } });
 const LATEST_DOWNLOAD_PAGE = 'https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/latest';
 
 function optionalAmount(value) {
@@ -23,7 +29,9 @@ function optionalAmount(value) {
 function state() {
   const current = store.publicState(monitor.runtime);
   current.telegram.pairingAvailable = monitor.pairingClient.enabled;
-  return { ...current, updater: updater?.runtime };
+  return { ...current, updater: updater?.runtime,
+    startupCheck: { ...startupCheck(store.state.accounts, monitor.runtime, startupAt, store.state.recoveryReviewRequired ? 'recovered' : store.loadStatus, Boolean(monitor.timer) && !monitor.stopped, upgraded),
+      reviewRequired: Boolean(store.state.recoveryReviewRequired) } };
 }
 
 function publish() {
@@ -48,9 +56,12 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
 }
 
-app.whenReady().then(() => {
+if (hasInstanceLock) app.whenReady().then(() => {
   store = new SecureStore(app.getPath('userData'));
   store.load();
+  upgraded = Boolean(store.state.lastAppVersion && store.state.lastAppVersion !== app.getVersion());
+  try { store.update(data => { data.lastAppVersion = app.getVersion(); }); }
+  catch (error) { store.addEvent('error', `启动版本记录保存失败：${error.message}`); }
   monitor = new MonitorService(store, publish);
   updater = new UpdateService(store, publish);
   createWindow();
@@ -67,6 +78,15 @@ app.whenReady().then(() => {
   updater.start();
 
   ipcMain.handle('state:get', () => state());
+  ipcMain.handle('startup:resume', () => {
+    store.update(data => { data.recoveryReviewRequired = false; });
+    store.loadStatus = 'loaded'; monitor.resume(); publish(); return { ok: true };
+  });
+  ipcMain.handle('notification:manage', (_event, { id, action }) => {
+    monitor.outbox.manage(String(id), String(action));
+    if (action === 'retry') void monitor.outbox.flush(String(id)).catch(error => store.addEvent('error', `通知重试失败：${error.message}`));
+    publish(); return { ok: true };
+  });
   ipcMain.handle('appearance:theme', (_event, theme) => {
     if (!['ocean', 'graphite', 'light', 'contrast'].includes(theme)) throw new Error('不支持的主题');
     store.update((data) => { data.appearance = { theme }; });
@@ -241,6 +261,7 @@ app.whenReady().then(() => {
       if (!account) throw new Error('账号不存在');
       if (!Array.isArray(account.subagentThresholds)) account.subagentThresholds = [];
       const existing = account.subagentThresholds.find((item) => agentPathKey(item.path || [item.name]) === agentPathKey(path));
+      if ((existing?.deltaAlertStep || null) !== deltaAlertStep && account.deltaHistory?.agents) delete account.deltaHistory.agents[agentPathKey(path)];
       const values = { name, path, remark, alertStep, deltaAlertStep };
       if (existing) {
         Object.assign(existing, values);
@@ -250,7 +271,6 @@ app.whenReady().then(() => {
       else account.subagentThresholds.push(values);
     });
     monitor.updateSubagentAlertStep(accountId, path, alertStep, remark, deltaAlertStep);
-    monitor.requestRecheck(accountId);
     store.addEvent('success', `${path.join(' / ')}：备注和提醒设置已保存`, accountId);
     publish();
     return { ok: true };
@@ -304,9 +324,11 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   monitor?.stop();
   updater?.stop();
+  store?.flush();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (BrowserWindow.getAllWindows().length === 0) { createWindow(); monitor?.start(); updater?.start(); }
 });
+app.on('before-quit', () => { monitor?.stop(); store?.flush(); });

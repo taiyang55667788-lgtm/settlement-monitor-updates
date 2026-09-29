@@ -17,6 +17,7 @@ const state = {
 
 contextBridge.exposeInMainWorld('monitorApi', {
   getState: async () => state,
+  manageNotification: async (id, action) => { ipcRenderer.send('smoke:queue-action', { id, action }); },
   getAccountSecurityCode: async () => ({ securityCode: '75454' }),
   onState: (callback) => {
     stateListener = callback;

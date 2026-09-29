@@ -89,7 +89,7 @@ test('amount alerts describe the from-zero interval and crossed levels', async (
   assert.match(message, /🔵 本周应收下线提醒/);
   assert.match(message, /🔵 本周应收下线：\+350\.00/);
   assert.match(message, /提醒间隔：每 100 一档/);
-  assert.match(message, /上次已提醒档位：\+100/);
+  assert.match(message, /上次确认档位：\+100/);
   assert.match(message, /本次跨越：\+200 至 \+300，共 2 档/);
   assert.match(message, /报表区间：2026-09-14—2026-09-20/);
 });

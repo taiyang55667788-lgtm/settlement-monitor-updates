@@ -75,6 +75,37 @@ app.whenReady().then(async () => {
     assert.doesNotMatch(stableStatus.text, /75|待查分支|当前代理详细路径/);
     assert.equal(stableStatus.open, true);
     assert.match(stableStatus.details, /75 个代理；待查分支：7/);
+    const queue = await win.webContents.executeJavaScript(`(async () => {
+      const original = structuredClone(await window.monitorApi.getState());
+      const next = structuredClone(original);
+      next.startupCheck = { status: 'warning', message: '首次读取未完成：测试账号' };
+      next.notificationQueue = { pending: 2, failed: 1, held: 1, items: [
+        { id: 'test-message-1', text: '模拟待发消息 <script>不会执行</script>', createdAt: new Date().toISOString(), attempts: 1, error: '模拟断网' },
+        { id: 'test-message-2', text: '旧收件人消息', createdAt: new Date().toISOString(), held: true }
+      ] };
+      next.accounts[0].subagents[0].stale = true;
+      next.accounts[0].subagents[0].staleReason = 'waiting';
+      render(next);
+      document.querySelector('#open-notification-queue').click();
+      return { open: document.querySelector('#notification-dialog').open,
+        count: document.querySelectorAll('.queued-message').length,
+        unsafeScripts: document.querySelectorAll('#notification-items script').length,
+        heldRetryDisabled: document.querySelector('[data-queue-id="test-message-2"][data-queue-action="retry"]').disabled,
+        waiting: document.querySelector('.subagent-name').textContent,
+        startup: document.querySelector('#startup-check').textContent };
+    })()`);
+    assert.equal(queue.open, true); assert.equal(queue.count, 2); assert.equal(queue.unsafeScripts, 0);
+    assert.equal(queue.heldRetryDisabled, true);
+    assert.match(queue.waiting, /本轮尚未读到/); assert.match(queue.startup, /首次读取未完成/);
+    const retried = new Promise(resolve => ipcMain.once('smoke:queue-action', (_event, result) => resolve(result)));
+    await win.webContents.executeJavaScript(`document.querySelector('[data-queue-id="test-message-1"][data-queue-action="retry"]').click()`);
+    assert.deepEqual(await retried, { id: 'test-message-1', action: 'retry' });
+    const cancelled = new Promise(resolve => ipcMain.once('smoke:queue-action', (_event, result) => resolve(result)));
+    await win.webContents.executeJavaScript(`(() => { const original = window.confirm; window.confirm = () => true; document.querySelector('[data-queue-id="test-message-1"][data-queue-action="cancel"]').click(); window.confirm = original; })()`);
+    assert.deepEqual(await cancelled, { id: 'test-message-1', action: 'cancel' });
+    await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    if (process.env.SMOKE_QUEUE_DIALOG_SCREENSHOT) fs.writeFileSync(process.env.SMOKE_QUEUE_DIALOG_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
+    await win.webContents.executeJavaScript(`(async () => { document.querySelector('#close-notification-queue').click(); render(await window.monitorApi.getState()); })()`);
     if (process.env.SMOKE_SCREENSHOT) {
       await win.webContents.executeJavaScript(`new Promise(resolve => {
         document.querySelector('.subagents').scrollIntoView({ block: 'start' });
@@ -223,7 +254,7 @@ app.whenReady().then(async () => {
     })()`);
     assert.equal(filtered.defaultRows, 2);
     assert.deepEqual(filtered.names, ['parent-01', 'child-01', 'third-01', 'fourth-01']);
-    assert.match(filtered.stale, /本轮未刷新/);
+    assert.match(filtered.stale, /按需更新/);
     const fullScan = new Promise(resolve => ipcMain.once('smoke:full-scan', (_event, id) => resolve(id)));
     await win.webContents.executeJavaScript(`document.querySelector('[data-action="full-scan"]').click()`);
     assert.equal(await fullScan, 'fixture-account');

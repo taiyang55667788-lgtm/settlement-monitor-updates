@@ -11,6 +11,35 @@ const filteredCollapsedPaths = new Set();
 const MAX_AGENT_DEPTH = 4;
 let readingDetailsAccountId = null;
 let previousAccountMarkup = '';
+let queuePage = 0;
+
+function renderQueue() {
+  if (!$('#notification-dialog').open) return;
+  const items = appState.notificationQueue?.items || [];
+  queuePage = Math.min(queuePage, Math.max(0, Math.ceil(items.length / 20) - 1));
+  $('#notification-items').innerHTML = items.slice(queuePage * 20, queuePage * 20 + 20).map(item => `<article class="queued-message">
+    <strong>${item.held ? '收件人变更，暂存中' : '等待发送'} · ${escapeHtml(item.id.slice(0, 8))}</strong>
+    <small>原始时间：${escapeHtml(new Date(item.createdAt).toLocaleString('zh-CN'))} · 已尝试 ${Number(item.attempts) || 0} 次</small>
+    <pre>${escapeHtml(item.text)}</pre><p class="child-error">${escapeHtml(item.error)}</p>
+    <button class="secondary" data-queue-action="retry" data-queue-id="${escapeHtml(item.id)}" ${item.held ? 'disabled' : ''}>立即重试</button>
+    <button class="secondary" data-queue-action="cancel" data-queue-id="${escapeHtml(item.id)}">取消此条</button></article>`).join('') || '<p>暂无待发通知</p>';
+  $('#queue-page').textContent = `${queuePage + 1} / ${Math.max(1, Math.ceil(items.length / 20))}`;
+  $('#queue-prev').disabled = queuePage === 0;
+  $('#queue-next').disabled = (queuePage + 1) * 20 >= items.length;
+}
+
+function staleLabel(agent) {
+  if (agent.staleReason === 'waiting') return '本轮尚未读到，等待更新';
+  if (agent.staleReason === 'checkpoint') return '结构已扫描，金额等待按需更新';
+  if (agent.notRefreshed || agent.staleReason === 'on-demand') return '未设置提醒，按需更新（保留上次数据）';
+  return '读取失败，保留旧数据';
+}
+
+function dataAge(agent) {
+  if (!(Number(agent.alertStep) > 0 || Number(agent.deltaAlertStep) > 0)) return '';
+  const time = Date.parse(agent.readAt || '');
+  return `<small class="read-time">重点数据：${Number.isFinite(time) ? `${Math.max(0, Math.floor((Date.now() - time) / 60000))} 分钟前更新` : '尚未成功更新'}</small>`;
+}
 
 function refreshReadingDetails() {
   if (!$('#reading-dialog').open) return;
@@ -87,8 +116,7 @@ function notifiedRange(level, step, direction) {
 
 function alertReason(subagent) {
   if (subagent.pendingNotifications) return `通知待发送 ${subagent.pendingNotifications} 条`;
-  if (subagent.notRefreshed) return '本轮未刷新；启用提醒后自动读取';
-  if (subagent.stale) return '本次未成功读取，暂停该行提醒';
+  if (subagent.stale) return `${staleLabel(subagent)}；暂停该行提醒`;
   if (!Number.isFinite(subagent.alertStep) || subagent.alertStep <= 0) return '未设置提醒间隔';
   if (subagent.alertError) return `通知失败：${subagent.alertError}`;
   const level = Math.trunc(subagent.value / subagent.alertStep);
@@ -176,7 +204,7 @@ function totalSettlementList(account) {
   const negativeRange = notifiedRange(target.alertedNegativeLevel, target.alertStep, -1);
   const lastAlert = target.lastAlertAt ? ` · 最近通知：${new Date(target.lastAlertAt).toLocaleString('zh-CN')}` : '';
   return `<div class="agent-table-scroll"><table class="agent-table"><thead><tr><th scope="col">监控项 / 最后成功读取</th><th scope="col">${metric.valueLabel}</th><th scope="col">提醒状态</th><th scope="col">备注（同步通知）</th><th scope="col">提醒设置</th><th scope="col">操作</th></tr></thead><tbody><tr class="subagent-row ${target.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="0">
-    <td><div class="subagent-name"><span class="tree-leaf" aria-hidden="true">◆</span><div><strong>${escapeHtml(metric.label)}</strong><small>本周交收总额</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${target.stale ? '<small class="child-error">数据已过期</small>' : ''}</div></div></td>
+    <td><div class="subagent-name"><span class="tree-leaf" aria-hidden="true">◆</span><div><strong>${escapeHtml(metric.label)}</strong><small>本周交收总额</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${dataAge(target)}${target.stale ? `<small class="child-error">${staleLabel(target)}</small>` : ''}</div></div></td>
     <td class="subagent-value ${target.value < 0 ? 'negative' : target.value > 0 ? 'positive' : 'zero'}">${target.value > 0 ? '+' : ''}${money.format(target.value)}${trendChart(account.trend, path)}</td>
     <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(target))}">${escapeHtml(alertReason(target))}</small>${thresholdProgress(target)}${recentAlert(target)}</td>
     <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(metric.label)}的备注" /></td>
@@ -224,7 +252,7 @@ function subagentList(account) {
     const negativeRange = notifiedRange(subagent.alertedNegativeLevel, subagent.alertStep, -1);
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
     return `<tr class="subagent-row level-${depth} ${depth === 1 ? 'first-level' : 'nested-level'} ${subagent.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="${index}" data-agent-key="${escapeHtml(pathKey(path))}" data-depth="${depth}" style="--tree-depth:${depth}">
-      <td><div class="subagent-name">${canExpand ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth > 1 ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${readsDescendants ? `第${depth}级代理${depth > 1 ? ` · 上级 ${escapeHtml(path.at(-2))}` : ''}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${subagent.stale ? `<small class="child-error">${subagent.notRefreshed ? '本轮未刷新（保留上次数据）' : '数据已过期'}</small>` : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
+      <td><div class="subagent-name">${canExpand ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth > 1 ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${readsDescendants ? `第${depth}级代理${depth > 1 ? ` · 上级 ${escapeHtml(path.at(-2))}` : ''}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${dataAge(subagent)}${subagent.stale ? `<small class="child-error">${staleLabel(subagent)}</small>` : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
       <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}</td>
       ${hasTurnover ? `<td class="subagent-turnover">${Number.isFinite(subagent.turnover) ? money.format(subagent.turnover) : '—'}</td>` : ''}
       <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small>${thresholdProgress(subagent)}${recentAlert(subagent)}</td>
@@ -355,6 +383,14 @@ function render(state) {
     previousAccountMarkup = accountMarkup;
   }
   refreshReadingDetails();
+  renderQueue();
+  $('#startup-check').textContent = state.startupCheck?.message || '等待启动自检';
+  $('#startup-check').className = ['error', 'warning'].includes(state.startupCheck?.status) ? 'child-error' : '';
+  $('#persistence-error').textContent = state.persistenceError || '';
+  $('#persistence-error').hidden = !state.persistenceError;
+  $('#startup-warning').hidden = !state.persistenceError && !['error', 'warning'].includes(state.startupCheck?.status);
+  $('#startup-warning-text').textContent = state.persistenceError || state.startupCheck?.message || '';
+  $('#resume-after-recovery').hidden = !state.startupCheck?.reviewRequired;
   restoreThresholdDraft(thresholdDraft, state);
   $('#events').innerHTML = (state.events || []).map((event) => `<div class="event ${event.type}"><i></i><time>${new Date(event.time).toLocaleString('zh-CN')}</time><span>${escapeHtml(event.message)}</span></div>`).join('') || '<div class="empty show"><p>暂无运行记录</p></div>';
   $('#notification-queue').textContent = `待发送 ${state.notificationQueue?.pending || 0} 条 · 失败待重试 ${state.notificationQueue?.failed || 0} 条 · 收件人变更暂存 ${state.notificationQueue?.held || 0} 条（暂存消息不会发送给新收件人）`;
@@ -633,6 +669,20 @@ $('#import-backup').addEventListener('click', () => {
     const result = await window.monitorApi.importBackup();
     if (!result.canceled) toast('配置已恢复，请重新检查账号');
   });
+});
+
+$('#open-notification-queue').addEventListener('click', () => { queuePage = 0; $('#notification-dialog').showModal(); renderQueue(); });
+$('#resume-after-recovery').addEventListener('click', () => {
+  if (confirm('已核对备份中的账号、提醒档位和待发消息？恢复后会继续读取与发送。')) action(() => window.monitorApi.resumeAfterRecovery(), '已恢复监控调度');
+});
+$('#close-notification-queue').addEventListener('click', () => $('#notification-dialog').close());
+$('#queue-prev').addEventListener('click', () => { queuePage--; renderQueue(); });
+$('#queue-next').addEventListener('click', () => { queuePage++; renderQueue(); });
+$('#notification-items').addEventListener('click', event => {
+  const button = event.target.closest('[data-queue-action]'); if (!button) return;
+  const operation = button.dataset.queueAction;
+  if (operation === 'cancel' && !confirm('确定取消这条待发通知？不会撤回已发送消息，也不会清空档位记录。')) return;
+  action(() => window.monitorApi.manageNotification(button.dataset.queueId, operation), operation === 'cancel' ? '通知已取消' : '已安排重试（静默时间仍有效）');
 });
 
 window.monitorApi.onState(render);

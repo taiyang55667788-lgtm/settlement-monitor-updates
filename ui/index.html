@@ -27,6 +27,7 @@
           <div><p class="eyebrow">实时监控中心</p><h1 id="page-title">监控面板</h1></div>
           <div class="header-actions"><label class="theme-picker">主题<select id="theme-select" aria-label="界面主题"><option value="ocean">深蓝</option><option value="graphite">石墨黑</option><option value="light">浅色</option><option value="contrast">高对比</option></select></label><span id="header-version" class="version-badge">版本读取中</span><button id="add-account" class="primary">＋ 添加账号</button></div>
         </header>
+        <div id="startup-warning" class="panel recovery-warning" role="alert" hidden><span id="startup-warning-text"></span><button id="resume-after-recovery" class="secondary" hidden>已核对备份，恢复监控</button></div>
 
         <section id="dashboard-view" class="view active">
           <div class="summary-grid">
@@ -68,7 +69,7 @@
         </section>
 
         <section id="alerts-view" class="view">
-          <div class="panel"><div class="panel-head"><div><h2>提醒记录</h2><p>仅记录实际尝试发送 Telegram 的金额提醒；最近 500 条保存在本机加密配置中。</p><p id="notification-queue" role="status"></p></div></div><div id="alert-records" class="alert-records"></div></div>
+          <div class="panel"><div class="panel-head"><div><h2>提醒记录</h2><p>仅记录实际尝试发送 Telegram 的金额提醒；最近 500 条保存在本机加密配置中。</p><p id="notification-queue" role="status"></p><button id="open-notification-queue" class="secondary">查看待发队列</button></div></div><div id="alert-records" class="alert-records"></div></div>
         </section>
 
         <section id="update-view" class="view">
@@ -77,6 +78,8 @@
             <div>
               <div class="version-line"><span>当前版本</span><strong id="current-version">—</strong></div>
               <div class="update-status"><span id="update-dot"></span><div><strong id="update-message">等待检查</strong><small id="update-time">尚未检查</small></div></div>
+              <p id="startup-check" role="status">等待启动自检</p>
+              <p id="persistence-error" role="alert" class="child-error" hidden></p>
               <div id="update-progress" class="progress"><i></i></div>
               <section class="download-reinstall" aria-labelledby="reinstall-title">
                 <strong id="reinstall-title">重新下载安装</strong>
@@ -113,6 +116,12 @@
       </main>
     </div>
 
+    <dialog id="notification-dialog">
+      <div class="reading-details"><div class="dialog-head"><h2>待发通知队列</h2><button type="button" class="icon-button" id="close-notification-queue" aria-label="关闭通知队列">×</button></div>
+        <p>取消后不再发送该条通知，档位记录保留；已发送通知不能撤回。收件人变更的消息只可暂存或取消。</p>
+        <div id="notification-items"></div><div class="form-actions"><button id="queue-prev" class="secondary">上一页</button><span id="queue-page"></span><button id="queue-next" class="secondary">下一页</button></div>
+      </div>
+    </dialog>
     <dialog id="reading-dialog">
       <div class="reading-details"><div class="dialog-head"><h2>读取详情</h2><button type="button" class="icon-button" id="close-reading-details" aria-label="关闭读取详情">×</button></div><pre id="reading-details-content"></pre></div>
     </dialog>
