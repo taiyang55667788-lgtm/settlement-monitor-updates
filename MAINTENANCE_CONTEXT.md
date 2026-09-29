@@ -2,8 +2,8 @@
 
 更新时间：2026-09-29
 
-当前正式版本：`v1.0.18`
-`v1.0.18` 功能基线提交：`74e5eab`
+当前正式版本：`v1.0.19`
+`v1.0.19` 功能基线提交：`1a9536a`
 
 ## 项目定位
 
@@ -74,6 +74,9 @@
 - `v1.0.15` 为成功读取保留最近 7 天趋势，在代理金额下显示简要走势与变化量。
 - `v1.0.15` 新增“提醒与维护”页：可导出不含登录资料和 Telegram 凭据的诊断包；可在同一系统账户恢复加密配置备份。
 - `v1.0.18` 将账号“运行状态”与阈值达标状态分开显示；代理行显示最近提醒时间与下一正负档进度；新增本机加密的提醒记录页，保存最近 500 次 Telegram 金额提醒的发送结果和失败原因。
+- `v1.0.19` 新增 Telegram 指令：`/top` 查看当前绝对金额前十、`/alerts` 查看最近十条提醒记录、`/check 账号名` 立即查询指定盘口账号、`/help` 查看指令说明；保留 `/report`、`/status` 及中文别名。
+- `v1.0.19` 每个代理或总代理可额外设置“单次变化提醒阈值”：首次成功读取只建基线，之后相邻两次成功读取的变化量达到阈值才发 Telegram；静默/过期数据不触发。提醒记录会明确标为“变化”。
+- `v1.0.19` 新增按单个盘口账号批量设置：勾选多行后可统一设置金额提醒、变化提醒、备注同步或清除两类提醒，不会跨账号误改。
 
 ## 主要代码入口
 
@@ -105,7 +108,7 @@ pnpm test:desktop
 - 正负档位去重、服务重启、换周、发送失败重试和首次汇总；
 - 二级代理读取失败时保留旧数据但不提醒；
 - 已提醒档位、最后成功读取时间、安全码明文和四种主题；
-- Telegram 配对及手动模式；
+- Telegram 配对、所有者指令解析及手动模式；
 - 更新清单与 Windows 文件名。
 
 `v1.0.15` 发布前的结果：59 项 Node 测试通过，Electron 桌面流程测试通过，Windows 安装包构建、更新清单校验、R2 上传和 GitHub Release 均通过。安装包 SHA-512 与 `latest.yml` 一致。
@@ -122,12 +125,12 @@ pnpm test:desktop
 
 ## 当前发布信息
 
-- 正式版本：`v1.0.18`
-- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.18-x64.exe`
-- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.18/Settlement-Monitor-Portable-1.0.18-x64.exe`
-- 安装包大小：117,445,553 字节
-- SHA-512：`nKrL2rN9jcSh6yZsD+VB3PiSNGQr8dsetcpiMBO5jDi+M1D9LjvEku47qEdz4Iq8jLol8pYR/OG8emxLz+CwAg==`
-- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.18`
+- 正式版本：`v1.0.19`
+- Windows 安装包：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.19-x64.exe`
+- Windows 便携版：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/download/v1.0.19/Settlement-Monitor-Portable-1.0.19-x64.exe`
+- 安装包大小：117,447,568 字节
+- SHA-512：`dyQodjWyj+NEaTUwdJv+Bnz9CRAmvPV+83hXm+Yq3XJ5KIRWTT5Ug7o/y/c6F1MYHumdJoW0+zawzXbUT5rzWw==`
+- GitHub Release：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.19`
 
 ## 后续维护重点
 
