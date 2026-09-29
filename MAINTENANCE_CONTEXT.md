@@ -9,6 +9,8 @@
 
 ## 项目定位
 
+v1.0.23 候选验证：功能提交 `900fb87`；84 项 Node 测试和三项 Electron 冒烟测试通过。Windows 验证工作流 `36549614345` 全部成功，安装版、便携版和更新清单校验通过。仅生成验证包，未创建 v1.0.23 标签、未上传正式更新；发布前等待用户确认。验证地址：`https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/actions/runs/36549614345`。
+
 这是一个 Electron 桌面应用，可在 Windows 等电脑上同时独立登录 166 与皇冠账号系统：166 读取最多五级下级代理的本周应收下线；皇冠按登入一、二、三进入盘口后，读取本周“观看总代理”中的每个总代理账号，并按每个总代理独立设置的金额间隔发送 Telegram 提醒。
 
 - 本机项目目录：`/Users/ty/Documents/Codex/2026-09-09/new-chat/outputs/report-monitor-app`
