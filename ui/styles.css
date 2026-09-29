@@ -144,3 +144,6 @@ dialog { width:min(900px,calc(100vw - 40px));max-height:calc(100vh - 40px);borde
 .recovery-warning { padding: 14px 20px; margin-bottom: 18px; color: var(--red); }
 .recovery-warning button { margin-left: 12px; }
 .queued-message button:disabled, #queue-prev:disabled, #queue-next:disabled { opacity: .4; cursor: not-allowed; }
+.alert-trigger { grid-column:1 / -1; min-width:0; color:var(--muted); }
+.alert-trigger summary { cursor:pointer; }
+.alert-trigger pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; line-height:1.7; }

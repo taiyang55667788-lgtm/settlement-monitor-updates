@@ -120,7 +120,9 @@ function alertReason(subagent) {
   if (!Number.isFinite(subagent.alertStep) || subagent.alertStep <= 0) return '未设置提醒间隔';
   if (subagent.alertError) return `通知失败：${subagent.alertError}`;
   const level = Math.trunc(subagent.value / subagent.alertStep);
-  if (!level) return '尚未达到首档';
+  if (!level) return subagent.lastObservedLevel
+    ? `未达首档；保留 ${compactMoney.format(subagent.lastObservedLevel * subagent.alertStep)} 档记录`
+    : '尚未达到首档';
   return level === subagent.lastObservedLevel ? '当前档位已通知' : '新档位待通知';
 }
 
@@ -398,9 +400,19 @@ function render(state) {
     const value = Number(record.value);
     const tier = Number(record.level) * Number(record.alertStep);
     const agent = record.agentPath?.join(' / ') || record.agentName || '—';
+    const trigger = record.trigger;
+    const explanation = trigger ? [trigger.reason,
+      `档位 ${trigger.previousLevel * record.alertStep} → ${trigger.level * record.alertStep}`,
+      `上次档位转换金额 ${trigger.previousTransitionValue ?? '无记录'} → 本次金额 ${trigger.value}`,
+      `连续确认 ${trigger.confirmationReads} 次`,
+      `进程启动 ${trigger.processStartedAt}`,
+      `与上次转换相比进程变化：${trigger.processChangedSincePrevious === null ? '无记录' : trigger.processChangedSincePrevious ? '是' : '否'}`,
+      trigger.settingChange ? `最近修改间隔：${trigger.settingChange.previousStep ?? '关闭'} → ${trigger.settingChange.nextStep ?? '关闭'}（${trigger.settingChange.time}）` : '无间隔修改记录',
+      `通知编号：${record.eventId || '无记录'}`,
+    ].join('\n') : '旧记录无触发详情';
     const result = record.status === 'sent' ? 'Telegram 已发送' : `发送失败：${record.error || '未知错误'}`;
     const detail = record.alertType === 'delta' ? `变化 ${record.change > 0 ? '+' : ''}${compactMoney.format(Math.abs(record.change || 0))} / 阈值 ${compactMoney.format(record.alertStep)}` : (Number.isFinite(tier) ? `${tier > 0 ? '+' : '−'}${compactMoney.format(Math.abs(tier))} 档` : '—');
-    return `<article class="alert-record"><time>${new Date(record.time).toLocaleString('zh-CN')}</time><strong class="${record.status === 'sent' ? 'sent' : 'failed'}">${record.status === 'sent' ? '已发送' : '发送失败'}</strong><div><strong>${escapeHtml(record.accountName || '未知账号')}</strong><small title="${escapeHtml(agent)}">${escapeHtml(agent)}${record.remark ? ` · ${escapeHtml(record.remark)}` : ''}</small></div><strong class="${value < 0 ? 'negative' : value > 0 ? 'positive' : ''}">${Number.isFinite(value) ? `${value > 0 ? '+' : ''}${money.format(value)}` : '—'}</strong><span>${escapeHtml(detail)}</span><small class="${record.status === 'sent' ? 'sent' : 'failed'}">${escapeHtml(result)}</small></article>`;
+    return `<article class="alert-record"><time>${new Date(record.time).toLocaleString('zh-CN')}</time><strong class="${record.status === 'sent' ? 'sent' : 'failed'}">${record.status === 'sent' ? '已发送' : '发送失败'}</strong><div><strong>${escapeHtml(record.accountName || '未知账号')}</strong><small title="${escapeHtml(agent)}">${escapeHtml(agent)}${record.remark ? ` · ${escapeHtml(record.remark)}` : ''}</small></div><strong class="${value < 0 ? 'negative' : value > 0 ? 'positive' : ''}">${Number.isFinite(value) ? `${value > 0 ? '+' : ''}${money.format(value)}` : '—'}</strong><span>${escapeHtml(detail)}</span><small class="${record.status === 'sent' ? 'sent' : 'failed'}">${escapeHtml(result)}</small><details class="alert-trigger"><summary>触发详情</summary><pre>${escapeHtml(explanation)}</pre></details></article>`;
   }).join('') || '<div class="empty show"><p>暂无金额提醒记录</p></div>';
   $('#telegram-form').elements.chatId.value = state.telegram?.chatId || '';
   const pairing = state.telegram?.pairing;

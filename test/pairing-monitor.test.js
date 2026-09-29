@@ -34,9 +34,9 @@ test('pairing activates only after Telegram confirms, and routes alerts through 
   await service.outbox.flush();
   assert.deepEqual(calls.slice(0, 2), [['status', 'device-token'], ['test', 'device-token']]);
   assert.equal(calls[2][0], 'send');
-  assert.match(calls[2][2], /当前档位：-200/);
-  assert.match(calls[2][2], /代理层级：直属代理 \/ 下级代理/);
-  assert.match(calls[2][2], /备注：西区重点/);
+  assert.match(calls[2][2], /上一次档位：-100/);
+  assert.match(calls[2][2], /代理层级：直属代理 \/ 下级代理（西区重点）/);
+  assert.doesNotMatch(calls[2][2], /当前档位|备注：|报表区间/);
 });
 
 test('unlink turns notifications off even when old manual credentials remain', async () => {

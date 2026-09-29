@@ -1,6 +1,22 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel } = require('../electron/alert-ledger');
+const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel, migrateZeroTierHistory } = require('../electron/alert-ledger');
+
+test('changing step resets the chosen ledger even when returning to a previously used interval', () => {
+  const { resetChangedAlertStep } = require('../electron/alert-ledger');
+  const key = alertLedgerKey(['a'], 100), other = alertLedgerKey(['b'], 100);
+  const account = { alertHistory: { agents: { [key]: { currentLevel: 3 }, [other]: { currentLevel: 2 } } } };
+  resetChangedAlertStep(account, ['a'], 100, 100);
+  assert.equal(account.alertHistory.agents[key].currentLevel, 3);
+  assert.equal(account.alertSettingChanges, undefined);
+  resetChangedAlertStep(account, ['a'], 200, 100);
+  assert.equal(account.alertHistory.agents[key], undefined);
+  assert.equal(account.alertHistory.agents[other].currentLevel, 2);
+  assert.deepEqual(pendingAlertNotifications(3, account.alertHistory.agents[key]).map(item => item.level), [1, 2, 3]);
+  resetChangedAlertStep(account, ['a'], 100, null);
+  resetChangedAlertStep(account, ['a'], null, 100);
+  assert.equal(account.alertSettingChanges.length, 3);
+});
 
 test('each successful entry into a positive or negative tier is offered, including a return to an earlier tier', () => {
   let delivered;
@@ -13,13 +29,41 @@ test('each successful entry into a positive or negative tier is offered, includi
   assert.equal(delivered.currentLevel, 1);
   assert.deepEqual(pendingAlertNotifications(0, delivered), []);
   delivered = recordAlertLevel(delivered, 0);
-  assert.deepEqual(pendingAlertNotifications(1, delivered).map((item) => item.level), [1]);
+  assert.equal(delivered.currentLevel, 1);
+  assert.deepEqual(pendingAlertNotifications(1, delivered), []);
   delivered = recordAlertLevel(delivered, 1);
   const negative = pendingAlertNotifications(-2, delivered);
   assert.deepEqual(negative.map((item) => item.level), [-1, -2]);
   for (const item of negative) delivered = recordAlertLevel(delivered, item.level);
   assert.deepEqual(pendingAlertNotifications(-1, delivered).map((item) => item.level), [-1]);
   assert.deepEqual(delivered, { currentLevel: -2, positiveLastAlertLevel: 1, negativeLastAlertLevel: -2 });
+});
+
+test('zero keeps the last nonzero tier for both signs and never sends intermediate return alerts', () => {
+  for (const sign of [1, -1]) {
+    const retained = recordAlertLevel(recordAlertLevel(undefined, 3 * sign), 0);
+    assert.equal(retained.currentLevel, 3 * sign);
+    assert.deepEqual(pendingAlertNotifications(0, retained), []);
+    assert.deepEqual(pendingAlertNotifications(3 * sign, retained), []);
+    assert.deepEqual(pendingAlertNotifications(sign, retained).map(item => item.level), [2 * sign, sign]);
+  }
+});
+
+test('migration restores old zero entries from matching transitions without guessing ambiguous direction', () => {
+  const history = { period: 'week', metric: ALERT_METRIC, agents: {
+    proven: { currentLevel: 0, positiveLastAlertLevel: 2, negativeLastAlertLevel: -1 },
+    single: { currentLevel: 0, positiveLastAlertLevel: 1, negativeLastAlertLevel: 0 },
+    ambiguous: { currentLevel: 0, positiveLastAlertLevel: 1, negativeLastAlertLevel: -1 },
+  } };
+  const migrated = migrateZeroTierHistory(history, [
+    { key: 'proven', period: 'week', metric: ALERT_METRIC, from: -1, to: 0 },
+    { key: 'proven', period: 'older-week', metric: ALERT_METRIC, from: 2, to: 0 },
+  ]);
+  assert.equal(migrated.agents.proven.currentLevel, -1);
+  assert.equal(migrated.agents.single.currentLevel, 1);
+  assert.equal(migrated.agents.ambiguous.currentLevel, 0);
+  assert.equal(history.agents.proven.currentLevel, 0);
+  assert.equal(migrateZeroTierHistory(migrated), migrated);
 });
 
 test('a large upward or downward jump is combined into one message and records the reached tier', () => {

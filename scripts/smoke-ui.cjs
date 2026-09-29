@@ -75,6 +75,11 @@ app.whenReady().then(async () => {
     assert.doesNotMatch(stableStatus.text, /75|待查分支|当前代理详细路径/);
     assert.equal(stableStatus.open, true);
     assert.match(stableStatus.details, /75 个代理；待查分支：7/);
+    const retainedTierText = await win.webContents.executeJavaScript(`[
+      alertReason({ value: 200000, alertStep: 300000, lastObservedLevel: 1 }),
+      alertReason({ value: -200000, alertStep: 300000, lastObservedLevel: -1 })
+    ]`);
+    assert.deepEqual(retainedTierText, ['未达首档；保留 300,000 档记录', '未达首档；保留 -300,000 档记录']);
     const queue = await win.webContents.executeJavaScript(`(async () => {
       const original = structuredClone(await window.monitorApi.getState());
       const next = structuredClone(original);
@@ -225,6 +230,25 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(alertPage.visible, true);
     assert.match(alertPage.record, /Telegram 已发送/);
+    assert.match(alertPage.record, /旧记录无触发详情/);
+    const triggerView = await win.webContents.executeJavaScript(`(async () => {
+      const next = structuredClone(await window.monitorApi.getState());
+      next.alertRecords = [{ status: 'sent', value: -1250, level: -2, alertStep: 500, time: new Date().toISOString() }];
+      next.alertRecords[0].trigger = {
+        reason: '回落到较低档位 <img src=x onerror=alert(1)>', previousLevel: -3, level: -2,
+        value: -1250, previousTransitionValue: -1750, confirmationReads: 2,
+        processStartedAt: '2026-09-29T00:00:00Z', processChangedSincePrevious: true,
+        settingChange: { previousStep: 100, nextStep: 500, time: '2026-09-28T00:00:00Z' }
+      };
+      render(next);
+      const details = document.querySelector('.alert-trigger');
+      details.querySelector('summary').click();
+      return { text: details.textContent, open: details.open, injected: !!details.querySelector('img') };
+    })()`);
+    assert.equal(triggerView.open, true);
+    assert.equal(triggerView.injected, false);
+    assert.match(triggerView.text, /档位 -1500 → -1000/);
+    assert.match(triggerView.text, /最近修改间隔：100 → 500/);
     await win.webContents.executeJavaScript(`document.querySelector('[data-view="update"]').click()`);
     const downloadPage = await win.webContents.executeJavaScript(`({
       visible: document.querySelector('#update-view').classList.contains('active'),

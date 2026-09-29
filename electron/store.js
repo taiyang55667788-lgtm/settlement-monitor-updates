@@ -215,6 +215,7 @@ class SecureStore {
           hasSecurityCode: Boolean(account.securityCode),
           hasPassword: Boolean(account.password),
           tierTransitions: account.tierTransitions || [],
+          alertSettingChanges: account.alertSettingChanges || [],
           ...live,
           trend: Array.isArray(account.agentTrend) ? account.agentTrend.filter((point) => !point.metric || point.metric === metric.id) : [],
           subagents,

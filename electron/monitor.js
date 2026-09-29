@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const { BrowserWindow, session, nativeImage, net } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
 const { splitReportRows, parseSettlementTable, parseCrownGeneralAgentTable, parseCrownDashboardDetails, legacyAlertStep, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
-const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel } = require('./alert-ledger');
+const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel, migrateZeroTierHistory } = require('./alert-ledger');
 const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
@@ -1085,6 +1085,7 @@ class SiteClient {
 class MonitorService {
   constructor(store, onChange, network = {}) {
     this.store = store;
+    this.processStartedAt = new Date().toISOString();
     this.onChange = onChange;
     this.telegramFetch = network.fetch || ((...args) => net.fetch(...args));
     this.resolveTelegramProxy = network.resolveProxy || ((url) => session.defaultSession.resolveProxy(url));
@@ -1939,6 +1940,11 @@ class MonitorService {
         current.alertHistory = alertHistoryForPeriod(current.alertHistory, periodKey, alertMetric, current.alertMetricVersion === alertMetric);
       });
     }
+    const currentHistory = this.store.state.accounts.find(item => item.id === accountId)?.alertHistory;
+    if (currentHistory && currentHistory.nonzeroRetention !== 1) this.store.update(data => {
+      const current = data.accounts.find(item => item.id === accountId);
+      current.alertHistory = migrateZeroTierHistory(current.alertHistory, current.tierTransitions);
+    });
     let anyTriggered = false;
     if (persistedAccount && !persistedAccount.notificationLedgerVersion) {
       this.store.update(data => {
@@ -1999,7 +2005,7 @@ class MonitorService {
           break;
         }
       }
-      if (confirmed && !quiet && !notificationFailed && (this.store.state.accounts.find(item => item.id === accountId)?.alertHistory?.agents?.[alertKey]?.currentLevel ?? 0) !== level) {
+      if (level !== 0 && confirmed && !quiet && !notificationFailed && (this.store.state.accounts.find(item => item.id === accountId)?.alertHistory?.agents?.[alertKey]?.currentLevel ?? 0) !== level) {
         this.store.update((data) => {
           const current = data.accounts.find((item) => item.id === accountId);
           if (current?.alertHistory?.period === periodKey) {
@@ -2022,6 +2028,7 @@ class MonitorService {
     account.tierTransitions = [...(account.tierTransitions || []), {
       key, period: account.alertHistory.period, metric: account.alertHistory.metric,
       from: entry?.currentLevel ?? 0, to: level, value, time: new Date().toISOString(),
+      processStartedAt: this.processStartedAt,
     }].slice(-100);
     account.alertHistory.agents[key] = recordAlertLevel(entry, level, sentAt);
   }
@@ -2041,19 +2048,34 @@ class MonitorService {
     const text = [
       `${direction} ${metric.valueLabel}提醒${notification.initialSummary ? '（首次读取汇总）' : ''}`,
       `账号：${account.name}`,
-      metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${path.join(' / ')}` : `监控项：${metric.label}`,
-      remark ? `备注：${remark}` : '',
-      period ? `报表区间：${period.start}—${period.end}` : '',
+      (metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${path.join(' / ')}` : `监控项：${metric.label}`) + (remark ? `（${remark}）` : ''),
       `${direction} ${metric.valueLabel}：${signedValue}`,
-      `当前档位：${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}（从 0 起）`,
       `提醒间隔：每 ${alertStep.toLocaleString('zh-CN')} 一档`,
-      previousLevel ? `上次确认档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上次确认档位：0（未达首档或首次读取）',
+      previousLevel ? `上一次档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上一次档位：无（首次提醒）',
       crossedCount > 1 ? `本次跨越：${firstNewMilestone > 0 ? '+' : ''}${firstNewMilestone.toLocaleString('zh-CN')} 至 ${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}，共 ${crossedCount} 档（已合并为一条消息）` : '已进入此档位',
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].filter(Boolean).join('\n');
     const metricId = metric.alertMetric || ALERT_METRIC;
+    const persisted = this.store.state.accounts.find(item => item.id === account.id);
+    const ledgerKey = alertLedgerKey(path, alertStep);
+    const priorTransition = (persisted?.tierTransitions || []).findLast(item => item.key === ledgerKey
+      && item.period === `${period?.start}/${period?.end}` && item.metric === metricId);
+    const settingChange = (persisted?.alertSettingChanges || []).findLast(item => agentPathKey(item.path) === agentPathKey(path));
+    const settingsReset = previousLevel === 0 && settingChange?.nextStep === alertStep && !settingChange.activatedAt;
+    const trigger = {
+      reason: settingsReset ? '修改间隔后按新档位提醒' : previousLevel === 0 ? '本周首次进入非零档位'
+        : Math.sign(level) !== Math.sign(previousLevel) ? '正负方向切换'
+          : Math.abs(level) > Math.abs(previousLevel) ? '进入更高档位' : '回落到较低档位',
+      previousLevel, level, value,
+      previousTransitionValue: !settingsReset && priorTransition ? priorTransition.value : null,
+      previousTransitionAt: !settingsReset && priorTransition ? priorTransition.time : null,
+      processStartedAt: this.processStartedAt,
+      processChangedSincePrevious: priorTransition?.processStartedAt ? priorTransition.processStartedAt !== this.processStartedAt : null,
+      settingChange: settingChange ? { ...settingChange } : null,
+      confirmationReads: Math.max(1, Math.min(10, Number(this.store.state.alertPolicy?.confirmationReads) || 1)),
+    };
     const record = { accountId: account.id, accountName: account.name, agentName: subagentName,
-      agentPath: path, value, level, previousLevel, alertStep, remark, period, metric: metricId };
+      agentPath: path, value, level, previousLevel, alertStep, remark, period, metric: metricId, trigger };
     return this.enqueueNotification(text, 'amount', { record, commit: data => {
       if (!account.id) return; // Standalone message formatting/test calls have no monitored account.
       const current = data.accounts.find(item => item.id === account.id);
@@ -2061,6 +2083,10 @@ class MonitorService {
         throw new Error('报表周期已变化，未接受此通知');
       }
       this.recordTierTransition(current, alertLedgerKey(path, alertStep), level, value, new Date().toISOString());
+      if (settingsReset) {
+        const change = (current.alertSettingChanges || []).findLast(item => agentPathKey(item.path) === agentPathKey(path));
+        if (change && change.time === settingChange.time) change.activatedAt = new Date().toISOString();
+      }
     } });
   }
 

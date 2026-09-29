@@ -77,6 +77,37 @@ test('screenshot amounts stay in the same tier across refresh and service restar
   assert.deepEqual(store.state.accounts[0].tierTransitions.map(item => [item.from, item.to]), [[0, -1], [-1, -2], [-2, -1]]);
 });
 
+test('step changes rearm old intervals and persist explainable triggers across service restart', async () => {
+  const { resetChangedAlertStep } = require('../electron/alert-ledger');
+  const { store, context, makeService } = fixture();
+  store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
+  const account = store.state.accounts[0];
+  account.subagentThresholds = [{ name: 'parent', path: ['parent'], alertStep: 300000 }];
+  let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  service.processStartedAt = '2026-09-01T00:00:00.000Z';
+  context.parentValue = 350000;
+  await service.check(account.id);
+  assert.equal(store.state.notificationOutbox[0].record.trigger.reason, '本周首次进入非零档位');
+  context.parentValue = 650000;
+  await service.check(account.id);
+  assert.equal(store.state.notificationOutbox.at(-1).record.trigger.previousTransitionValue, 350000);
+  service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  context.parentValue = 350000;
+  await service.check(account.id);
+  assert.equal(store.state.notificationOutbox.at(-1).record.trigger.reason, '回落到较低档位');
+  assert.equal(store.state.notificationOutbox.at(-1).record.trigger.processChangedSincePrevious, true);
+  for (const step of [200000, 300000]) {
+    resetChangedAlertStep(account, ['parent'], account.subagentThresholds[0].alertStep, step);
+    account.subagentThresholds[0].alertStep = step;
+    service.updateSubagentAlertStep(account.id, ['parent'], step);
+    await service.check(account.id);
+    assert.equal(store.state.notificationOutbox.at(-1).record.trigger.reason, '修改间隔后按新档位提醒');
+  }
+  assert.equal(store.state.notificationOutbox.length, 5);
+  await service.check(account.id);
+  assert.equal(store.state.notificationOutbox.length, 5);
+});
+
 test('unchanged tiers do not rewrite the encrypted ledger for every agent', async () => {
   const { store, makeService } = fixture();
   const account = store.state.accounts[0]; const service = makeService();
@@ -90,7 +121,7 @@ test('unchanged tiers do not rewrite the encrypted ledger for every agent', asyn
   assert.equal(writes, 0, '200 unchanged tiers require no persistent state update');
 });
 
-test('an unconfirmed zero-tier reading must not rearm the same tier', async () => {
+test('neither an unconfirmed nor a confirmed zero-tier reading rearms the same tier', async () => {
   const { store, context, alerts, makeService } = fixture();
   store.state.alertPolicy = { confirmationReads: 2 };
   store.state.accounts[0].subagentThresholds = [{ name: 'parent', path: ['parent'], alertStep: 300000 }];
@@ -98,7 +129,52 @@ test('an unconfirmed zero-tier reading must not rearm the same tier', async () =
   for (const value of [350000, 350000, 290000, 350000, 350000]) { context.parentValue = value; await service.check('account-1'); }
   assert.deepEqual(alerts, [['parent', 1]]);
   for (const value of [290000, 290000, 350000, 350000]) { context.parentValue = value; await service.check('account-1'); }
-  assert.deepEqual(alerts, [['parent', 1], ['parent', 1]]);
+  assert.deepEqual(alerts, [['parent', 1]]);
+});
+
+test('300k to 200k to 300k stays silent across restart; 600k and return to 300k notify for both signs', async () => {
+  for (const sign of [1, -1]) {
+    const { store, context, makeService } = fixture();
+    store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
+    store.state.accounts[0].subagentThresholds = [{ path: ['parent'], alertStep: 300000 }];
+    let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+    for (const value of [300000, 200000, 0, -200000]) { context.parentValue = value * sign; await service.check('account-1'); }
+    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign]);
+    service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+    for (const value of [300000, 450000, 600000, 650000, 300000, 350000]) { context.parentValue = value * sign; await service.check('account-1'); }
+    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign, 2 * sign, sign]);
+    context.period = { start: '2026-09-21', end: '2026-09-27' };
+    await service.check('account-1');
+    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign, 2 * sign, sign, sign]);
+  }
+});
+
+test('diagnostic sequence below 100k no longer rearms the alert; confirms a later opposite tier', async () => {
+  const { store, context, alerts, makeService } = fixture();
+  store.state.alertPolicy = { confirmationReads: 2 };
+  store.state.accounts[0].subagentThresholds = [{ path: ['parent'], alertStep: 100000 }];
+  const service = makeService();
+  for (const value of [107337.26, 107337.26, 94129.57, 94129.57, 91125.36, 89899.59, 89899.59, 95389.84, 95389.84, 71594.83, 71594.83, 72679.88, 72164.49, 72164.49, 107027.79, 107027.79]) {
+    context.parentValue = value; await service.check('account-1');
+  }
+  assert.deepEqual(alerts, [['parent', 1]]);
+  for (const value of [-107000, -107000, -90000, -90000, -107000, -107000]) {
+    context.parentValue = value; await service.check('account-1');
+  }
+  assert.deepEqual(alerts, [['parent', 1], ['parent', -1]]);
+});
+
+test('upgrade restores an old zeroed tier without requeuing its notification', async () => {
+  const { alertLedgerKey, ALERT_METRIC } = require('../electron/alert-ledger');
+  const { store, context, alerts, makeService } = fixture();
+  store.state.accounts[0].subagentThresholds = [{ path: ['parent'], alertStep: 300000 }];
+  store.state.accounts[0].alertHistory = { period: '2026-09-14/2026-09-20', metric: ALERT_METRIC, agents: {
+    [alertLedgerKey(['parent'], 300000)]: { currentLevel: 0, positiveLastAlertLevel: 1, negativeLastAlertLevel: 0 },
+  } };
+  context.parentValue = 350000;
+  await makeService().check('account-1');
+  assert.deepEqual(alerts, []);
+  assert.equal(store.state.accounts[0].alertHistory.agents[alertLedgerKey(['parent'], 300000)].currentLevel, 1);
 });
 
 test('threshold edits do not invalidate in-flight work and next batch uses the new settings', async () => {
@@ -330,7 +406,7 @@ test('monitor repeats alerts when values return to an earlier tier, while retain
   context.parentValue = 250;
   context.childValue = -350;
   await service.check('account-1');
-  assert.equal(alerts.length, 13);
+  assert.equal(alerts.length, 5);
 
   const afterRestart = fixture(structuredClone(store.state));
   await afterRestart.makeService().check('account-1');

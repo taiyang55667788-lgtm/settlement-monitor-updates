@@ -5,7 +5,7 @@ const { SecureStore } = require('./store');
 const { MonitorService, MAX_DESCENDANT_DEPTH } = require('./monitor');
 const { UpdateService } = require('./updater');
 const { agentPathKey } = require('./report-parser');
-const { ALERT_METRIC } = require('./alert-ledger');
+const { ALERT_METRIC, resetChangedAlertStep } = require('./alert-ledger');
 const { startupCheck } = require('./continuous-monitor');
 const { SYSTEM_166, SYSTEM_CROWN, accountSystemId, accountBaseUrl, crownLoginEntryId, crownUrl, metricForAccount } = require('./monitor-systems');
 
@@ -113,6 +113,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
       telegram: { mode: snapshot.telegram.mode, paired: Boolean(snapshot.telegram.pairing?.paired), hasBotToken: snapshot.telegram.hasBotToken },
       accounts: snapshot.accounts.map(({ username, hasSecurityCode, hasPassword, ...account }) => ({ ...account, username: username ? '***' : '', hasSecurityCode, hasPassword })),
       events: snapshot.events,
+      alertRecords: snapshot.alertRecords,
     };
     fs.writeFileSync(chosen.filePath, JSON.stringify(diagnostic, null, 2), { mode: 0o600 });
     return { filePath: chosen.filePath };
@@ -263,6 +264,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
       const existing = account.subagentThresholds.find((item) => agentPathKey(item.path || [item.name]) === agentPathKey(path));
       if ((existing?.deltaAlertStep || null) !== deltaAlertStep && account.deltaHistory?.agents) delete account.deltaHistory.agents[agentPathKey(path)];
       const values = { name, path, remark, alertStep, deltaAlertStep };
+      resetChangedAlertStep(account, path, existing?.alertStep, alertStep);
       if (existing) {
         Object.assign(existing, values);
         delete existing.lowerThreshold;
