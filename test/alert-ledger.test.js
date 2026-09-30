@@ -2,6 +2,20 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel, migrateZeroTierHistory } = require('../electron/alert-ledger');
 
+test('half-step falling buffer preserves exact upward boundaries and mirrors negative amounts', () => {
+  const { bufferedAlertLevel } = require('../electron/alert-ledger');
+  for (const sign of [1, -1]) {
+    for (const [value, previous, expected] of [
+      [120000, 0, 1], [200000, 1, 2], [199999, 2, 2], [150001, 2, 2],
+      [150000, 2, 1], [120000, 2, 1], [199999, 1, 1], [200000, 1, 2],
+      [294868, 3, 3], [301103.33, 3, 3], [282139.86, 3, 3], [250000, 3, 2],
+      [249999, 6, 2], [250001, 6, 3], [100000, 6, 1], [99999, 3, 0],
+    ]) assert.equal(bufferedAlertLevel(sign * value, 100000, { currentLevel: sign * previous }), sign * expected);
+  }
+  assert.equal(bufferedAlertLevel(-200000, 100000, { currentLevel: 3 }), -2);
+  assert.equal(bufferedAlertLevel(NaN, 100000, { currentLevel: 3 }), 0);
+});
+
 test('changing step resets the chosen ledger even when returning to a previously used interval', () => {
   const { resetChangedAlertStep } = require('../electron/alert-ledger');
   const key = alertLedgerKey(['a'], 100), other = alertLedgerKey(['b'], 100);

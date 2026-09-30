@@ -34,6 +34,14 @@ app.whenReady().then(async () => {
       valueColors: [...document.querySelectorAll('.subagent-value')].map(cell => getComputedStyle(cell).color),
       depths: [...document.querySelectorAll('.subagent-row')].map(row => Number(row.dataset.depth)),
     })`);
+    const bufferHint = await win.webContents.executeJavaScript(`({
+      reason: alertReason({ value: 282139.86, alertStep: 100000, lastObservedLevel: 3, effectiveAlertLevel: 3 }),
+      progress: thresholdProgress({ value: 282139.86, alertStep: 100000, lastObservedLevel: 3, effectiveAlertLevel: 3 }),
+      negative: alertReason({ value: -282139.86, alertStep: 100000, lastObservedLevel: -3, effectiveAlertLevel: -3 })
+    })`);
+    assert.match(bufferHint.reason, /回落缓冲中；降档线 250,000/);
+    assert.match(bufferHint.progress, /下一档 \+400,000/);
+    assert.match(bufferHint.negative, /降档线 -250,000/);
     assert.equal(initial.tableCount, 1);
     assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '提醒状态', '备注（同步通知）', '提醒设置', '操作']);
     assert.deepEqual(initial.visible, [true, true, true, true]);

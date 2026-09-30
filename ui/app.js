@@ -123,6 +123,9 @@ function alertReason(subagent) {
   if (!level) return subagent.lastObservedLevel
     ? `未达首档；保留 ${compactMoney.format(subagent.lastObservedLevel * subagent.alertStep)} 档记录`
     : '尚未达到首档';
+  if (level !== subagent.lastObservedLevel && subagent.effectiveAlertLevel === subagent.lastObservedLevel) {
+    return `回落缓冲中；降档线 ${compactMoney.format(Math.sign(level) * (Math.abs(subagent.lastObservedLevel) - 0.5) * subagent.alertStep)}`;
+  }
   return level === subagent.lastObservedLevel ? '当前档位已通知' : '新档位待通知';
 }
 
@@ -130,10 +133,10 @@ function thresholdProgress(subagent) {
   if (subagent.stale || !Number.isFinite(subagent.alertStep) || subagent.alertStep <= 0 || !Number.isFinite(subagent.value)) return '';
   const step = subagent.alertStep;
   if (subagent.value >= 0) {
-    const next = (Math.trunc(subagent.value / step) + 1) * step;
+    const next = (Math.max(Math.trunc(subagent.value / step), subagent.effectiveAlertLevel || 0) + 1) * step;
     return `<small class="threshold-progress positive">下一档 +${compactMoney.format(next)} · 差 ${compactMoney.format(next - subagent.value)}</small>`;
   }
-  const next = (Math.trunc(subagent.value / step) - 1) * step;
+  const next = (Math.min(Math.trunc(subagent.value / step), subagent.effectiveAlertLevel || 0) - 1) * step;
   return `<small class="threshold-progress negative">下一档 −${compactMoney.format(Math.abs(next))} · 差 ${compactMoney.format(Math.abs(next - subagent.value))}</small>`;
 }
 

@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const { BrowserWindow, session, nativeImage, net } = require('electron');
 const { createWorker, PSM } = require('tesseract.js');
 const { splitReportRows, parseSettlementTable, parseCrownGeneralAgentTable, parseCrownDashboardDetails, legacyAlertStep, agentPathKey, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('./report-parser');
-const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel, migrateZeroTierHistory } = require('./alert-ledger');
+const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel, migrateZeroTierHistory, bufferedAlertLevel } = require('./alert-ledger');
 const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
@@ -1957,10 +1957,11 @@ class MonitorService {
     const policy = this.store.state.alertPolicy || {};
     const confirmationReads = Math.max(1, Math.min(10, Number(policy.confirmationReads) || 1));
     const quiet = inQuietHours(policy);
-    for (const { subagent, level } of evaluateSubagentAlertLevels(batch.filter((agent) => !agent.stale && Number.isFinite(agent.value) && Number.isFinite(agent.alertStep) && agent.alertStep > 0))) {
+    for (const { subagent } of evaluateSubagentAlertLevels(batch.filter((agent) => !agent.stale && Number.isFinite(agent.value) && Number.isFinite(agent.alertStep) && agent.alertStep > 0))) {
       if (!this.isCurrentCheck(accountId, revision)) return;
       const alertKey = alertLedgerKey(subagent.path, subagent.alertStep);
       const history = this.store.state.accounts.find((item) => item.id === accountId)?.alertHistory;
+      const level = bufferedAlertLevel(subagent.value, subagent.alertStep, history?.agents?.[alertKey]);
       status.alertCandidates ||= {};
       const candidateKey = `${periodKey}:${alertMetric}:${alertKey}`;
       const previousCandidate = status.alertCandidates[candidateKey];
@@ -2073,6 +2074,7 @@ class MonitorService {
       processChangedSincePrevious: priorTransition?.processStartedAt ? priorTransition.processStartedAt !== this.processStartedAt : null,
       settingChange: settingChange ? { ...settingChange } : null,
       confirmationReads: Math.max(1, Math.min(10, Number(this.store.state.alertPolicy?.confirmationReads) || 1)),
+      downwardBufferRatio: 0.5,
     };
     const record = { accountId: account.id, accountName: account.name, agentName: subagentName,
       agentPath: path, value, level, previousLevel, alertStep, remark, period, metric: metricId, trigger };

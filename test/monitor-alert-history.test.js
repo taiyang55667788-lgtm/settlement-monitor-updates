@@ -108,6 +108,38 @@ test('step changes rearm old intervals and persist explainable triggers across s
   assert.equal(store.state.notificationOutbox.length, 5);
 });
 
+test('half-step buffer suppresses screenshot oscillation across restart and confirms a real return', async () => {
+  for (const sign of [1, -1]) {
+    const { store, context, makeService } = fixture();
+    store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
+    store.state.alertPolicy = { confirmationReads: 2 };
+    store.state.accounts[0].subagentThresholds = [{ name: 'parent', path: ['parent'], alertStep: 100000 }];
+    let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+    const read = async value => { context.parentValue = sign * value; await service.check('account-1'); };
+    await read(343429.43); await read(343429.43);
+    const initialCount = store.state.notificationOutbox.length;
+    for (const value of [294868, 294868, 301103.33, 301103.33, 282139.86, 282139.86]) await read(value);
+    assert.equal(store.state.notificationOutbox.length, initialCount);
+    service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+    await read(282139.86); await read(282139.86);
+    assert.equal(store.state.notificationOutbox.length, initialCount);
+    await read(250000); await read(250001); await read(250000);
+    assert.equal(store.state.notificationOutbox.length, initialCount, 'rebound resets falling confirmation');
+    await read(250000);
+    assert.equal(store.state.notificationOutbox.at(-1).record.level, sign * 2);
+    assert.equal(store.state.notificationOutbox.length, initialCount + 1);
+    await read(299999); await read(299999);
+    assert.equal(store.state.notificationOutbox.length, initialCount + 1);
+    await read(300000); await read(300000);
+    assert.equal(store.state.notificationOutbox.at(-1).record.level, sign * 3);
+    assert.equal(store.state.notificationOutbox.length, initialCount + 2);
+    context.period = { start: '2026-09-21', end: '2026-09-27' };
+    await read(282139.86); await read(282139.86);
+    assert.equal(store.state.notificationOutbox.at(-1).record.level, sign * 2);
+    assert.equal(store.state.notificationOutbox.at(-1).record.trigger.downwardBufferRatio, 0.5);
+  }
+});
+
 test('unchanged tiers do not rewrite the encrypted ledger for every agent', async () => {
   const { store, makeService } = fixture();
   const account = store.state.accounts[0]; const service = makeService();

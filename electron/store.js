@@ -5,7 +5,7 @@ const { pruneDeepAgents } = require('./agent-depth');
 const { recipientKey } = require('./reliability');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
 const { alertStepFromLegacy, agentPath } = require('./report-parser');
-const { alertLedgerKey } = require('./alert-ledger');
+const { alertLedgerKey, bufferedAlertLevel } = require('./alert-ledger');
 const { accountSystemId, accountBaseUrl, crownLoginEntryId, crownUrl, metricForAccount } = require('./monitor-systems');
 
 const EMPTY_STATE = {
@@ -189,6 +189,7 @@ class SecureStore {
             alertedPositiveLevel: sentEntry?.positiveLastAlertLevel || 0,
             alertedNegativeLevel: sentEntry?.negativeLastAlertLevel || 0,
             lastObservedLevel: entry?.currentLevel || 0,
+            effectiveAlertLevel: bufferedAlertLevel(agent.value, agent.alertStep, entry),
             pendingNotifications: pending.length,
             lastAlertAt: delivered?.time || sentEntry?.lastSentAt || '',
           };

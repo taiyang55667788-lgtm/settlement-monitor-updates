@@ -25,6 +25,16 @@ function currentLevel(entry) {
   return Number.isSafeInteger(entry?.currentLevel) ? entry.currentLevel : 0;
 }
 
+function bufferedAlertLevel(value, step, entry) {
+  if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0) return 0;
+  const raw = Math.trunc(value / step);
+  const previous = currentLevel(entry);
+  if (!raw || Math.sign(raw) !== Math.sign(previous) || Math.abs(raw) >= Math.abs(previous)) return raw;
+  // Falling tiers use half-step boundaries, including equality; upward tiers stay fixed.
+  const magnitude = Math.min(Math.abs(previous), Math.ceil(Math.abs(value) / step + 0.5) - 1);
+  return Math.sign(raw) * Math.max(1, magnitude);
+}
+
 function migrateZeroTierHistory(history, transitions = []) {
   if (!history || history.nonzeroRetention === 1) return history;
   const migrated = structuredClone(history);
@@ -83,4 +93,4 @@ function resetChangedAlertStep(account, path, previousStep, nextStep, time = new
   }].slice(-100);
 }
 
-module.exports = { MAX_INDIVIDUAL_ALERTS, ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel, migrateZeroTierHistory, resetChangedAlertStep };
+module.exports = { MAX_INDIVIDUAL_ALERTS, ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel, migrateZeroTierHistory, resetChangedAlertStep, bufferedAlertLevel };
