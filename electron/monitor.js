@@ -34,6 +34,37 @@ function failureKind(error) {
   if (isCredentialFailure(String(error?.message || error))) return '账号凭据';
   return failureCategory(error);
 }
+
+function compactUuid(id) {
+  const hex = String(id || '').replace(/-/g, '');
+  return /^[0-9a-f]{32}$/i.test(hex) ? Buffer.from(hex, 'hex').toString('base64url') : '';
+}
+
+function telegramQueryPanel() {
+  return { inline_keyboard: [
+    [{ text: '📋 状态', callback_data: 'q:status' }, { text: '🔄 刷新报表', callback_data: 'q:report' }],
+    [{ text: '🏆 排行', callback_data: 'q:top' }, { text: '🧾 最近提醒', callback_data: 'q:alerts' }],
+    [{ text: '👤 按账号刷新', callback_data: 'q:accounts' }],
+  ] };
+}
+
+function telegramAccountPanel(pairingToken, accounts) {
+  const device = compactUuid(String(pairingToken || '').split('.')[0]);
+  if (!device) return null;
+  const buttons = accounts.slice(0, 20).flatMap((account) => {
+    const accountId = compactUuid(account.id);
+    return accountId ? [{ text: `🔄 ${String(account.name || '未命名账号').slice(0, 48)}`, callback_data: `q:check:${device}:${accountId}` }] : [];
+  });
+  if (!buttons.length) return null;
+  return { inline_keyboard: [
+    ...Array.from({ length: Math.ceil(buttons.length / 2) }, (_, index) => buttons.slice(index * 2, index * 2 + 2)),
+    [{ text: '📋 返回状态', callback_data: 'q:status' }],
+  ] };
+}
+
+function telegramStatusLabel(status) {
+  return ({ waiting: '等待首次读取', checking: '读取中', ok: '正常', triggered: '已触发提醒', partial: '部分完成', stale: '数据过期', recovering: '恢复中', manual: '需要手动处理', error: '读取失败' })[status] || String(status || '未知');
+}
 // 皇冠会在登录后的报表请求中拒绝 Electron 默认 UA；使用桌面 Chrome 标识，
 // 与用户在 Chrome 中可正常查看盘口的环境保持一致。
 const CROWN_BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
@@ -1324,27 +1355,57 @@ class MonitorService {
       if (!command?.command) return;
       const request = typeof command.command === 'string' ? { type: command.command } : command.command;
       const enabled = this.store.state.accounts.filter((account) => account.enabled);
-      const requested = request.type === 'check' && request.argument
-        ? enabled.filter((account) => account.name === request.argument) : enabled;
-      if (request.type === 'check' && request.argument && !requested.length) {
-        await this.pairingClient.send(pairing.token, `未找到启用账号：${request.argument}`); return;
+      const panel = telegramQueryPanel();
+      if (request.type === 'accounts') {
+        const accountPanel = telegramAccountPanel(pairing.token, enabled);
+        await this.pairingClient.send(pairing.token, accountPanel ? '👤 请选择要刷新的启用账号：' : '没有可用的账号按钮，请在桌面端确认启用账号后重试。', { replyMarkup: accountPanel || panel });
+        return;
+      }
+      if (request.type === 'status') {
+        const rows = enabled.slice(0, 20).map((account) => {
+          const status = this.status(account.id);
+          const lastSuccess = status.lastSuccessAt ? new Date(status.lastSuccessAt).toLocaleString('zh-CN') : '尚无成功读取';
+          return `${account.name}：${telegramStatusLabel(status.status)}\n最近成功读取：${lastSuccess}${status.error ? `\n说明：${status.error}` : ''}`;
+        });
+        await this.pairingClient.send(pairing.token, `📋 交收监控状态\n${rows.join('\n\n') || '当前没有启用账号。'}`.slice(0, 3400), { replyMarkup: panel });
+        return;
+      }
+      const requested = request.type === 'check' && request.accountId
+        ? enabled.filter((account) => account.id === request.accountId)
+        : request.type === 'check' && request.argument
+          ? enabled.filter((account) => account.name === request.argument) : enabled;
+      if (request.type === 'check' && (request.accountId || request.argument) && !requested.length) {
+        await this.pairingClient.send(pairing.token, request.accountId ? '该账号已停用或不存在，请重新打开账号列表。' : `未找到启用账号：${request.argument}`, { replyMarkup: panel }); return;
       }
       if (['report', 'top', 'check'].includes(request.type)) await Promise.allSettled(requested.map((account) => this.check(account.id)));
       if (request.type === 'alerts') {
         const rows = (this.store.state.alertRecords || []).slice(0, 10).map((item) => `${item.status === 'sent' ? '✅' : '❌'} ${item.accountName} / ${(item.agentPath || []).join(' / ')} · ${item.alertType === 'delta' ? `变化 ${item.change > 0 ? '+' : ''}${item.change}` : `金额 ${item.value > 0 ? '+' : ''}${item.value}`} · ${new Date(item.time).toLocaleString('zh-CN')}`);
-        await this.pairingClient.send(pairing.token, `🧾 最近提醒记录\n${rows.join('\n') || '暂无记录'}`); return;
+        await this.pairingClient.send(pairing.token, `🧾 最近提醒记录\n${rows.join('\n') || '暂无记录'}`, { replyMarkup: panel }); return;
       }
       if (request.type === 'top') {
         const rows = requested.flatMap((account) => this.status(account.id).subagents.filter((agent) => !agent.stale).map((agent) => ({ account: account.name, agent, value: agent.value }))).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 10).map((item, index) => `${index + 1}. ${item.account} / ${item.agent.path.join(' / ')}：${item.value > 0 ? '+' : ''}${item.value.toLocaleString('zh-CN')}`);
-        await this.pairingClient.send(pairing.token, `🏆 当前金额前 10 名\n${rows.join('\n') || '暂无成功读取的数据'}`); return;
+        const failed = requested.filter((account) => {
+          const status = this.status(account.id);
+          return status.status === 'error' && !status.subagents.some((agent) => !agent.stale);
+        }).map((account) => account.name);
+        const note = failed.length ? `\n⚠️ ${failed.join('、')} 本次刷新失败，排行不包含过期数据。` : '';
+        await this.pairingClient.send(pairing.token, `🏆 当前金额前 10 名\n${rows.join('\n') || '暂无本次成功读取的数据'}${note}`, { replyMarkup: panel }); return;
       }
-      const rows = this.store.state.accounts.map((account) => {
+      const rows = requested.map((account) => {
         const status = this.status(account.id);
         const period = status.reportPeriod ? `${status.reportPeriod.start}—${status.reportPeriod.end}` : '未读取';
-        const values = (status.subagents || []).filter((agent) => !agent.stale).map((agent) => `${agent.path.join(' / ')} ${agent.value > 0 ? '+' : ''}${agent.value}`).slice(0, 12);
-        return [`账号：${account.name} · ${period}`, status.status === 'error' ? `读取失败：${status.error}` : (values.join('\n') || '暂无成功读取的数据')].join('\n');
+        const agents = status.subagents || [];
+        const fresh = agents.filter((agent) => !agent.stale);
+        const stale = agents.filter((agent) => agent.stale);
+        const values = (fresh.length ? fresh : stale).map((agent) => `${agent.path.join(' / ')} ${agent.value > 0 ? '+' : ''}${agent.value}${agent.stale ? '（上次成功读取，已过期）' : ''}`).slice(0, 12);
+        const refreshState = !fresh.length && (status.status === 'error' || status.status === 'manual' || stale.length)
+          ? `本次刷新失败：${status.error || '读取失败'}；以下为上次成功读取的过期数据`
+          : stale.length
+            ? `本次刷新部分完成：${fresh.length} 项本次成功读取，${stale.length} 项保留的过期数据${status.error ? `；${status.error}` : ''}`
+            : `本次刷新成功：${fresh.length} 项数据已更新`;
+        return [`账号：${account.name} · ${period}`, refreshState, values.join('\n') || (status.status === 'error' ? '没有可用的历史数据' : '暂无成功读取的数据')].join('\n');
       });
-      await this.pairingClient.send(pairing.token, `${request.type === 'check' ? '🔄 刷新完成' : '📊 当前盘口报表'}\n${rows.join('\n\n')}`.slice(0, 3400));
+      await this.pairingClient.send(pairing.token, `${request.type === 'check' ? '🔄 刷新完成' : '📊 当前盘口报表'}\n${rows.join('\n\n')}`.slice(0, 3400), { replyMarkup: panel });
       this.store.addEvent('success', `已响应 Telegram /${request.type} 指令`); this.onChange();
     } catch (error) {
       this.store.addEvent('error', `Telegram 指令处理失败：${error.message || error}`); this.onChange();

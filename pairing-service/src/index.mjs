@@ -2,6 +2,33 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PAIRING_LIFETIME_MS = 10 * 60 * 1000;
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGES_PER_MINUTE = 30;
+const BOT_COMMANDS = [
+  { command: 'report', description: '刷新并返回当前报表' },
+  { command: 'top', description: '查看金额绝对值前 10 名' },
+  { command: 'alerts', description: '查看最近 10 条提醒' },
+  { command: 'check', description: '刷新全部启用账号' },
+  { command: 'help', description: '查看使用说明' },
+];
+
+const HELP_MESSAGE = [
+  '🤖 交收监控菜单',
+  '/report：刷新并返回当前报表',
+  '/top：返回当前金额绝对值前 10 名',
+  '/alerts：返回最近 10 条提醒',
+  '/check：刷新全部启用账号',
+  '/check 账号名：刷新指定账号',
+  '',
+  '需由已配对的电脑执行；电脑在线且交收监控正在运行时，刷新完成后才会回传。',
+  '群聊中仅群管理员可执行指令。',
+].join('\n');
+
+const QUERY_PANEL = {
+  inline_keyboard: [
+    [{ text: '📋 状态', callback_data: 'q:status' }, { text: '🔄 刷新报表', callback_data: 'q:report' }],
+    [{ text: '🏆 排行', callback_data: 'q:top' }, { text: '🧾 最近提醒', callback_data: 'q:alerts' }],
+    [{ text: '👤 按账号刷新', callback_data: 'q:accounts' }],
+  ],
+};
 
 function json(body, status = 200) {
   return Response.json(body, {
@@ -67,12 +94,50 @@ function telegramCommand(text) {
   const match = String(text || '').trim().match(/^\/([^\s@]+)(?:@[A-Za-z0-9_]+)?(?:\s+(.+))?$/u);
   if (!match) return null;
   const name = match[1].toLowerCase(); const argument = String(match[2] || '').trim();
-  if (['report', 'status', '报表', '状态'].includes(name)) return { type: 'report' };
+  if (['report', '报表'].includes(name)) return { type: 'report' };
+  if (['status', '状态'].includes(name)) return { type: 'status' };
   if (name === 'top') return { type: 'top' };
   if (name === 'alerts') return { type: 'alerts' };
   if (name === 'check') return { type: 'check', argument };
-  if (name === 'help') return { type: 'help' };
+  if (['help', 'start'].includes(name)) return { type: 'help' };
   return null;
+}
+
+function expandCompactUuid(value) {
+  if (!/^[A-Za-z0-9_-]{22}$/.test(String(value || ''))) return '';
+  try {
+    const raw = atob(String(value).replace(/-/g, '+').replace(/_/g, '/') + '==');
+    if (raw.length !== 16) return '';
+    const hex = Array.from(raw, byte => byte.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  } catch { return ''; }
+}
+
+function callbackCommand(data) {
+  const action = String(data || '');
+  if (['status', 'report', 'top', 'alerts', 'accounts'].includes(action.replace('q:', '')) && action.startsWith('q:')) {
+    return { type: action.slice(2) };
+  }
+  const match = action.match(/^q:check:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{22})$/);
+  if (!match) return null;
+  const deviceId = expandCompactUuid(match[1]);
+  const accountId = expandCompactUuid(match[2]);
+  return deviceId && accountId ? { type: 'check', deviceId, accountId } : null;
+}
+
+function validReplyMarkup(replyMarkup) {
+  const keyboard = replyMarkup?.inline_keyboard;
+  if (!Array.isArray(keyboard) || !keyboard.length || keyboard.length > 12) return null;
+  const rows = keyboard.map(row => {
+    if (!Array.isArray(row) || !row.length || row.length > 3) return null;
+    const buttons = row.map(button => {
+      const text = String(button?.text || '').trim();
+      const callbackData = String(button?.callback_data || '').trim();
+      return text.length <= 64 && callbackData.length <= 64 && callbackCommand(callbackData) ? { text, callback_data: callbackData } : null;
+    });
+    return buttons.every(Boolean) ? buttons : null;
+  });
+  return rows.every(Boolean) ? { inline_keyboard: rows } : null;
 }
 
 function pairingCode(text) {
@@ -112,17 +177,28 @@ async function authorizedDevice(request, env) {
   return row || null;
 }
 
-async function sendBotMessage(env, fetcher, chatId, message) {
+async function sendBotMessage(env, fetcher, chatId, message, replyMarkup = null) {
+  const markup = replyMarkup ? validReplyMarkup(replyMarkup) : null;
+  if (replyMarkup && !markup) throw new Error('Telegram 按钮格式无效');
   const response = await fetcher(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: message }),
+    body: JSON.stringify({ chat_id: chatId, text: message, ...(markup ? { reply_markup: markup } : {}) }),
     signal: AbortSignal.timeout(15000),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok || !payload?.ok) {
     throw new Error(`Telegram 发送失败（${response.status}）`);
   }
+}
+
+async function answerCallback(env, fetcher, callbackId, text, showAlert = false) {
+  const response = await fetcher(`https://api.telegram.org/bot${env.BOT_TOKEN}/answerCallbackQuery`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ callback_query_id: callbackId, text, show_alert: showAlert }), signal: AbortSignal.timeout(15000),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.ok) throw new Error(`Telegram 回调确认失败（${response.status}）`);
 }
 
 async function ensureWebhook(request, env, fetcher) {
@@ -132,7 +208,7 @@ async function ensureWebhook(request, env, fetcher) {
     body: JSON.stringify({
       url: `${new URL(request.url).origin}/v1/telegram/webhook`,
       secret_token: env.WEBHOOK_SECRET,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
     }),
     signal: AbortSignal.timeout(15000),
   });
@@ -140,9 +216,21 @@ async function ensureWebhook(request, env, fetcher) {
   if (!response.ok || !payload?.ok) throw new Error('Telegram webhook 配置失败');
 }
 
+async function ensureBotMenu(env, fetcher) {
+  const response = await fetcher(`https://api.telegram.org/bot${env.BOT_TOKEN}/setMyCommands`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ commands: BOT_COMMANDS }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.ok) throw new Error('Telegram 菜单配置失败');
+}
+
 async function startPairing(request, env, fetcher) {
   if (!env.BOT_TOKEN || !env.WEBHOOK_SECRET || !env.BOT_USERNAME) return json({ error: '配对服务尚未配置完成' }, 503);
   await ensureWebhook(request, env, fetcher);
+  await ensureBotMenu(env, fetcher);
   const id = crypto.randomUUID();
   const secret = randomSecret();
   const now = Date.now();
@@ -160,11 +248,56 @@ async function startPairing(request, env, fetcher) {
   return json({ error: '暂时无法生成配对码，请重试' }, 503);
 }
 
+async function queueCommands(env, deviceIds, command) {
+  for (const deviceId of deviceIds) {
+    await env.DB.prepare('INSERT INTO commands (id, device_id, command, created_at) VALUES (?, ?, ?, ?)')
+      .bind(crypto.randomUUID(), deviceId, JSON.stringify(command), Date.now()).run();
+  }
+}
+
+async function receiveCallback(callback, env, fetcher) {
+  const chat = callback?.message?.chat;
+  const chatId = chat?.id;
+  const command = callbackCommand(callback?.data);
+  if (!supportedChat(chat) || !chatId || !command) {
+    if (callback?.id) await answerCallback(env, fetcher, callback.id, '该按钮已失效，请重新打开菜单。', true).catch(() => {});
+    return json({ ok: true });
+  }
+  const isGroup = chat.type !== 'private';
+  const actor = { chat, from: callback.from };
+  if (isGroup && !await groupAdmin(actor, env, fetcher)) {
+    await answerCallback(env, fetcher, callback.id, '只有群管理员可以执行交收监控指令。', true).catch(() => {});
+    return json({ ok: true });
+  }
+  let deviceIds;
+  if (command.deviceId) {
+    const device = await env.DB.prepare('SELECT id FROM pairings WHERE id = ? AND chat_id = ?').bind(command.deviceId, String(chatId)).first();
+    if (!device) {
+      await answerCallback(env, fetcher, callback.id, '该账号按钮已失效，请重新打开账号列表。', true).catch(() => {});
+      return json({ ok: true });
+    }
+    deviceIds = [device.id];
+    delete command.deviceId;
+  } else {
+    const devices = await env.DB.prepare('SELECT id FROM pairings WHERE chat_id = ?').bind(String(chatId)).all();
+    deviceIds = (devices.results || []).map(device => device.id);
+  }
+  if (!deviceIds.length) {
+    await answerCallback(env, fetcher, callback.id, '当前没有已配对电脑。', true).catch(() => {});
+    return json({ ok: true });
+  }
+  await queueCommands(env, deviceIds, command);
+  const labels = { status: '状态查询', report: '报表查询', top: '排行查询', alerts: '提醒记录查询', accounts: '账号列表', check: '刷新请求' };
+  await answerCallback(env, fetcher, callback.id, `已收到${labels[command.type]}，等待在线电脑回传。`).catch(() => {});
+  return json({ ok: true });
+}
+
 async function receiveWebhook(request, env, ctx, fetcher) {
   if (!env.WEBHOOK_SECRET || !constantTimeEqual(request.headers.get('x-telegram-bot-api-secret-token'), env.WEBHOOK_SECRET)) {
     return json({ error: '未授权' }, 401);
   }
   const update = await readJson(request);
+  if (update?.callback_query) return receiveCallback(update.callback_query, env, fetcher);
   const message = update?.message;
   const chatId = message?.chat?.id;
   if (!supportedChat(message?.chat) || !chatId) return json({ ok: true });
@@ -185,8 +318,8 @@ async function receiveWebhook(request, env, ctx, fetcher) {
       .bind(String(chatId), Date.now(), codeHash, Date.now()).run();
     if (result.meta.changes === 1) {
       const target = isGroup ? '本群' : '此私聊';
-      const commandHint = isGroup ? '群管理员可使用 /report、/top、/alerts 或 /check。' : '现在可以回到电脑查看状态。';
-      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, `✅ 交收监控已配对到${target}。${commandHint}`).catch(() => {}));
+      const commandHint = isGroup ? '群管理员可点菜单或使用 /report、/top、/alerts、/check。' : '可点机器人菜单查询；电脑在线且监控运行时会回传结果。';
+      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, `✅ 交收监控已配对到${target}。${commandHint}`, QUERY_PANEL).catch(() => {}));
     }
     return json({ ok: true });
   }
@@ -197,15 +330,12 @@ async function receiveWebhook(request, env, ctx, fetcher) {
       return json({ ok: true });
     }
     if (command.type === 'help') {
-      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, '🤖 交收监控指令\n/report 或 /status：刷新并返回当前报表\n/top：返回当前金额绝对值前 10 名\n/alerts：返回最近 10 条提醒\n/check：刷新全部启用账号\n/check 账号名：刷新指定账号\n群聊中仅群管理员可执行指令。').catch(() => {}));
+      ctx.waitUntil(sendBotMessage(env, fetcher, chatId, HELP_MESSAGE, QUERY_PANEL).catch(() => {}));
       return json({ ok: true });
     }
     const devices = await env.DB.prepare('SELECT id FROM pairings WHERE chat_id = ?').bind(String(chatId)).all();
-    for (const device of devices.results || []) {
-      await env.DB.prepare('INSERT INTO commands (id, device_id, command, created_at) VALUES (?, ?, ?, ?)')
-        .bind(crypto.randomUUID(), device.id, JSON.stringify(command), Date.now()).run();
-    }
-    const labels = { report: '报表查询', top: '排行查询', alerts: '提醒记录查询', check: '刷新请求' };
+    await queueCommands(env, (devices.results || []).map(device => device.id), command);
+    const labels = { status: '状态查询', report: '报表查询', top: '排行查询', alerts: '提醒记录查询', accounts: '账号列表', check: '刷新请求' };
     ctx.waitUntil(sendBotMessage(env, fetcher, chatId, devices.results?.length ? `📊 已收到${labels[command.type]}，正在向在线电脑请求最新数据。` : '当前没有已配对电脑。').catch(() => {}));
     return json({ ok: true });
   }
@@ -228,7 +358,9 @@ async function sendFromDevice(request, env, fetcher, device, testOnly) {
   const limit = await env.DB.prepare('UPDATE pairings SET sent_bucket = ?, sent_count = CASE WHEN sent_bucket = ? THEN sent_count + 1 ELSE 1 END WHERE id = ? AND (sent_bucket IS NULL OR sent_bucket != ? OR sent_count < ?)')
     .bind(bucket, bucket, device.id, bucket, MAX_MESSAGES_PER_MINUTE).run();
   if (limit.meta.changes !== 1) return json({ error: '发送过于频繁，请稍后重试' }, 429);
-  await sendBotMessage(env, fetcher, device.chat_id, message);
+  const replyMarkup = testOnly ? null : body?.replyMarkup;
+  if (replyMarkup && !validReplyMarkup(replyMarkup)) return json({ error: 'Telegram 按钮格式无效' }, 400);
+  await sendBotMessage(env, fetcher, device.chat_id, message, replyMarkup);
   return json({ ok: true });
 }
 
@@ -253,7 +385,7 @@ export async function handleRequest(request, env, ctx, fetcher = fetch) {
     if (request.method === 'POST' && pathname === '/v1/messages') return await sendFromDevice(request, env, fetcher, device, false);
     return json({ error: '未找到接口' }, 404);
   } catch (error) {
-    if (error?.message === 'Telegram webhook 配置失败') {
+    if (['Telegram webhook 配置失败', 'Telegram 菜单配置失败'].includes(error?.message)) {
       return json({ error: 'Telegram 机器人配置失败，请检查 Bot Token' }, 502);
     }
     if (error?.message === '请求内容为空' || error?.message === '请求内容过大' || error?.message === '请求内容不是有效 JSON') {
