@@ -111,7 +111,8 @@ if (hasInstanceLock) app.whenReady().then(() => {
       format: 'settlement-monitor-diagnostics-v1', exportedAt: new Date().toISOString(),
       app: { version: app.getVersion(), platform: process.platform }, alertPolicy: snapshot.alertPolicy,
       telegram: { mode: snapshot.telegram.mode, paired: Boolean(snapshot.telegram.pairing?.paired), hasBotToken: snapshot.telegram.hasBotToken },
-      accounts: snapshot.accounts.map(({ username, hasSecurityCode, hasPassword, ...account }) => ({ ...account, username: username ? '***' : '', hasSecurityCode, hasPassword })),
+      accounts: snapshot.accounts.map(({ username, hasSecurityCode, hasPassword, ...account }) => ({ ...account, username: username ? '***' : '', hasSecurityCode, hasPassword,
+        readSamples: monitor.runtime.get(account.id)?.readSamples || [] })),
       events: snapshot.events,
       alertRecords: snapshot.alertRecords,
     };

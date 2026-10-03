@@ -168,7 +168,8 @@ class SecureStore {
       },
       accounts: this.state.accounts.map((account) => {
         const metric = metricForAccount(account);
-        const live = runtime.get(account.id) || {};
+        // Long-running samples belong to on-demand diagnostics, not every UI tick.
+        const { readSamples, ...live } = runtime.get(account.id) || {};
         const snapshotMatchesMetric = account.agentSnapshot?.metric === metric.id
           || (!account.agentSnapshot?.metric && metric.id === 'receivable-downline');
         const period = live.reportPeriod || (snapshotMatchesMetric ? account.agentSnapshot?.period : null);

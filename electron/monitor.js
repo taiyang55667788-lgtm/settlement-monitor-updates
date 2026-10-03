@@ -9,6 +9,7 @@ const { PairingClient } = require('./pairing');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
+const { DirectReportReader, clearDirectSession } = require('./direct-report');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -432,6 +433,7 @@ class SiteClient {
     this.status.stage = '正在检查登录会话';
     this.onProgress?.();
     if (await this.isLoggedIn().catch(loginProbeFallback)) return;
+    clearDirectSession(this.window?.webContents?.session);
     if (!this.ownsWindow && this.window.isVisible()) {
       const error = new Error('等待你在“盘内查看”完成验证码登录');
       error.code = 'MANUAL_LOGIN_REQUIRED';
@@ -573,6 +575,7 @@ class SiteClient {
         this.status.stage = '登录会话无响应，正在重建页面（重试 1/1）';
         this.onProgress?.();
         const previous = this.window;
+        this.disposeDirectReader();
         if (previous && !previous.isDestroyed()) previous.destroy();
         this.currentReportPath = null;
         this.reportRefreshNeeded = true;
@@ -611,9 +614,13 @@ class SiteClient {
       : [];
     let crownRouteIndex = 0;
     let lastError;
+    this.prepareDirectReader();
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         this.status.stage = attempt === 1 ? `正在查询本周${this.metric.label}` : `本周${this.metric.label}校验异常，正在重试（${attempt}/3）`;
+        const direct = await this.tryDirectReport([]);
+        if (direct) { this.reportPeriod = settlementWeekRange(); return direct; }
+        this.pendingDirectRequest = null;
         await this.openThisWeekReport();
         this.currentReportPath = [];
         this.status.stage = '本周报表读取成功';
@@ -969,7 +976,60 @@ class SiteClient {
       })));
     })()`, Array.isArray);
     if (!rawRows) throw new Error('没有报表表格');
-    return parseSettlementTable(splitReportRows(rawRows), this.metric);
+    const report = parseSettlementTable(splitReportRows(rawRows), this.metric);
+    await this.learnDirectReport(report);
+    return report;
+  }
+
+  prepareDirectReader() {
+    const wc = this.window?.webContents;
+    if (this.directReader || this.metric.id !== 'receivable-downline' || accountSystemId(this.account) === 'crown'
+      || !wc?.session?.webRequest || !/^https?:/.test(wc.getURL())) return;
+    const stats = this.status.directRead = { attempts: 0, successes: 0, failures: 0, fallbacks: 0, totalMs: 0, lastMs: null, learned: 0 };
+    this.directReader = new DirectReportReader(wc.session, new URL(wc.getURL()).origin, stats);
+    this.directSession = wc.session;
+    wc.session.webRequest.onBeforeRequest({ urls: [this.directReader.origin + '/ReportNew/Agent*'] }, (details, callback) => {
+      try {
+        if (details.webContentsId === wc.id && details.method === 'POST' && details.uploadData?.every(x => x.bytes)) {
+          const body = Buffer.concat(details.uploadData.map(x => x.bytes)).toString('utf8');
+          if (body.length < 65536) this.pendingDirectRequest = { url: details.url, method: details.method, body };
+        }
+      } finally { callback({}); }
+    });
+  }
+
+  async tryDirectReport(path) {
+    if (!this.directReader || this.directReader.disabled) return null;
+    if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
+    // Only reuse templates while still on the origin where they were learned.
+    if (new URL(this.window.webContents.getURL()).origin !== this.directReader.origin) return null;
+    const period = settlementWeekRange();
+    const report = await this.directReader.read(path, period);
+    if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
+    if (JSON.stringify(period) !== JSON.stringify(settlementWeekRange())) throw new Error('读取下级时本周日期范围发生变化，已停止读取');
+    if (report) {
+      this.currentReportPath = null; // Direct requests do not navigate the visible DOM.
+      this.pendingDirectRequest = null;
+      this.status.stage = '直接读取本周报表成功';
+      this.status.lastQueryMs = this.status.directRead.lastMs;
+    }
+    return report;
+  }
+
+  async learnDirectReport(report) {
+    const request = this.pendingDirectRequest;
+    this.pendingDirectRequest = null;
+    if (!request || !this.directReader || this.directReader.disabled || !Array.isArray(this.currentReportPath)) return;
+    try {
+      const data = await executeInFrames(this.window, `typeof respData === 'object' ? JSON.parse(JSON.stringify(respData)) : null`);
+      const fullPath = await executeInFrames(this.window, `(() => {
+        const links = [...document.querySelectorAll('#AgentReportNav a')];
+        return links.length ? links.map(a => {
+          const text = a.textContent.trim(); return text.match(/[（(]([^()（）]+)[）)]$/)?.[1] || text;
+        }) : null;
+      })()`);
+      if (data && fullPath && this.directReader.learn(this.currentReportPath, this.reportPeriod, request, data, report, fullPath)) this.status.directRead.learned++;
+    } catch { /* An unsupported page stays on the validated DOM reader. */ }
   }
 
   async readCrownGeneralAgentSettlement() {
@@ -1055,6 +1115,13 @@ class SiteClient {
 
   async readDescendantSettlement(path) {
     if (path.length >= MAX_DESCENDANT_DEPTH) throw new Error('最多读取四级代理');
+    const currentWeek = settlementWeekRange();
+    if (this.directReader && this.reportPeriod && (this.reportPeriod.start !== currentWeek.start || this.reportPeriod.end !== currentWeek.end)) {
+      throw new Error('读取下级时本周日期范围发生变化，已停止读取');
+    }
+    const direct = await this.tryDirectReport(path);
+    if (direct) return direct;
+    this.pendingDirectRequest = null;
     const expectedPeriod = this.reportPeriod ? `${this.reportPeriod.start}/${this.reportPeriod.end}` : '';
     const current = this.currentReportPath;
     const canContinue = Array.isArray(current) && current.length <= path.length && current.every((name, index) => path[index] === name);
@@ -1076,7 +1143,16 @@ class SiteClient {
     return this.readCurrentSettlement();
   }
 
+  disposeDirectReader() {
+    this.directReader?.cancel();
+    if (this.directSession) this.directSession.webRequest.onBeforeRequest(null);
+    this.directReader = null;
+    this.directSession = null;
+    this.pendingDirectRequest = null;
+  }
+
   async close() {
+    this.disposeDirectReader();
     if (this.ocr) await this.ocr.terminate().catch(() => {});
     if (this.ownsWindow && this.window && !this.window.isDestroyed()) this.window.destroy();
   }
@@ -1453,6 +1529,7 @@ class MonitorService {
 
   async clearAccountSession(accountId) {
     const partition = partitionForAccount(accountId);
+    clearDirectSession(session.fromPartition(partition));
     await session.fromPartition(partition).clearStorageData();
   }
 
@@ -1607,6 +1684,7 @@ class MonitorService {
     status.phaseTimings = null;
     status.readProgress = null;
     status.lastQueryMs = null;
+    status.directRead = null;
     status.stage = '准备检查';
     this.onChange();
     const client = this.createSiteClient(account, status);
@@ -1615,6 +1693,7 @@ class MonitorService {
     this.activeReads.set(accountId, controller);
     const read = operation => boundedOperation(operation, this.operationTimeoutMs, () => {
       client.cancelled = true;
+      client.directReader?.cancel();
       if (client.window && !client.window.isDestroyed()) client.window.destroy();
       client.currentReportPath = null;
     }, controller.signal);
@@ -1879,6 +1958,10 @@ class MonitorService {
       await this.updateHealth(account, status, true);
     } finally {
       status.durationMs = Date.now() - checkStarted;
+      status.readSamples = [...(status.readSamples || []).filter(item => Date.now() - Date.parse(item.at) < 86400000), {
+        at: new Date().toISOString(), durationMs: status.durationMs, status: status.status,
+        direct: status.directRead ? { ...status.directRead } : null,
+      }].slice(-2000);
       const timings = status.phaseTimings;
       const slowest = timings?.branches.reduce((max, item) => !max || item.durationMs > max.durationMs ? item : max, null);
       this.store.addEvent('info', `${account.name}：本轮耗时 ${(status.durationMs / 1000).toFixed(1)} 秒${timings ? `；登录及首层 ${(timings.loginAndRootMs / 1000).toFixed(1)} 秒；分支 ${timings.branches.length} 个` : ''}${slowest ? `；最慢分支 ${slowest.path.join(' / ')} ${(slowest.durationMs / 1000).toFixed(1)} 秒` : ''}${status.failureKind ? `；故障类型：${status.failureKind}` : ''}`, accountId);

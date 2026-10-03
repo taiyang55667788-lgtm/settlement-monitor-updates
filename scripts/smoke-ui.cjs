@@ -68,6 +68,7 @@ app.whenReady().then(async () => {
       next.accounts[0].status = 'checking';
       next.accounts[0].stage = '当前代理详细路径/'.repeat(30);
       next.accounts[0].readProgress = { read: 75, pendingBranches: 7 };
+      next.accounts[0].directRead = { successes: 4, attempts: 5, fallbacks: 1, learned: 4, totalMs: 800, lastFailure: '直接读取未通过校验，回退网页' };
       render(next);
       const result = { sameNode: field === document.querySelector('.subagent-row input[data-field="remark"]'), focused: document.activeElement === field, beforeHeight, afterHeight: document.querySelector('.status-wrap').getBoundingClientRect().height, text: document.querySelector('.status-wrap').textContent };
       document.querySelector('[data-action="reading-details"]').click();
@@ -83,6 +84,8 @@ app.whenReady().then(async () => {
     assert.doesNotMatch(stableStatus.text, /75|待查分支|当前代理详细路径/);
     assert.equal(stableStatus.open, true);
     assert.match(stableStatus.details, /75 个代理；待查分支：7/);
+    assert.match(stableStatus.details, /成功 4\/5 次；回退网页 1 次/);
+    assert.match(stableStatus.details, /平均耗时：200 毫秒/);
     const retainedTierText = await win.webContents.executeJavaScript(`[
       alertReason({ value: 200000, alertStep: 300000, lastObservedLevel: 1 }),
       alertReason({ value: -200000, alertStep: 300000, lastObservedLevel: -1 })

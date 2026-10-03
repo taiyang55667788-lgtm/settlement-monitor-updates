@@ -51,6 +51,11 @@ function refreshReadingDetails() {
     `最近成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功'}`,
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
+    ...(account.directRead ? [
+      `本轮直接读取：成功 ${account.directRead.successes}/${account.directRead.attempts} 次；回退网页 ${account.directRead.fallbacks} 次；学习查询 ${account.directRead.learned} 条`,
+      `直接读取平均耗时：${account.directRead.successes ? Math.round(account.directRead.totalMs / account.directRead.successes) + ' 毫秒' : '—'}`,
+      ...(account.directRead.lastFailure ? [account.directRead.lastFailure] : []),
+    ] : []),
     `下次检查：${account.nextCheckAt ? new Date(account.nextCheckAt).toLocaleString('zh-CN') : '待安排'}`,
     `异常：${account.error || '无'}`,
     `过期重点代理：${(account.staleTargets || []).map(path => path.join(' / ')).join('；') || '无'}`,
