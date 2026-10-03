@@ -14,9 +14,18 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
     await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const deadline = Date.now() + 3000;
-      const poll = () => document.querySelectorAll('.subagent-row').length === 4 ? resolve() : Date.now() > deadline ? reject(new Error('四级代理列表未显示')) : setTimeout(poll, 25);
+      const poll = () => document.querySelectorAll('.subagent-row').length === 1 ? resolve() : Date.now() > deadline ? reject(new Error('默认折叠的代理列表未显示')) : setTimeout(poll, 25);
       poll();
     })`);
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').getAttribute('aria-expanded')`), 'false');
+    // The fixture contains persisted expansion paths: startup must ignore them.
+    await win.webContents.executeJavaScript(`(() => {
+      document.querySelector('.level-1 .tree-toggle').click();
+      if (document.querySelectorAll('.subagent-row').length !== 2) throw Error('只能展开下一层');
+      document.querySelector('.level-2 .tree-toggle').click();
+      if (document.querySelectorAll('.subagent-row').length !== 3) throw Error('只能逐级展开');
+      document.querySelector('.level-3 .tree-toggle').click();
+    })()`);
     const initial = await win.webContents.executeJavaScript(`({
       tableCount: document.querySelectorAll('.agent-table').length,
       headings: [...document.querySelectorAll('.agent-table th')].map(cell => cell.textContent.trim()),
@@ -69,6 +78,7 @@ app.whenReady().then(async () => {
       next.accounts[0].stage = '当前代理详细路径/'.repeat(30);
       next.accounts[0].readProgress = { read: 75, pendingBranches: 7 };
       next.accounts[0].directRead = { successes: 4, attempts: 5, fallbacks: 1, learned: 4, totalMs: 800, lastFailure: '直接读取未通过校验，回退网页' };
+      next.accounts[0].readSummary = { rounds: 10, partial: 1, successRate: .9, averageMs: 2000, directRate: .8, directAverageMs: 200, fallbacks: 2, sessionLosses: 1, recoveries: 1 };
       render(next);
       const result = { sameNode: field === document.querySelector('.subagent-row input[data-field="remark"]'), focused: document.activeElement === field, beforeHeight, afterHeight: document.querySelector('.status-wrap').getBoundingClientRect().height, text: document.querySelector('.status-wrap').textContent };
       document.querySelector('[data-action="reading-details"]').click();
@@ -86,6 +96,8 @@ app.whenReady().then(async () => {
     assert.match(stableStatus.details, /75 个代理；待查分支：7/);
     assert.match(stableStatus.details, /成功 4\/5 次；回退网页 1 次/);
     assert.match(stableStatus.details, /平均耗时：200 毫秒/);
+    assert.match(stableStatus.details, /完整读取成功率 90.0%/);
+    assert.match(stableStatus.details, /确认登录失效 1 轮；读取恢复成功 1 轮/);
     const retainedTierText = await win.webContents.executeJavaScript(`[
       alertReason({ value: 200000, alertStep: 300000, lastObservedLevel: 1 }),
       alertReason({ value: -200000, alertStep: 300000, lastObservedLevel: -1 })
@@ -282,6 +294,7 @@ app.whenReady().then(async () => {
       account.subagents[2].stale = true;
       account.subagents[2].notRefreshed = true;
       account.subagents.push({ name: 'unrelated', path: ['unrelated'], value: 0 });
+      expandedAgentPaths.clear();
       render(next);
       const defaultRows = document.querySelectorAll('.subagent-row').length;
       document.querySelector('[data-action="filter-reminders"]').click();

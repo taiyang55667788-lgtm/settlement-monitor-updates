@@ -5,7 +5,9 @@ const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximum
 const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 const statusNames = { waiting: '等待首次检查', checking: '读取中', ok: '运行正常', triggered: '运行正常', error: '读取异常', partial: '部分读取失败', stale: '数据过期', recovering: '正在恢复', manual: '需要手动处理', paused: '已暂停' };
 const thresholdDrafts = new Map();
-const collapsedAgentPaths = new Set();
+// Expansion belongs to this UI session; old saved paths must not open the tree
+// automatically on startup. Background renders preserve explicit user choices.
+const expandedAgentPaths = new Set();
 const reminderOnlyAccounts = new Set();
 const filteredCollapsedPaths = new Set();
 const MAX_AGENT_DEPTH = 4;
@@ -51,6 +53,12 @@ function refreshReadingDetails() {
     `最近成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功'}`,
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
+    ...(account.readSummary ? [
+      `最近24小时（本次启动后）：${account.readSummary.rounds} 轮；完整读取成功率 ${account.readSummary.successRate === null ? '—' : (account.readSummary.successRate * 100).toFixed(1) + '%'}；部分失败 ${account.readSummary.partial} 轮`,
+      `平均整轮耗时：${account.readSummary.averageMs === null ? '—' : (account.readSummary.averageMs / 1000).toFixed(1) + ' 秒'}`,
+      `直接查询成功率：${account.readSummary.directRate === null ? '尚无直接查询' : (account.readSummary.directRate * 100).toFixed(1) + '%'}；平均 ${account.readSummary.directAverageMs === null ? '—' : Math.round(account.readSummary.directAverageMs) + ' 毫秒'}；回退网页 ${account.readSummary.fallbacks} 次`,
+      `确认登录失效 ${account.readSummary.sessionLosses} 轮；读取恢复成功 ${account.readSummary.recoveries} 轮`,
+    ] : []),
     ...(account.directRead ? [
       `本轮直接读取：成功 ${account.directRead.successes}/${account.directRead.attempts} 次；回退网页 ${account.directRead.fallbacks} 次；学习查询 ${account.directRead.learned} 条`,
       `直接读取平均耗时：${account.directRead.successes ? Math.round(account.directRead.totalMs / account.directRead.successes) + ' 毫秒' : '—'}`,
@@ -244,8 +252,8 @@ function subagentList(account) {
     const path = subagent.path || [subagent.name];
     return path.length === parentPath.length + 1 && parentPath.every((part, index) => path[index] === part);
   });
-  const isExpanded = (path) => only ? !filteredCollapsedPaths.has(thresholdDraftKey(account.id, path)) : (account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(path))
-    && !collapsedAgentPaths.has(thresholdDraftKey(account.id, path));
+  const isExpanded = (path) => only ? !filteredCollapsedPaths.has(thresholdDraftKey(account.id, path))
+    : expandedAgentPaths.has(thresholdDraftKey(account.id, path));
   const renderRow = ({ subagent, index }, expanded = false, childCount = 0) => {
     const path = subagent.path || [subagent.name];
     const depth = path.length;
@@ -568,13 +576,9 @@ $('#accounts').addEventListener('click', (event) => {
       render(appState);
       return;
     }
-    if ((account.expandedAgentPaths || []).some((item) => pathKey(item) === pathKey(path))) {
-      if (collapsedAgentPaths.has(branchKey)) collapsedAgentPaths.delete(branchKey);
-      else collapsedAgentPaths.add(branchKey);
-      render(appState);
-    } else {
-      action(() => window.monitorApi.expandSubagent(account.id, path));
-    }
+    if (expandedAgentPaths.has(branchKey)) expandedAgentPaths.delete(branchKey);
+    else expandedAgentPaths.add(branchKey);
+    render(appState);
     return;
   }
   if (button.dataset.action === 'edit') openAccount(account);
@@ -591,7 +595,7 @@ $('#accounts').addEventListener('click', (event) => {
   if (button.dataset.action === 'collapse-agents') {
     for (const agent of account.subagents || []) {
       const key = thresholdDraftKey(account.id, agent.path || [agent.name]);
-      collapsedAgentPaths.add(key);
+      expandedAgentPaths.delete(key);
       filteredCollapsedPaths.add(key);
     }
     render(appState);
@@ -667,6 +671,10 @@ $('#update-form').addEventListener('submit', (event) => {
 });
 $('#check-update').addEventListener('click', () => action(() => window.monitorApi.checkForUpdates()));
 $('#install-update').addEventListener('click', () => action(() => window.monitorApi.installUpdate()));
+$('#open-update-diagnostics').addEventListener('click', () => action(async () => {
+  const error = await window.monitorApi.openUpdateDiagnostics();
+  if (error) throw new Error(error);
+}));
 $('#open-latest-download').addEventListener('click', () => action(() => window.monitorApi.openLatestDownloadPage(), '已打开最新版下载页'));
 $('#copy-latest-download').addEventListener('click', () => action(async () => {
   const result = await window.monitorApi.copyLatestDownloadUrl();

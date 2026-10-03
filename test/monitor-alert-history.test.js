@@ -301,6 +301,41 @@ test('important branches run first and a failed branch is retried only after oth
   assert.equal(service.status('account-1').status, 'ok');
 });
 
+test('a failing branch backs off independently; manual refresh recovers it', async () => {
+  const { context, store, makeService }=fixture();const service=makeService();
+  context.childFailure=true;await service.check('account-1');
+  assert.equal(context.descendantReads,2);
+  assert.equal(service.status('account-1').status,'partial');
+  const next=Date.parse(service.status('account-1').nextCheckAt)-Date.now();
+  assert.ok(next<=300000 && next>290000,'healthy branches keep the configured interval');
+  context.childFailure=false;await service.check('account-1');
+  assert.equal(context.descendantReads,2,'cooling branch is skipped on an early automatic check');
+  await service.check('account-1',{manual:true});
+  assert.ok(context.descendantReads>2);
+  assert.ok(['ok','triggered'].includes(service.status('account-1').status));
+  assert.deepEqual(service.status('account-1').branchFailures,{});
+});
+
+test('lost session aborts branch retry instead of relogging for each branch', async () => {
+  const {context,makeService}=fixture();let attempts=0;
+  context.beforeDescendant=()=>{attempts++;throw Error('读取下级时登录状态已失效');};
+  const service=makeService();await service.check('account-1');
+  assert.equal(attempts,1);assert.equal(service.status('account-1').failureKind,'登录状态');
+  assert.equal(service.status('account-1').readSummary.sessionLosses,1);
+});
+
+test('recovery reads deep reminder ancestry ahead of unrelated root reminders', async () => {
+  const {context,store,makeService}=fixture();
+  store.state.accounts[0].subagentThresholds=[{path:['other'],alertStep:100},{path:['parent','child','leaf'],alertStep:100}];
+  const service=makeService();const factory=service.createSiteClient;
+  service.createSiteClient=(...args)=>{const c=factory(...args);c.readThisWeekSettlement=async()=>({value:0,agents:[{name:'parent',value:0},{name:'other',value:0}]});return c;};
+  context.descendants=new Map([['parent',{agents:[{name:'child',value:0}]}],['parent/child',{agents:[{name:'leaf',value:0}]}]]);
+  const order=[];context.beforeDescendant=path=>{order.push(path.join('/'));};
+  service.status('account-1').status='error';await service.check('account-1');
+  assert.deepEqual(order.slice(0,2),['parent','parent/child']);
+  assert.ok(order.indexOf('other')>1);
+});
+
 test('publishes and alerts the first layer before a slow descendant finishes, once per check', async () => {
   const { alerts, context, store, makeService } = fixture();
   store.state.alertPolicy = { confirmationReads: 2 };
@@ -416,7 +451,7 @@ test('partial initial discovery retries fully and removed parents prune cached d
     ['parent', { agents: [{ name: 'child', value: 10 }] }],
     ['parent/child', { agents: [{ name: 'third', value: 30 }] }],
   ]);
-  await service.check('account-1');
+  await service.check('account-1', { manual: true });
   assert.equal(store.state.accounts[0].agentSnapshot.structureVersion, 1);
   context.descendants.set('parent', { agents: [] });
   await service.check('account-1');

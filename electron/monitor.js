@@ -10,6 +10,7 @@ const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
 const { DirectReportReader, clearDirectSession } = require('./direct-report');
+const { failureCategory, failedBranch, readSummary } = require('./runtime-health');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -30,12 +31,8 @@ function loginProbeFallback(error) {
   return false;
 }
 function failureKind(error) {
-  const text = String(error?.message || error);
-  if (error?.code === 'CROWN_HUMAN_VERIFICATION_REQUIRED' || /验证码|图形验证/.test(text)) return '验证码';
-  if (isCredentialFailure(text)) return '账号凭据';
-  if (/ERR_|超时|网络|fetch failed/i.test(text)) return '网络或加载超时';
-  if (/登录|登陆|会话/.test(text)) return '登录状态';
-  return '报表读取或校验';
+  if (isCredentialFailure(String(error?.message || error))) return '账号凭据';
+  return failureCategory(error);
 }
 // 皇冠会在登录后的报表请求中拒绝 Electron 默认 UA；使用桌面 Chrome 标识，
 // 与用户在 Chrome 中可正常查看盘口的环境保持一致。
@@ -448,6 +445,7 @@ class SiteClient {
     }
     const formReady = await waitUntil(this.window, `document.querySelectorAll('input').length >= 3`, 12000);
     if (!formReady) throw new Error('代理登录页加载失败');
+    if (this.status.lastSuccessAt) this.status.sessionLostThisRound = true;
     let lastFailure = '';
     let previousCaptchaFingerprint = '';
     for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -605,9 +603,15 @@ class SiteClient {
     } catch (error) {
       if (error.code === 'SESSION_CHECK_TIMEOUT' || error.code === 'READ_INTERRUPTED') throw error;
       if (failureKind(error) !== '网络或加载超时') throw error;
-      agentUrl = await this.discoverAgentUrl();
-      this.status.agentUrl = agentUrl;
-      await this.login(agentUrl);
+      // Retry the current route before rediscovering routes or submitting again.
+      await sleep(400);
+      try { await this.login(agentUrl); }
+      catch (retryError) {
+        if (failureKind(retryError) !== '网络或加载超时') throw retryError;
+        agentUrl = await this.discoverAgentUrl();
+        this.status.agentUrl = agentUrl;
+        await this.login(agentUrl);
+      }
     }
     const crownRoutes = accountSystemId(this.account) === 'crown'
       ? [agentUrl, ...CROWN_URLS].filter((url, index, values) => url && values.indexOf(url) === index)
@@ -635,8 +639,14 @@ class SiteClient {
           await this.loginCrown(agentUrl);
           continue;
         }
-        if (!/报表日期或代理层级|结算周|本周报表|报表查询页面|登录状态已失效/.test(error.message || '') || attempt === 3) throw error;
-        if (!await this.isLoggedIn()) await this.login(agentUrl);
+        const kind = failureKind(error);
+        if (['验证码', '账号凭据'].includes(kind)) throw error;
+        if ((!/报表日期或代理层级|结算周|本周报表|报表查询页面|登录状态已失效/.test(error.message || '')
+          && kind !== '网络或加载超时') || attempt === 3) throw error;
+        if (kind === '登录状态') {
+          this.status.sessionLostThisRound = true;
+          await this.login(agentUrl);
+        }
         await sleep(800);
       }
     }
@@ -1664,7 +1674,7 @@ class MonitorService {
     this.onChange();
   }
 
-  async check(accountId) {
+  async check(accountId, { manual = false } = {}) {
     if (this.suspended || this.stopped || this.store.state.recoveryReviewRequired) return;
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     if (!storedAccount) throw new Error('账号不存在');
@@ -1677,6 +1687,9 @@ class MonitorService {
     const account = structuredClone(storedAccount);
     const metric = metricForAccount(account);
     const status = this.status(accountId);
+    const recovering = ['error', 'recovering', 'stale'].includes(status.status) || status.failureKind === '登录状态';
+    const bypassBranchBackoff = manual || this.fullScanRequested.has(accountId) || recovering;
+    status.sessionLostThisRound = false;
     status.running = true;
     status.status = 'checking';
     status.error = '';
@@ -1710,6 +1723,7 @@ class MonitorService {
       status.reportPeriod = client.reportPeriod;
       const rootReadAt = new Date().toISOString();
       const periodKey = `${client.reportPeriod.start}/${client.reportPeriod.end}`;
+      if (status.branchFailurePeriod !== periodKey) { status.branchFailures = {}; status.branchFailurePeriod = periodKey; }
       const cachedSnapshot = this.store.state.accounts.find((item) => item.id === accountId)?.agentSnapshot;
       const cachedAgents = cachedSnapshot?.metric === metric.id ? cachedSnapshot.agents || [] : [];
       const checkpoint = scanState(storedAccount.scanCheckpoint, metric.id, periodKey);
@@ -1809,9 +1823,17 @@ class MonitorService {
         for (const path of priorityPaths(settings)) {
           if (!this.isCurrentCheck(accountId, revision)) return;
           if (!agents.some(item => agentPathKey(item.path) === agentPathKey(path))) continue;
-          const result = await read(() => client.readDescendantSettlement(path));
-          const fresh = mergeChildren(path, result.agents);
-          saveBranch(path, fresh); await publishBatch(fresh);
+          if (!bypassBranchBackoff && status.branchFailures[agentPathKey(path)]?.nextAt > Date.now()) continue;
+          try {
+            const result = await read(() => client.readDescendantSettlement(path));
+            const fresh = mergeChildren(path, result.agents);
+            delete status.branchFailures[agentPathKey(path)];
+            saveBranch(path, fresh); await publishBatch(fresh);
+          } catch (error) {
+            if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG' || ['登录状态','验证码','账号凭据'].includes(failureKind(error))) throw error;
+            client.currentReportPath = null;
+            this.store.addEvent('error', `${account.name}：此重点分支插读失败，继续其他分支：${path.join(' / ')}`, accountId);
+          }
         }
         lastPriorityAt = Date.now();
       };
@@ -1819,7 +1841,8 @@ class MonitorService {
         if (fullScan && Date.now() - lastPriorityAt >= Math.max(1, Number(account.intervalMinutes) || 5) * 60000) {
           try { await refreshPriority(); }
           catch (error) {
-            if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG' || /结算周已切换/.test(error.message)) throw error;
+            if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG' || /结算周已切换/.test(error.message)
+              || ['登录状态','验证码','账号凭据'].includes(failureKind(error))) throw error;
             client.currentReportPath = null;
             this.store.addEvent('error', `${account.name}：重点插读失败，保留原扫描任务：${error.message}`, accountId);
           }
@@ -1827,7 +1850,8 @@ class MonitorService {
         }
         if (!branches.length) branches.push(...retryBranches.splice(0));
         // pop() retains depth-first navigation within the same priority group.
-        branches.sort((a, b) => Number(importantBranch(a, configuredSubagents)) - Number(importantBranch(b, configuredSubagents)));
+        const priority = path => (recovering || status.sessionLostThisRound) && branchHasTarget(path, configuredSubagents) ? 2 : Number(importantBranch(path, configuredSubagents));
+        branches.sort((a, b) => priority(a) - priority(b));
         const path = branches.pop();
         if (path.length >= MAX_DESCENDANT_DEPTH) continue;
         if (!this.isCurrentCheck(accountId, revision)) return;
@@ -1835,6 +1859,16 @@ class MonitorService {
         if (!parent) continue;
         const key = agentPathKey(path);
         const hasTarget = branchHasTarget(path, configuredSubagents);
+        const delayed = status.branchFailures[key];
+        if (!bypassBranchBackoff && delayed?.nextAt > Date.now()) {
+          parent.childError = `此分支连续失败 ${delayed.failures} 轮，延后至 ${new Date(delayed.nextAt).toLocaleTimeString('zh-CN')} 重试`;
+          childErrors.push(`${path.join(' / ')}：${parent.childError}`);
+          status.phaseTimings.branches.push({ path: [...path], durationMs: 0, error: parent.childError, deferred: true });
+          for (const cached of cachedAgents.filter(item => item.path?.length > path.length && path.every((part,i) => item.path[i] === part))) {
+            if (!agents.some(item => agentPathKey(item.path) === agentPathKey(cached.path))) agents.push({ ...cached, stale: true, staleReason: 'failed' });
+          }
+          continue;
+        }
         const remembered = fullScan && path.length > 1 && !hasTarget ? checkpoint.completed[key] : null;
         if (remembered) {
           const old = mergeChildren(path, remembered, false);
@@ -1848,15 +1882,23 @@ class MonitorService {
         status.stage = `已读取 ${status.readProgress.read} 个代理；正在读取第 ${path.length + 1} 级：${path.join(' / ')}`;
         this.onChange();
         const branchStarted = Date.now();
+        let branchError = '';
         try {
           const childReport = await read(() => client.readDescendantSettlement(path));
           if (!this.isCurrentCheck(accountId, revision)) return;
           const fresh = mergeChildren(path, childReport.agents);
+          delete status.branchFailures[key];
           saveBranch(path, fresh);
           for (const child of fresh) if (child.path.length < MAX_DESCENDANT_DEPTH && needsBranch(child.path)) branches.push(child.path);
           await publishBatch(fresh);
         } catch (error) {
           if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG') throw error;
+          branchError = error.message || String(error);
+          const kind = failureKind(error);
+          if (['登录状态', '验证码', '账号凭据'].includes(kind)) {
+            if (kind === '登录状态') status.sessionLostThisRound = true;
+            throw error; // Restore the session once next round, not once per branch.
+          }
           client.currentReportPath = null;
           const key = agentPathKey(path);
           if (!retriedBranches.has(key) && !isCredentialFailure(error.message || '') && !/验证码|图形验证/.test(error.message || '')) {
@@ -1865,12 +1907,15 @@ class MonitorService {
             continue;
           }
           parent.childError = error.message || String(error);
+          status.branchFailures[key] = failedBranch(status.branchFailures[key], account.intervalMinutes);
+          const failureKeys = Object.keys(status.branchFailures);
+          if (failureKeys.length > 1000) delete status.branchFailures[failureKeys[0]];
           childErrors.push(`${path.join(' / ')}：${parent.childError}`);
           for (const cached of cachedAgents.filter((item) => item.path?.length > path.length && path.every((part, index) => item.path[index] === part))) {
             if (!agents.some((item) => agentPathKey(item.path) === agentPathKey(cached.path))) agents.push({ ...cached, stale: true, notRefreshed: false, staleReason: 'failed' });
           }
         } finally {
-          status.phaseTimings.branches.push({ path: [...path], durationMs: Date.now() - branchStarted, error: parent.childError || '' });
+          status.phaseTimings.branches.push({ path: [...path], durationMs: Date.now() - branchStarted, error: branchError });
         }
       }
       if (!this.isCurrentCheck(accountId, revision)) return;
@@ -1960,8 +2005,10 @@ class MonitorService {
       status.durationMs = Date.now() - checkStarted;
       status.readSamples = [...(status.readSamples || []).filter(item => Date.now() - Date.parse(item.at) < 86400000), {
         at: new Date().toISOString(), durationMs: status.durationMs, status: status.status,
+        failureKind: status.failureKind, sessionLost: status.sessionLostThisRound, recovery: recovering || status.sessionLostThisRound,
         direct: status.directRead ? { ...status.directRead } : null,
       }].slice(-2000);
+      status.readSummary = readSummary(status.readSamples);
       const timings = status.phaseTimings;
       const slowest = timings?.branches.reduce((max, item) => !max || item.durationMs > max.durationMs ? item : max, null);
       this.store.addEvent('info', `${account.name}：本轮耗时 ${(status.durationMs / 1000).toFixed(1)} 秒${timings ? `；登录及首层 ${(timings.loginAndRootMs / 1000).toFixed(1)} 秒；分支 ${timings.branches.length} 个` : ''}${slowest ? `；最慢分支 ${slowest.path.join(' / ')} ${(slowest.durationMs / 1000).toFixed(1)} 秒` : ''}${status.failureKind ? `；故障类型：${status.failureKind}` : ''}`, accountId);
@@ -1998,7 +2045,7 @@ class MonitorService {
         const current = this.store.state.accounts.find((item) => item.id === accountId);
         if (current?.enabled) setImmediate(() => void this.check(accountId));
       } else {
-        status.nextCheckAt = status.status === 'manual' ? null : new Date(Math.max(Date.now() + 1000, checkStarted + retryDelay(this.store.state.accounts.find(item => item.id === accountId) || account, status.consecutiveFailures))).toISOString();
+        status.nextCheckAt = status.status === 'manual' ? null : new Date(Math.max(Date.now() + 1000, checkStarted + retryDelay(this.store.state.accounts.find(item => item.id === accountId) || account, status.status === 'partial' ? 0 : status.consecutiveFailures))).toISOString();
         this.onChange();
       }
     }

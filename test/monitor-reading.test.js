@@ -133,6 +133,14 @@ test('valid 166 session skips navigation to the login page', async () => {
   await client.login('https://example.com');
 });
 
+test('network timeout on a report retries without another login or route discovery', async () => {
+  const client=new SiteClient({}, {agentUrl:'https://example.com'});let logins=0;let queries=0;
+  client.login=async()=>{logins++;};client.discoverAgentUrl=async()=>{throw Error('不应切换线路');};
+  client.openThisWeekReport=async()=>{if(++queries===1)throw Error('本周报表网络超时');};
+  client.readCurrentSettlement=async()=>({value:0,agents:[]});
+  await client.readThisWeekSettlement();assert.equal(logins,1);assert.equal(queries,2);
+});
+
 test('captcha or credential errors do not trigger route discovery and another login', async () => {
   for (const message of ['验证码自动识别连续三次未通过', '密码错误']) {
     const client = new SiteClient({}, { agentUrl: 'https://example.com' });

@@ -90,7 +90,8 @@
               <form id="update-form">
                 <label>更新服务器地址<input name="feedUrl" type="url" placeholder="https://updates.example.com/app" /></label>
                 <label class="checkbox"><input name="autoCheck" type="checkbox" checked /> 启动时及每 6 小时自动检查</label>
-                <div class="form-actions"><button type="button" id="check-update" class="secondary">立即检查</button><button type="button" id="install-update" class="primary" hidden>重启并安装</button><button class="primary">保存设置</button></div>
+                <div class="form-actions"><button type="button" id="check-update" class="secondary">立即检查</button><button type="button" id="install-update" class="primary" hidden>重启并安装</button><button type="button" id="open-update-diagnostics" class="secondary">更新前诊断</button><button class="primary">保存设置</button></div>
+                <small>从此版本起，安装更新前自动保存脱敏运行统计；点击“更新前诊断”打开保存目录。</small>
               </form>
             </div>
           </div>

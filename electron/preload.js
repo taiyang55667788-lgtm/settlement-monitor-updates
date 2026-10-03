@@ -35,4 +35,5 @@ contextBridge.exposeInMainWorld('monitorApi', {
     ipcRenderer.on('state:changed', listener);
     return () => ipcRenderer.removeListener('state:changed', listener);
   },
+  openUpdateDiagnostics: () => ipcRenderer.invoke('support:open-update-diagnostics'),
 });

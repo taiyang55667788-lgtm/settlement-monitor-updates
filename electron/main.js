@@ -7,6 +7,7 @@ const { UpdateService } = require('./updater');
 const { agentPathKey } = require('./report-parser');
 const { ALERT_METRIC, resetChangedAlertStep } = require('./alert-ledger');
 const { startupCheck } = require('./continuous-monitor');
+const { operationalDiagnostic } = require('./runtime-health');
 const { SYSTEM_166, SYSTEM_CROWN, accountSystemId, accountBaseUrl, crownLoginEntryId, crownUrl, metricForAccount } = require('./monitor-systems');
 
 let mainWindow;
@@ -38,6 +39,15 @@ function publish() {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('state:changed', state());
 }
 
+function saveUpdateDiagnostic() {
+  const folder = path.join(app.getPath('userData'), 'diagnostics');
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const destination = path.join(folder, `before-update-${app.getVersion()}-${Date.now()}.json`);
+  const data = operationalDiagnostic(store.state.accounts, monitor.runtime, app.getVersion(), process.platform);
+  fs.writeFileSync(destination, JSON.stringify(data, null, 2), { mode: 0o600, flag: 'wx' });
+  return destination;
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1240,
@@ -63,7 +73,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
   try { store.update(data => { data.lastAppVersion = app.getVersion(); }); }
   catch (error) { store.addEvent('error', `启动版本记录保存失败：${error.message}`); }
   monitor = new MonitorService(store, publish);
-  updater = new UpdateService(store, publish);
+  updater = new UpdateService(store, publish, saveUpdateDiagnostic);
   createWindow();
   monitor.start();
   powerMonitor.on('suspend', () => monitor.suspend());
@@ -118,6 +128,11 @@ if (hasInstanceLock) app.whenReady().then(() => {
     };
     fs.writeFileSync(chosen.filePath, JSON.stringify(diagnostic, null, 2), { mode: 0o600 });
     return { filePath: chosen.filePath };
+  });
+  ipcMain.handle('support:open-update-diagnostics', () => {
+    const folder = path.join(app.getPath('userData'), 'diagnostics');
+    fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+    return shell.openPath(folder);
   });
   ipcMain.handle('support:backup-export', async () => {
     const chosen = await dialog.showSaveDialog(mainWindow, { title: '导出加密配置备份', defaultPath: `交收监控-备份-${new Date().toISOString().slice(0, 10)}.smbackup`, filters: [{ name: '交收监控备份', extensions: ['smbackup'] }] });
@@ -310,7 +325,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
     return { ok: true };
   });
   ipcMain.handle('account:check', async (_event, id) => {
-    void monitor.check(id);
+    void monitor.check(id, { manual: true });
     return { ok: true };
   });
   ipcMain.handle('account:full-scan', (_event, id) => {
@@ -334,4 +349,14 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) { createWindow(); monitor?.start(); updater?.start(); }
 });
-app.on('before-quit', () => { monitor?.stop(); store?.flush(); });
+app.on('before-quit', () => {
+  if (updater?.runtime.status === 'ready') {
+    try { updater.prepareInstall(); }
+    catch {
+      // A normal app exit remains possible, but do not auto-install an update
+      // when its pre-update diagnostic could not be saved.
+      updater.disableAutomaticInstall();
+    }
+  }
+  monitor?.stop(); store?.flush();
+});
