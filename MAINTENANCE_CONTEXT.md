@@ -2,7 +2,11 @@
 
 更新时间：2026-10-03
 
-## 直接读取优先（本地实现，未发布）
+## v1.0.30 直接读取优先（已发布）
+
+发布源码/标签提交 `cdd50c6306e3675383a5efbafabbe21ac0848098`。Windows 验证 `37102748867` 和正式发布 `37102981968` 全部成功，139 项 Node 测试、四项桌面流程、安装版/便携版构建及清单检查通过。GitHub Release 为正式发布，R2 latest.yml 为 1.0.30；独立完整下载在线安装包 117465045 字节，SHA-512 `Avkw9j3UfRz2zpyLBsf4gRDVhuA+8nXIU3r2BuxSyExRV87zUhXM185qKTVmfcdbdLV+vFtBMPd7O1ZcCMJrcA==` 与在线清单一致。发布地址：https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.30 。以下“未发布”是历史实现阶段描述。
+
+真实站点 Electron 兼容性及云服务器长期运行仍需升级后观察；不能将现场浏览器 201 ms 或本地 HTTP 集成测试说成用户云服务器整轮提速/24 小时稳定性证据。建议升级后查看直接读取次数，运行 24 小时后导出新版本诊断包；逐轮样本只保存在本进程内，重启前导出。
 
 用户已明确允许推送、Windows 构建验证，并在通过后发布 v1.0.30；本段以下“未发布”描述为实现阶段记录，最终以上线核验为准。
 
