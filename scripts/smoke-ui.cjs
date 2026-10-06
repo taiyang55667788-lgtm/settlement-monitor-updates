@@ -324,6 +324,17 @@ app.whenReady().then(async () => {
     assert.equal(reliability.errors, '1');
     assert.match(reliability.queue, /待发送 2 条.*失败待重试 1 条.*暂存 1 条/);
     assert.equal(reliability.reason, '通知待发送 2 条');
+    const noData = await win.webContents.executeJavaScript(`(() => {
+      const next = structuredClone(appState);
+      const agent = next.accounts[0].subagents[0];
+      Object.assign(agent, { value: null, noData: true, stale: false, pendingNotifications: 0 });
+      render(next);
+      const row = document.querySelector('.subagent-row');
+      return { value: row.querySelector('.subagent-value').textContent, reason: alertReason(agent), progress: thresholdProgress(agent) };
+    })()`);
+    assert.equal(noData.value, '本周暂无数据');
+    assert.match(noData.reason, /保留上次提醒档位/);
+    assert.equal(noData.progress, '');
     await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     if (process.env.SMOKE_QUEUE_SCREENSHOT) fs.writeFileSync(process.env.SMOKE_QUEUE_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
     process.stdout.write('Four-level UI smoke test passed\n');

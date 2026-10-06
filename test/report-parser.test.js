@@ -1,5 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+
+test('empty settlement needs a valid total and malformed rows cannot masquerade as absent agents', () => {
+  const headerRows = [[{ text: '账号' }, { text: '应收下线' }]];
+  const parsed = parseSettlementTable({ headerRows, dataRows: [['合计', '0']] });
+  assert.deepEqual(parsed.agents, []);
+  assert.throws(() => parseSettlementTable({ headerRows, dataRows: [['a', '10']] }), /合计/);
+  assert.throws(() => parseSettlementTable({ headerRows, dataRows: [['a', '读取失败'], ['合计', '0']] }), /无法读取金额/);
+});
 const { splitReportRows, flattenHeaders, parseSettlementTable, parseCrownGeneralAgentTable, parseCrownDashboardDetails, alertStepFromLegacy, alertLevel, legacyAlertStep, applySubagentAlertSteps, evaluateSubagentAlertLevels } = require('../electron/report-parser');
 
 test('flattens grouped table headers', () => {

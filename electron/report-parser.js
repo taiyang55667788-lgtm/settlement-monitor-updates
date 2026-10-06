@@ -68,7 +68,8 @@ function findUniqueColumn(headers, label) {
 
 function parseSettlementTable({ headerRows, dataRows }, metric) {
   if (!dataRows?.length) throw new Error('本周报表没有数据');
-  const totalRow = [...dataRows].reverse().find((row) => normalize(row[0]).includes('合计')) || dataRows[0];
+  const totalRow = [...dataRows].reverse().find((row) => normalize(row[0]).includes('合计'));
+  if (!totalRow) throw new Error('本周报表没有合计行，无法确认完整数据');
   const headers = flattenHeaders(headerRows || []);
   const label = String(metric?.columnLabel || '应收下线');
   const column = findMetricColumn(headers, metric);
@@ -76,13 +77,11 @@ function parseSettlementTable({ headerRows, dataRows }, metric) {
   const agents = dataRows
     .filter((row) => !normalize(row[0]).includes('合计'))
     .map((row) => {
-      try {
-        return { name: String(row[0] || '').trim(), value: numericValue(row[column]) };
-      } catch {
-        return null;
-      }
-    })
-    .filter((agent) => agent?.name);
+      const name = String(row[0] || '').trim();
+      if (!name || column >= row.length) throw new Error('代理账号或金额列不完整，无法确认本周数据');
+      return { name, value: numericValue(row[column]) };
+    });
+  if (new Set(agents.map(agent => agent.name)).size !== agents.length) throw new Error('本周报表代理账号重复，无法确认完整数据');
   return {
     value: numericValue(totalRow[column]),
     agents,

@@ -1,6 +1,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { NotificationOutbox, recipientKey, importantBranch, staleTargets, boundedOperation } = require('../electron/reliability');
+const { NotificationOutbox, recipientKey, importantBranch, addNoDataTargets, staleTargets, boundedOperation } = require('../electron/reliability');
+
+test('only validated parent absence creates fresh no-data targets, not failed or unqueried branches', () => {
+  const now = Date.now();
+  const readAt = new Date(now).toISOString();
+  const agents = [{ name: 'healthy', path: ['healthy'], value: 20, readAt }];
+  const settings = [{ path: ['missing'], alertStep: 100 }, { path: ['missing', 'child'], alertStep: 100 }, { path: ['healthy', 'unread'], alertStep: 100 }];
+  addNoDataTargets(agents, settings, new Set(['[]']), readAt);
+  assert.deepEqual(agents.filter(a => a.noData).map(a => a.path), [['missing'], ['missing', 'child']]);
+  assert.equal(agents.find(a => a.noData).value, null);
+  assert.deepEqual(staleTargets({ intervalMinutes: 5, subagentThresholds: settings }, agents, new Date(now - 1000000).toISOString(), now), [['healthy', 'unread']]);
+});
 const { MonitorService } = require('../electron/monitor');
 
 function fixture() {

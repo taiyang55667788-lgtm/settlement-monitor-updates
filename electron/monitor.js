@@ -7,7 +7,7 @@ const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotific
 const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
-const { importantBranch, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
+const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
 const { DirectReportReader, clearDirectSession } = require('./direct-report');
 const { failureCategory, failedBranch, readSummary } = require('./runtime-health');
@@ -1383,7 +1383,7 @@ class MonitorService {
         await this.pairingClient.send(pairing.token, `🧾 最近提醒记录\n${rows.join('\n') || '暂无记录'}`, { replyMarkup: panel }); return;
       }
       if (request.type === 'top') {
-        const rows = requested.flatMap((account) => this.status(account.id).subagents.filter((agent) => !agent.stale).map((agent) => ({ account: account.name, agent, value: agent.value }))).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 10).map((item, index) => `${index + 1}. ${item.account} / ${item.agent.path.join(' / ')}：${item.value > 0 ? '+' : ''}${item.value.toLocaleString('zh-CN')}`);
+        const rows = requested.flatMap((account) => this.status(account.id).subagents.filter((agent) => !agent.stale && Number.isFinite(agent.value)).map((agent) => ({ account: account.name, agent, value: agent.value }))).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 10).map((item, index) => `${index + 1}. ${item.account} / ${item.agent.path.join(' / ')}：${item.value > 0 ? '+' : ''}${item.value.toLocaleString('zh-CN')}`);
         const failed = requested.filter((account) => {
           const status = this.status(account.id);
           return status.status === 'error' && !status.subagents.some((agent) => !agent.stale);
@@ -1397,7 +1397,7 @@ class MonitorService {
         const agents = status.subagents || [];
         const fresh = agents.filter((agent) => !agent.stale);
         const stale = agents.filter((agent) => agent.stale);
-        const values = (fresh.length ? fresh : stale).map((agent) => `${agent.path.join(' / ')} ${agent.value > 0 ? '+' : ''}${agent.value}${agent.stale ? '（上次成功读取，已过期）' : ''}`).slice(0, 12);
+        const values = (fresh.length ? fresh : stale).map((agent) => `${agent.path.join(' / ')} ${agent.noData ? '本周暂无数据' : `${agent.value > 0 ? '+' : ''}${agent.value}`}${agent.stale ? '（上次成功读取，已过期）' : ''}`).slice(0, 12);
         const refreshState = !fresh.length && (status.status === 'error' || status.status === 'manual' || stale.length)
           ? `本次刷新失败：${status.error || '读取失败'}；以下为上次成功读取的过期数据`
           : stale.length
@@ -1980,6 +1980,17 @@ class MonitorService {
         }
       }
       if (!this.isCurrentCheck(accountId, revision)) return;
+      if (metric.readsDescendants !== false) {
+        const refreshed = new Set(status.phaseTimings.branches.filter(item => !item.error).map(item => agentPathKey(item.path)));
+        refreshed.add(agentPathKey([]));
+        addNoDataTargets(agents, configuredSubagents, refreshed, new Date().toISOString());
+        // An absent sample interrupts consecutive confirmations without resetting the ledger.
+        for (const agent of agents.filter(item => item.noData)) {
+          for (const key of Object.keys(status.alertCandidates || {})) {
+            if (key.endsWith(':' + alertLedgerKey(agent.path, applySubagentAlertSteps([agent], configuredSubagents)[0].alertStep))) delete status.alertCandidates[key];
+          }
+        }
+      }
       if (!fullScan) {
         // Keep unqueried descendants as explicitly stale structure; refreshed parent lists
         // prune agents which no longer exist, without evaluating cached amounts for alerts.
@@ -1988,6 +1999,7 @@ class MonitorService {
         for (const cached of [...cachedAgents].sort((a, b) => a.path.length - b.path.length)) {
           if (agents.some(item => agentPathKey(item.path) === agentPathKey(cached.path))) continue;
           const parentPath = cached.path.slice(0, -1);
+          if (agents.some(item => item.noData && parentPath.length >= item.path.length && item.path.every((part, index) => parentPath[index] === part))) continue;
           if (refreshedParents.has(agentPathKey(parentPath))) continue;
           if (parentPath.length && !agents.some(item => agentPathKey(item.path) === agentPathKey(parentPath))) continue;
           agents.push({ ...cached, stale: true, notRefreshed: true, staleReason: 'on-demand' });
@@ -2006,10 +2018,10 @@ class MonitorService {
             structureVersion: fullScan && !childErrors.length ? 1 : cachedSnapshot?.structureVersion,
             period: client.reportPeriod,
             metric: metric.id,
-            agents: agents.map(({ name, path, value, turnover, readAt, childCount, stale, notRefreshed, staleReason }) => ({ name, path, value, stale: Boolean(stale), staleReason, notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
+            agents: agents.map(({ name, path, value, noData, turnover, readAt, childCount, stale, notRefreshed, staleReason }) => ({ name, path, value, noData: Boolean(noData), stale: Boolean(stale), staleReason, notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
           };
           if (fullScan && !childErrors.length) delete current.scanCheckpoint;
-          const point = { time: status.lastCheckedAt, metric: metric.id, agents: agents.filter((item) => !item.stale).map(({ path, value }) => ({ path, value })) };
+          const point = { time: status.lastCheckedAt, metric: metric.id, agents: agents.filter((item) => !item.stale && Number.isFinite(item.value)).map(({ path, value }) => ({ path, value })) };
           current.agentTrend = [...(Array.isArray(current.agentTrend) ? current.agentTrend : []), point]
             .filter((item) => Date.parse(item.time) >= Date.now() - 7 * 86400000).slice(-2016);
         }

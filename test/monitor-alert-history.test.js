@@ -58,6 +58,35 @@ function fixture(state) {
   return { alerts, deltaAlerts, context, store, makeService };
 }
 
+test('successful empty branch stays fresh, preserves tiers and delta baseline, then resumes on data return', async () => {
+  const { context, store, alerts, makeService } = fixture();
+  const service = makeService();
+  store.state.accounts[0].subagentThresholds[1].deltaAlertStep = 100;
+  await service.check('account-1');
+  const ledger = structuredClone(store.state.accounts[0].alertHistory);
+  const deltaBaseline = structuredClone(store.state.accounts[0].deltaHistory);
+  const initialAlerts = alerts.length;
+  context.descendants = new Map();
+  await service.check('account-1');
+  const absent = service.status('account-1').subagents.find(a => a.name === 'child');
+  assert.equal(absent.noData, true);
+  assert.equal(absent.value, null);
+  assert.equal(absent.stale, false);
+  assert.deepEqual(service.status('account-1').staleTargets, []);
+  assert.deepEqual(store.state.accounts[0].alertHistory, ledger);
+  assert.deepEqual(store.state.accounts[0].deltaHistory, deltaBaseline);
+  assert.equal(alerts.length, initialAlerts);
+  assert.equal(store.state.accounts[0].agentSnapshot.agents.find(a => a.name === 'child').noData, true);
+  context.childFailure = true;
+  await service.check('account-1', { manual: true });
+  assert.equal(service.status('account-1').status, 'partial');
+  assert.equal(service.status('account-1').subagents.find(a => a.name === 'child').stale, true);
+  context.childFailure = false; context.descendants = null;
+  await service.check('account-1', { manual: true });
+  assert.equal(service.status('account-1').subagents.find(a => a.name === 'child').noData, undefined);
+  assert.equal(alerts.length, initialAlerts, 'same returning tier is not rearmed');
+});
+
 test('screenshot amounts stay in the same tier across refresh and service restart; returns from 600k alert again', async () => {
   const { store, context, makeService } = fixture();
   store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
@@ -455,7 +484,8 @@ test('partial initial discovery retries fully and removed parents prune cached d
   assert.equal(store.state.accounts[0].agentSnapshot.structureVersion, 1);
   context.descendants.set('parent', { agents: [] });
   await service.check('account-1');
-  assert.deepEqual(service.status('account-1').subagents.map(a => a.name), ['parent']);
+  assert.deepEqual(service.status('account-1').subagents.map(a => a.name), ['parent', 'child']);
+  assert.equal(service.status('account-1').subagents[1].noData, true, 'configured absent child is visible, unconfigured cached descendants are pruned');
 });
 
 test('monitor repeats alerts when values return to an earlier tier, while retaining state across restart', async () => {

@@ -15,6 +15,26 @@ function importantBranch(path, settings = []) {
     && path.every((part, i) => part === (item.path || [item.name])[i]));
 }
 
+// Only a successfully validated, complete parent report can prove absence.
+// Missing rows are not zero balances and must never participate in alerts.
+function addNoDataTargets(agents, settings, refreshedParents, readAt) {
+  const known = new Set(agents.map(agent => JSON.stringify(agent.path)));
+  for (const setting of settings || []) {
+    const path = setting.path || [setting.name];
+    const missing = path.findIndex((_, index) => !known.has(JSON.stringify(path.slice(0, index + 1))));
+    if (missing < 0 || !refreshedParents.has(JSON.stringify(path.slice(0, missing)))) continue;
+    for (let depth = missing + 1; depth <= path.length; depth++) {
+      const prefix = path.slice(0, depth);
+      const key = JSON.stringify(prefix);
+      if (known.has(key)) continue;
+      agents.push({ name: prefix.at(-1), path: prefix, value: null, noData: true,
+        readAt, stale: false, staleReason: '', notRefreshed: false });
+      known.add(key);
+      refreshedParents.add(key);
+    }
+  }
+}
+
 function staleTargets(account, agents, since, now = Date.now()) {
   const limit = Math.max(5 * 60000, (Number(account.intervalMinutes) || 5) * 3 * 60000);
   return (account.subagentThresholds || []).filter(item => Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0)
@@ -149,4 +169,4 @@ class NotificationOutbox {
   }
 }
 
-module.exports = { recipientKey, importantBranch, staleTargets, boundedOperation, NotificationOutbox };
+module.exports = { recipientKey, importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox };
