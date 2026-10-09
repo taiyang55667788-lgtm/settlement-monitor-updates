@@ -120,7 +120,8 @@ if (hasInstanceLock) app.whenReady().then(() => {
     const diagnostic = {
       format: 'settlement-monitor-diagnostics-v1', exportedAt: new Date().toISOString(),
       app: { version: app.getVersion(), platform: process.platform }, alertPolicy: snapshot.alertPolicy,
-      telegram: { mode: snapshot.telegram.mode, paired: Boolean(snapshot.telegram.pairing?.paired), hasBotToken: snapshot.telegram.hasBotToken },
+      telegram: { mode: snapshot.telegram.mode, paired: Boolean(snapshot.telegram.pairing?.paired), hasBotToken: snapshot.telegram.hasBotToken,
+        network: monitor.pairingClient.network?.lastDiagnosis || null },
       accounts: snapshot.accounts.map(({ username, hasSecurityCode, hasPassword, ...account }) => ({ ...account, username: username ? '***' : '', hasSecurityCode, hasPassword,
         readSamples: monitor.runtime.get(account.id)?.readSamples || [] })),
       events: snapshot.events,
@@ -167,6 +168,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
     await monitor.testTelegram(input);
     return { ok: true };
   });
+  ipcMain.handle('telegram:diagnose', () => monitor.pairingClient.diagnose());
   ipcMain.handle('telegram:discover-chat', async (_event, input) => ({
     ok: true,
     chatId: await monitor.discoverTelegramChatId(input?.botToken),

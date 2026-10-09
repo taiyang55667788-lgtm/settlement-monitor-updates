@@ -335,6 +335,10 @@ app.whenReady().then(async () => {
     assert.equal(noData.value, '本周暂无数据');
     assert.match(noData.reason, /保留上次提醒档位/);
     assert.equal(noData.progress, '');
+    await win.webContents.executeJavaScript(`document.querySelector('#diagnose-telegram').click()`);
+    const networkResult = await win.webContents.executeJavaScript(`new Promise(resolve => setTimeout(() => resolve({ text: document.querySelector('#telegram-network-result').textContent, disabled: document.querySelector('#diagnose-telegram').disabled }), 50))`);
+    assert.match(networkResult.text, /已选择独立直连/);
+    assert.equal(networkResult.disabled, false);
     await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     if (process.env.SMOKE_QUEUE_SCREENSHOT) fs.writeFileSync(process.env.SMOKE_QUEUE_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
     process.stdout.write('Four-level UI smoke test passed\n');

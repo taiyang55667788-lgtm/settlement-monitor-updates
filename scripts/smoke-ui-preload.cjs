@@ -17,6 +17,7 @@ const state = {
 
 contextBridge.exposeInMainWorld('monitorApi', {
   getState: async () => state,
+  diagnoseTelegram: async () => ({ message: '中转直连：可用；系统代理线路：失败（ERR_PROXY_CONNECTION_FAILED）。已选择独立直连。' }),
   manageNotification: async (id, action) => { ipcRenderer.send('smoke:queue-action', { id, action }); },
   getAccountSecurityCode: async () => ({ securityCode: '75454' }),
   onState: (callback) => {

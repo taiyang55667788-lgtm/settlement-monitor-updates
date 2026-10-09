@@ -654,6 +654,17 @@ $('#test-telegram').addEventListener('click', () => {
   const values = Object.fromEntries(new FormData($('#telegram-form')).entries());
   action(() => window.monitorApi.testTelegram(values), '测试消息已发送');
 });
+$('#diagnose-telegram').addEventListener('click', () => action(async () => {
+  const button = $('#diagnose-telegram');
+  button.disabled = true;
+  $('#telegram-network-result').textContent = '正在分别检测中转直连与系统代理线路，不发送通知…';
+  try {
+    const result = await window.monitorApi.diagnoseTelegram();
+    $('#telegram-network-result').textContent = result.message;
+  } catch (error) {
+    $('#telegram-network-result').textContent = `连接检测失败：${error.message || '请稍后重试'}`;
+  } finally { button.disabled = false; }
+}));
 setInterval(() => {
   const pairing = appState.telegram?.pairing;
   if (document.querySelector('#telegram-view.active') && pairing && !pairing.paired && Date.now() < pairing.expiresAt) {

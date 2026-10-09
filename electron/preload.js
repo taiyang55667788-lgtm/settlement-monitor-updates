@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('monitorApi', {
   importBackup: () => ipcRenderer.invoke('support:backup-import'),
   saveTelegram: (settings) => ipcRenderer.invoke('telegram:save', settings),
   testTelegram: (settings) => ipcRenderer.invoke('telegram:test', settings),
+  diagnoseTelegram: () => ipcRenderer.invoke('telegram:diagnose'),
   discoverTelegramChatId: (botToken) => ipcRenderer.invoke('telegram:discover-chat', { botToken }),
   startTelegramPairing: () => ipcRenderer.invoke('telegram:pair:start'),
   checkTelegramPairing: () => ipcRenderer.invoke('telegram:pair:status'),

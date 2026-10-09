@@ -1,10 +1,11 @@
-const { net } = require('electron');
+const { PairingNetwork } = require('./pairing-network');
 const { PAIRING_SERVICE_URL } = require('./pairing-config');
 
 class PairingClient {
   constructor(baseUrl = PAIRING_SERVICE_URL, network = {}) {
     this.baseUrl = String(baseUrl || '').replace(/\/$/, '');
-    this.fetch = network.fetch || ((...args) => net.fetch(...args));
+    this.network = network.fetch ? null : new PairingNetwork(this.baseUrl);
+    this.fetch = network.fetch || ((...args) => this.network.fetch(...args));
   }
 
   get enabled() {
@@ -24,7 +25,8 @@ class PairingClient {
         ...(body ? { body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(20000),
       });
-    } catch {
+    } catch (error) {
+      if (this.network) throw error;
       throw new Error('无法连接 Telegram 配对服务，请检查网络后重试');
     }
     const payload = await response.json().catch(() => null);
@@ -37,6 +39,7 @@ class PairingClient {
   }
 
   start() { return this.request('POST', '/v1/pairings'); }
+  diagnose() { return this.network.diagnose(); }
   status(token) { return this.request('GET', '/v1/pairings/status', token); }
   test(token) { return this.request('POST', '/v1/messages/test', token); }
   send(token, text, { replyMarkup } = {}) { return this.request('POST', '/v1/messages', token, { text, ...(replyMarkup ? { replyMarkup } : {}) }); }

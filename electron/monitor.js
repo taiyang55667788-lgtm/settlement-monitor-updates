@@ -255,12 +255,11 @@ class SiteClient {
         nodeIntegration: false,
       },
     });
+    // All account partitions connect directly, independently of notification routing.
+    // This changes only this app session, never the operating-system proxy or TUN.
+    await this.window.webContents.session.setProxy({ mode: 'direct' });
     if (crown) {
       this.window.webContents.setUserAgent(CROWN_BROWSER_USER_AGENT);
-      // 此持久会话只用于皇冠账户。系统代理会令 mos011 返回空响应；
-      // 只在该皇冠分区内直连，不触碰 macOS / Clash 的全局代理设置，
-      // 也不会影响 166、Telegram 或 Codex / GPT 的网络线路。
-      await this.window.webContents.session.setProxy({ mode: 'direct' });
     }
     this.window.webContents.setWindowOpenHandler(({ url }) => ({ action: 'deny' }));
   }
@@ -1454,10 +1453,9 @@ class MonitorService {
           nodeIntegration: false,
         },
       });
+      await win.webContents.session.setProxy({ mode: 'direct' });
       if (accountSystemId(account) === 'crown') {
         win.webContents.setUserAgent(CROWN_BROWSER_USER_AGENT);
-        // 与后台读取使用同一皇冠专属分区；见 SiteClient.open 中的说明。
-        await win.webContents.session.setProxy({ mode: 'direct' });
       }
       this.viewWindows.set(accountId, win);
       win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
