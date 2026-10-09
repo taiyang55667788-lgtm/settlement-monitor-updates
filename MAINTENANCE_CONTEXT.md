@@ -2,7 +2,9 @@
 
 更新时间：2026-10-09
 
-## v1.0.34 网络隔离与中转直连检测（发布验证中）
+## v1.0.34 网络隔离与中转直连检测（已发布）
+
+发布源码/标签 `de69601d01d172fb2eabf733467020f55755fb54`。Windows 验证工作流 `37893346506` 与正式发布 `37893603350` 均成功：159 项自动测试、五项桌面流程、安装版/便携版构建及清单检查通过。GitHub Release 非草稿非预发布，R2 latest.yml 已为 1.0.34。线上安装包完整下载 117469778 字节，SHA-512 `5fUhF+UylJ9CKK0wrdEAemeLI02BV3dlJgaRHXfhNAlGmJBnZCZJ6n6UtyB63QXWcfsKASnZEUs8qxaArNI2Pw==` 与清单一致。发布地址：https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.34 。用户大陆服务器直连与实际 Telegram 实收尚未验证。
 
 用户随后明确“发布吧”，授权 Windows 验证构建、推送和正式发布 v1.0.34。没有授权新购资源或部署新的中转入口。
 
@@ -10,7 +12,7 @@
 
 没有新中转入口、没有修改云端配置；本机测试不能替代大陆服务器直连验证。手动 Bot Token 旧模式仍沿用旧 Telegram API 连接方式，不宣称同样完成隔离。
 
-本地验证：159 项 Node 测试、五项 Electron 桌面流程、git diff --check 全部通过。新增真实 Electron 本地 HTTP 流程用关闭的测试代理端口验证代理失败、独立直连可用、盘口分区不受影响、health 不带设备凭据；UI 测试覆盖检测按钮结果和禁用状态恢复。尚未进行 Windows 发布构建或用户大陆服务器检测，未发布。会话 API 依据：https://www.electronjs.org/docs/latest/api/session 。
+本地验证：159 项 Node 测试、五项 Electron 桌面流程、git diff --check 全部通过。新增真实 Electron 本地 HTTP 流程用关闭的测试代理端口验证代理失败、独立直连可用、盘口分区不受影响、health 不带设备凭据；UI 测试覆盖检测按钮结果和禁用状态恢复。Windows 验证、正式发布及在线安装包校验均已完成；用户大陆服务器检测仍待升级后进行。会话 API 依据：https://www.electronjs.org/docs/latest/api/session 。
 
 ## v1.0.33 本周暂无数据与读取失败区分（已发布）
 
