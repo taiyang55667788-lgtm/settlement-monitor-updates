@@ -70,6 +70,7 @@ class SecureStore {
           crownDomain: systemType === 'crown' ? crownDomain : '',
           crownLoginEntry: systemType === 'crown' ? crownLoginEntry : '',
           monitorMetric: metricForAccount({ systemType, crownLoginEntry }).id,
+          drawTriggerEnabled: systemType === 'system-166' && account.drawTriggerEnabled !== false,
         subagentThresholds: Array.isArray(account.subagentThresholds)
           ? account.subagentThresholds.map((item) => ({ name: item.name, path: agentPath(item), remark: String(item.remark || '').trim(), alertStep: alertStepFromLegacy(item), deltaAlertStep: Number.isFinite(item.deltaAlertStep) && item.deltaAlertStep > 0 ? item.deltaAlertStep : null }))
           : [],
@@ -213,6 +214,7 @@ class SecureStore {
           })),
           expandedAgentPaths: account.expandedAgentPaths || [],
           intervalMinutes: account.intervalMinutes,
+          drawTriggerEnabled: accountSystemId(account) === 'system-166' && account.drawTriggerEnabled !== false,
           enabled: account.enabled,
           hasSecurityCode: Boolean(account.securityCode),
           hasPassword: Boolean(account.password),

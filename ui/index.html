@@ -156,6 +156,7 @@
           <div class="config-title"><span>3</span><div><strong>检查与提醒频率</strong><small>读取口径由系统和皇冠登录入口决定；固定间隔、Telegram 与静默时间共用</small></div></div>
           <div class="form-grid monitor-grid">
             <label>检查间隔（分钟）<input name="intervalMinutes" type="number" min="1" value="5" required /></label>
+            <label class="checkbox" data-system-field="system-166"><input name="drawTriggerEnabled" type="checkbox" checked /> PC28 开奖后读取<small>优先监测盘口“已开奖期号”；检测到新一期后 10 秒读取。盘口状态暂不可读时，仍按固定间隔检查。</small></label>
           </div>
         </section>
         <label class="checkbox"><input name="enabled" type="checkbox" checked /> 保存后立即启用监控</label>

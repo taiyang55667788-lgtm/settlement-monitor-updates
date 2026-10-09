@@ -219,6 +219,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
       crownLoginEntry: systemType === SYSTEM_CROWN ? crownLoginEntry : '',
       username: String(input.username || '').trim(),
       intervalMinutes: Math.max(1, Number(input.intervalMinutes) || 5),
+      drawTriggerEnabled: systemType === SYSTEM_166 && input.drawTriggerEnabled !== false,
       enabled: input.enabled !== false,
       monitorMetric: metricForAccount({ systemType, crownLoginEntry }).id,
     };

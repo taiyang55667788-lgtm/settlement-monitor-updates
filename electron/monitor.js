@@ -11,6 +11,7 @@ const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, Notif
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
 const { DirectReportReader, clearDirectSession } = require('./direct-report');
 const { failureCategory, failedBranch, readSummary } = require('./runtime-health');
+const { DRAW_POLL_MS, DRAW_READ_DELAY_MS, parseSettledDraw, observeSettledDraw } = require('./draw-trigger');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -593,6 +594,21 @@ class SiteClient {
     })()`, true);
     if (!href) throw new Error('登录后没有找到报表查询入口');
     return href;
+  }
+
+  async readLatestSettledDraw() {
+    if (accountSystemId(this.account) !== 'system-166') return null;
+    if (!this.window || this.window.isDestroyed()) throw new Error('盘口会话尚未就绪');
+    const currentUrl = this.status.agentUrl || this.window.webContents.getURL();
+    if (!currentUrl) throw new Error('盘口会话尚未就绪');
+    const url = new URL('/Home/Index', currentUrl).href;
+    const response = await this.window.webContents.session.fetch(url, {
+      method: 'GET', credentials: 'include', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) throw new Error(`盘口开奖状态请求失败（${response.status}）`);
+    const drawId = parseSettledDraw(await response.text());
+    if (!drawId) throw new Error('盘口未识别到已开奖期号');
+    return drawId;
   }
 
   async readThisWeekSettlement() {
@@ -1217,6 +1233,12 @@ class MonitorService {
     this.openingViews = new Set();
     this.timer = null;
     this.commandTimer = null;
+    this.drawTimer = null;
+    this.drawPollRunning = false;
+    this.drawState = new Map();
+    this.drawPending = new Map();
+    this.drawPollMs = network.drawPollMs || DRAW_POLL_MS;
+    this.drawReadDelayMs = network.drawReadDelayMs ?? DRAW_READ_DELAY_MS;
     this.commandPollRunning = false;
     this.activeReads = new Map();
     this.suspended = false;
@@ -1325,8 +1347,10 @@ class MonitorService {
     this.stopped = false;
     this.timer = setInterval(() => this.tick(), 10000);
     this.commandTimer = setInterval(() => void this.pollTelegramCommands(), 15000);
+    this.drawTimer = setInterval(() => void this.pollDraws(), this.drawPollMs);
     void this.tick();
     setTimeout(() => void this.pollTelegramCommands(), 3000);
+    setTimeout(() => void this.pollDraws(), 2000);
   }
 
   stop() {
@@ -1334,7 +1358,10 @@ class MonitorService {
     for (const controller of this.activeReads.values()) controller.abort();
     clearInterval(this.timer);
     clearInterval(this.commandTimer);
+    clearInterval(this.drawTimer);
     this.timer = null;
+    this.drawTimer = null;
+    this.drawPending.clear();
     const windows = [...this.viewWindows.values()];
     this.viewWindows.clear();
     this.openingViews.clear();
@@ -1641,6 +1668,77 @@ class MonitorService {
       delete current.scanCheckpoint; delete current.leafCache;
     });
     this.requestRecheck(accountId);
+  }
+
+  usesDrawTrigger(account) {
+    return accountSystemId(account) === 'system-166' && account.drawTriggerEnabled !== false;
+  }
+
+  fixedNextCheck(account) {
+    return new Date(Date.now() + Math.max(1, Number(account.intervalMinutes) || 5) * 60000).toISOString();
+  }
+
+  async pollDraws() {
+    if (this.stopped || this.suspended || this.drawPollRunning || this.store.state.recoveryReviewRequired) return;
+    this.drawPollRunning = true;
+    try {
+      const now = Date.now();
+      for (const account of this.store.state.accounts.filter(item => item.enabled && this.usesDrawTrigger(item))) {
+        const status = this.status(account.id);
+        if (status.status === 'manual' || this.openingViews.has(account.id) || this.inFlight.has(account.id)) continue;
+        const win = this.viewWindows.get(account.id);
+        if (!win || win.isDestroyed()) {
+          status.drawTrigger = { enabled: true, state: '等待首次读取建立盘口会话', latestDraw: '', observedAt: '', nextReadAt: '', fallback: false, error: '' };
+          continue;
+        }
+        try {
+          const client = this.createSiteClient(structuredClone(account), status);
+          client.window = win;
+          client.ownsWindow = false;
+          const drawId = await client.readLatestSettledDraw();
+          const observed = observeSettledDraw(this.drawState.get(account.id), drawId, now, this.drawReadDelayMs);
+          this.drawState.set(account.id, observed.state);
+          if (observed.changed) this.drawPending.set(account.id, observed.dueAt);
+          const dueAt = this.drawPending.get(account.id);
+          status.drawTrigger = {
+            enabled: true,
+            state: dueAt ? '已检测新开奖，等待读取' : (observed.baseline ? '已建立开奖基准' : '监测中'),
+            latestDraw: observed.state.drawId,
+            observedAt: new Date(now).toISOString(),
+            nextReadAt: dueAt ? new Date(dueAt).toISOString() : '',
+            fallback: false,
+            error: '',
+          };
+          // A healthy site-draw monitor supersedes the fixed timer.  The fixed
+          // timer is restored only when this lightweight state request fails.
+          status.nextCheckAt = null;
+        } catch {
+          status.drawTrigger = {
+            ...(status.drawTrigger || {}), enabled: true, state: '开奖状态暂不可读，按固定间隔检查',
+            fallback: true, error: '盘口开奖状态暂不可读', nextReadAt: '',
+          };
+          if (!status.nextCheckAt) status.nextCheckAt = this.fixedNextCheck(account);
+        }
+      }
+
+      for (const [accountId, dueAt] of [...this.drawPending]) {
+        if (dueAt > Date.now()) continue;
+        const account = this.store.state.accounts.find(item => item.id === accountId);
+        const status = this.status(accountId);
+        if (!account?.enabled || !this.usesDrawTrigger(account) || status.status === 'manual' || this.openingViews.has(accountId)) {
+          this.drawPending.delete(accountId);
+          continue;
+        }
+        this.drawPending.delete(accountId);
+        status.drawTrigger = { ...(status.drawTrigger || {}), enabled: true, state: '已检测开奖，正在读取', nextReadAt: '', fallback: false };
+        status.nextCheckAt = null;
+        if (this.inFlight.has(accountId)) this.rerunRequested.add(accountId);
+        else void this.check(accountId);
+      }
+    } finally {
+      this.drawPollRunning = false;
+      this.onChange();
+    }
   }
 
   isCurrentCheck(accountId, revision) {

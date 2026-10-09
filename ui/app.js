@@ -54,6 +54,11 @@ function refreshReadingDetails() {
     `最近成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功'}`,
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
+    ...(account.drawTrigger?.enabled ? [
+      `PC28 开奖触发：${account.drawTrigger.state || '等待首次盘口状态'}；最近已开奖：${account.drawTrigger.latestDraw || '—'}`,
+      `开奖状态最近检查：${account.drawTrigger.observedAt ? new Date(account.drawTrigger.observedAt).toLocaleString('zh-CN') : '—'}；开奖后读取：${account.drawTrigger.nextReadAt ? new Date(account.drawTrigger.nextReadAt).toLocaleString('zh-CN') : (account.drawTrigger.fallback ? '已退回固定间隔' : '—')}`,
+      ...(account.drawTrigger.error ? [`开奖触发说明：${account.drawTrigger.error}`] : []),
+    ] : []),
     ...(account.readSummary ? [
       `最近24小时（本次启动后）：${account.readSummary.rounds} 轮；完整读取成功率 ${account.readSummary.successRate === null ? '—' : (account.readSummary.successRate * 100).toFixed(1) + '%'}；部分失败 ${account.readSummary.partial} 轮`,
       `平均整轮耗时：${account.readSummary.averageMs === null ? '—' : (account.readSummary.averageMs / 1000).toFixed(1) + ' 秒'}`,
@@ -494,6 +499,7 @@ async function openAccount(account) {
   form.elements.crownDomain.value = account?.crownDomain || 'https://ag.hga050.com';
   form.elements.crownLoginEntry.value = account?.crownLoginEntry || 'login-1';
   form.elements.intervalMinutes.value = account?.intervalMinutes || 5;
+  form.elements.drawTriggerEnabled.checked = account?.systemType !== 'crown' && account?.drawTriggerEnabled !== false;
   form.elements.enabled.checked = account?.enabled !== false;
   for (const key of ['id','name','username']) form.elements[key].value = account?.[key] ?? '';
   $('#route-preview').innerHTML = routePreview(account);
@@ -538,6 +544,7 @@ $('#account-form').addEventListener('submit', (event) => {
   const form = new FormData(event.currentTarget);
   const account = Object.fromEntries(form.entries());
   account.enabled = event.currentTarget.elements.enabled.checked;
+  account.drawTriggerEnabled = event.currentTarget.elements.drawTriggerEnabled.checked;
   action(async () => {
     const result = await window.monitorApi.saveAccount(account);
     $('#account-dialog').close();

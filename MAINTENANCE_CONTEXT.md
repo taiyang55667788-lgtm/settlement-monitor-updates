@@ -2,6 +2,10 @@
 
 更新时间：2026-10-09
 
+## 待发布：PC28 盘口已开奖触发读取（2026-10-09）
+
+用户确认以盘口自身状态优先：仅 166 系统默认启用，轻量读取已登录首页中明确的“期…开奖”标记；首次仅建立基准，后续新期号等待 10 秒后读取本周报表。检测周期为 5 秒，因此通常在盘口显示新期开奖后的 10–15 秒开始读取；同期开奖只排一次，读取中不并发。首页状态不可读、窗口/会话未建立或结构不符时，不报错打断监控，继续按账号原固定间隔兜底。期号回退只重建基准。开关在编辑账号的“检查与提醒频率”。设计见 `ai-artifacts/plans/2026-10-09-pc28-site-draw-trigger-design.md`。尚未发布，实际盘口长期时效需升级后观察。
+
 ## v1.0.35 Pages 中转接入（已发布）
 
 用户随后明确“发布/”，授权通过 Windows 验证后发布 v1.0.35。发布源码/标签 `520cbc4c04ce4dbe5228d46408d36b9be549cc00`。发布前重跑 163 项 Node 测试、五项 Electron 流程和 diff 检查均通过；Windows 验证 `37908691939` 和正式发布 `37908992866` 全部成功。GitHub Release 非草稿非预发布，R2 latest.yml 已为 1.0.35。独立完整下载线上安装包 117470080 字节，SHA-512 `OttfTk2E8bdx7JsiYyP++aTVA8pD275wHPbuSxiUfRJ2/jCA+0ps5b6fq+GfGaGN6BgezylBD81WVO+iew1o9Q==` 与清单一致。发布地址：https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.35 。升级后的用户服务器完整链路、Telegram 实收和长期稳定性仍待验证。
