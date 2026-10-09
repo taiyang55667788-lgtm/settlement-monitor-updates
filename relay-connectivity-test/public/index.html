@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>交收监控 · 免费入口连接测试</title>
+<style>body{font:18px/1.7 system-ui;max-width:720px;margin:60px auto;padding:24px;color:#173344;background:#f3f8fc}button{padding:12px 24px;font:inherit;cursor:pointer}pre{white-space:pre-wrap;background:white;padding:20px;border-radius:12px}</style>
+<h1>免费入口连接测试</h1>
+<p>请在大陆服务器上，退出 Clash 并关闭系统代理、TUN 后测试。页面打开不等于动态接口可用；下面会连续测试 5 次。</p>
+<p>下面测试新入口到现有中转服务的完整连接，不发送 Telegram，不读取配对资料。成功仅代表测试当时可达，不保证长期稳定。</p>
+<button id="test">开始测试</button><pre id="result">等待测试</pre>
+<script>
+const button=document.querySelector('#test'),result=document.querySelector('#result');
+button.onclick=async()=>{
+ button.disabled=true;let success=0;const lines=['测试时间：'+new Date().toLocaleString()];result.textContent=lines.join('\n');
+ for(let i=1;i<=5;i++){
+  const start=performance.now();
+  try{const r=await fetch('/relay/health?t='+Date.now(),{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(10000)});const data=await r.json();if(!r.ok||data.ok!==true||data.ready!==true)throw Error('中转服务不可用');success++;lines.push(i+'/5 完整中转连接成功，耗时 '+Math.round(performance.now()-start)+' 毫秒');}
+  catch(e){lines.push(i+'/5 失败：'+(e.name==='TimeoutError'?'超过 10 秒':e.message));}
+  result.textContent=lines.join('\n');
+ }
+ lines.push('结果：'+success+'/5 成功。请将此结果截图发回。');result.textContent=lines.join('\n');button.disabled=false;
+};
+</script></html>

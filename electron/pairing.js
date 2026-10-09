@@ -1,10 +1,11 @@
 const { PairingNetwork } = require('./pairing-network');
-const { PAIRING_SERVICE_URL } = require('./pairing-config');
+const { PAIRING_SERVICE_URL, PAIRING_FALLBACK_URL } = require('./pairing-config');
 
 class PairingClient {
   constructor(baseUrl = PAIRING_SERVICE_URL, network = {}) {
     this.baseUrl = String(baseUrl || '').replace(/\/$/, '');
-    this.network = network.fetch ? null : new PairingNetwork(this.baseUrl);
+    this.network = network.fetch ? null : new PairingNetwork(this.baseUrl, undefined,
+      this.baseUrl === PAIRING_SERVICE_URL ? [PAIRING_FALLBACK_URL] : []);
     this.fetch = network.fetch || ((...args) => this.network.fetch(...args));
   }
 

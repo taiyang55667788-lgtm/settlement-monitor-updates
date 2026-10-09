@@ -20,6 +20,19 @@ function fixture(fails = []) {
   return { network, calls };
 }
 
+test('fallback is health-selected before sending and old device credentials remain unchanged', async () => {
+  const calls=[];
+  const network=new PairingNetwork('https://primary.example', () => ({
+    async setProxy(){},async forceReloadProxyConfig(){},async resolveProxy(){return 'DIRECT';},
+    async fetch(url,init){calls.push([url,init]);if(url.startsWith('https://primary.example'))throw Error('offline');return Response.json({ok:true,ready:true});}
+  }), ['https://backup.example']);
+  await network.fetch('https://primary.example/v1/messages',{method:'POST',headers:{authorization:'Bearer unchanged'},body:'{}'});
+  const sends=calls.filter(c=>c[0].endsWith('/v1/messages'));
+  assert.equal(sends.length,1);assert.equal(sends[0][0],'https://backup.example/v1/messages');
+  assert.equal(sends[0][1].headers.authorization,'Bearer unchanged');
+  assert.equal(network.lastDiagnosis.endpoint,'fallback');
+});
+
 test('notification sessions are isolated and health probes carry no device credentials', async () => {
   const { network, calls } = fixture(['system']);
   const result = await network.diagnose();

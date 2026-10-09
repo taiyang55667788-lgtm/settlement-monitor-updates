@@ -1,8 +1,10 @@
 const { session } = require('electron');
 
 class PairingNetwork {
-  constructor(baseUrl, createSession = name => session.fromPartition(name)) {
+  constructor(baseUrl, createSession = name => session.fromPartition(name), fallbacks = []) {
     this.baseUrl = baseUrl;
+    this.endpoints = [baseUrl, ...fallbacks];
+    this.activeBase = baseUrl;
     this.createSession = createSession;
     this.sessions = new Map();
     this.route = 'system';
@@ -22,14 +24,15 @@ class PairingNetwork {
     return this.sessions.get(mode);
   }
 
-  async probe(mode) {
+  async probe(mode, baseUrl = this.baseUrl) {
     let proxyActive = null;
     try {
       const ses = await this.connection(mode);
       if (mode === 'system') await ses.forceReloadProxyConfig();
-      const proxy = await ses.resolveProxy(this.baseUrl).catch(() => 'UNKNOWN');
+      const proxy = await ses.resolveProxy(baseUrl).catch(() => 'UNKNOWN');
       proxyActive = proxy === 'UNKNOWN' ? null : !/^DIRECT$/i.test(proxy);
-      const response = await ses.fetch(`${this.baseUrl}/health`, {
+      const health = new URL(baseUrl).hostname === 'settlement-connectivity-test.pages.dev' ? '/relay/health' : '/health';
+      const response = await ses.fetch(`${baseUrl}${health}`, {
         redirect: 'error', credentials: 'omit', signal: AbortSignal.timeout(8000),
       });
       const payload = await response.json();
@@ -52,12 +55,18 @@ class PairingNetwork {
   }
 
   async runDiagnosis() {
-    const [direct, system] = await Promise.all([this.probe('direct'), this.probe('system')]);
+    const probes = await Promise.all(this.endpoints.map(async base => {
+      const [direct, system] = await Promise.all([this.probe('direct', base), this.probe('system', base)]);
+      return { base, direct, system };
+    }));
+    const selected = probes.find(p => p.direct.ok) || probes.find(p => p.system.ok) || probes[0];
+    const { direct, system } = selected;
+    if (direct.ok || system.ok) this.activeBase = selected.base;
     this.lastProbeAt = Date.now();
     if (direct.ok) this.route = 'direct';
     else if (system.ok) this.route = 'system';
     const describe = result => result.ok ? '可用' : `失败（${result.code || '服务未就绪'}）`;
-    const result = { direct, system, route: this.route, checkedAt: new Date().toISOString(),
+    const result = { direct, system, route: this.route, endpoint: this.activeBase === this.baseUrl ? 'primary' : 'fallback', checkedAt: new Date().toISOString(),
       message: `中转直连：${describe(direct)}；系统代理线路：${describe(system)}。`
         + (direct.ok ? '已选择独立直连；此结果只代表本机当前网络。'
           : system.ok ? '已选择系统代理线路；当前中转入口尚不能在本机直连。'
@@ -69,8 +78,13 @@ class PairingNetwork {
 
   async fetch(url, init) {
     try {
+      if (this.endpoints.length > 1 && !this.lastProbeAt) await this.diagnose();
       const ses = await this.connection(this.route);
-      return await ses.fetch(url, { ...init, redirect: 'error', credentials: 'omit' });
+      const target = new URL(url);
+      if (target.origin !== new URL(this.baseUrl).origin) throw new Error('Invalid relay origin');
+      const response = await ses.fetch(this.activeBase + target.pathname + target.search, { ...init, redirect: 'error', credentials: 'omit' });
+      if (response.status >= 500 && Date.now() - this.lastProbeAt > 60000) await this.diagnose();
+      return response;
     } catch {
       let detail = '';
       if (Date.now() - this.lastProbeAt > 60000) detail = (await this.diagnose()).message;

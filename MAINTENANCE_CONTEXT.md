@@ -2,6 +2,22 @@
 
 更新时间：2026-10-09
 
+## Pages 中转接入（客户端待发布）
+
+用户随后明确“发布/”，授权通过 Windows 验证后发布 v1.0.35。发布前重跑 163 项 Node 测试、五项 Electron 流程和 diff 检查均通过；正式工作流及安装包验证待完成。
+
+用户确认大陆服务器关闭代理后的五次测试成功，随后授权“开干”接入并测试；未授权正式客户端发布。新入口沿用 `settlement-connectivity-test.pages.dev`，`/relay/health` 验证原服务 ready，白名单转发配对、状态、消息和命令消费，拒绝 webhook/任意路径与重定向。不复制 Secret 或数据库，使用 PAIRING Service Binding 调用原 Worker，原配对和 Telegram webhook 不变。
+
+客户端默认 Pages URL，保留原 Worker 备用。首次请求先健康检测，优先新入口直连，再原入口直连，最后健康系统线路。失败后不立即跨入口重发，后续正常请求使用新检测结果。当前版本号仍为 1.0.34，安装包尚未更新。实现与验证范围见 `ai-artifacts/plans/2026-10-09-pages-relay-design.md`。
+
+验证：163 项 Node 测试和五项 Electron 桌面流程通过，git diff --check 通过。Pages 最终部署 `3d55ef76`；线上 `/relay/health` 返回 200、ok/ready=true，无凭据消息请求返回 401，webhook 请求返回 404。最初公开转发失败，排查确认边缘运行时不支持 redirect:error；已改 manual 并显式拒绝 3xx，删除临时错误详情输出，补充测试。正式客户端 Windows 构建和发布尚未执行，服务器完整链路与真实消息实收仍待验证。
+
+## 免费 Pages 连接测试（仅测试，未接入推送）
+
+用户授权“开干”部署无凭据免费测试入口。已新建独立 Pages 项目 `settlement-connectivity-test`，部署 `891ec3cc`，地址 https://settlement-connectivity-test.pages.dev/ 。源文件见 `relay-connectivity-test/`。根页面手动连续请求五次 `/health`（每次 10 秒上限、无凭据、不缓存）；接口仅返回测试标识和服务器时间，不包含 Secret、数据库绑定或 Telegram 能力，不转发任意请求。现有 Worker、客户端、机器人 webhook 和正式版本均未修改。
+
+本地路由、禁止 POST、无缓存检查通过；线上 health 为 200 且返回 testOnly=true。大陆服务器退出 Clash、关闭系统代理及 TUN 后的可达性尚待用户验证，不能将本机成功视为大陆直连已解决。仅在用户实测并另行批准后考虑接入正式推送。
+
 ## v1.0.34 网络隔离与中转直连检测（已发布）
 
 发布源码/标签 `de69601d01d172fb2eabf733467020f55755fb54`。Windows 验证工作流 `37893346506` 与正式发布 `37893603350` 均成功：159 项自动测试、五项桌面流程、安装版/便携版构建及清单检查通过。GitHub Release 非草稿非预发布，R2 latest.yml 已为 1.0.34。线上安装包完整下载 117469778 字节，SHA-512 `5fUhF+UylJ9CKK0wrdEAemeLI02BV3dlJgaRHXfhNAlGmJBnZCZJ6n6UtyB63QXWcfsKASnZEUs8qxaArNI2Pw==` 与清单一致。发布地址：https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.34 。用户大陆服务器直连与实际 Telegram 实收尚未验证。
