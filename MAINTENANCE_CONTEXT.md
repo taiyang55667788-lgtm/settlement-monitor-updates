@@ -2,15 +2,15 @@
 
 更新时间：2026-10-09
 
-## Pages 中转接入（客户端待发布）
+## v1.0.35 Pages 中转接入（已发布）
 
-用户随后明确“发布/”，授权通过 Windows 验证后发布 v1.0.35。发布前重跑 163 项 Node 测试、五项 Electron 流程和 diff 检查均通过；正式工作流及安装包验证待完成。
+用户随后明确“发布/”，授权通过 Windows 验证后发布 v1.0.35。发布源码/标签 `520cbc4c04ce4dbe5228d46408d36b9be549cc00`。发布前重跑 163 项 Node 测试、五项 Electron 流程和 diff 检查均通过；Windows 验证 `37908691939` 和正式发布 `37908992866` 全部成功。GitHub Release 非草稿非预发布，R2 latest.yml 已为 1.0.35。独立完整下载线上安装包 117470080 字节，SHA-512 `OttfTk2E8bdx7JsiYyP++aTVA8pD275wHPbuSxiUfRJ2/jCA+0ps5b6fq+GfGaGN6BgezylBD81WVO+iew1o9Q==` 与清单一致。发布地址：https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.35 。升级后的用户服务器完整链路、Telegram 实收和长期稳定性仍待验证。
 
 用户确认大陆服务器关闭代理后的五次测试成功，随后授权“开干”接入并测试；未授权正式客户端发布。新入口沿用 `settlement-connectivity-test.pages.dev`，`/relay/health` 验证原服务 ready，白名单转发配对、状态、消息和命令消费，拒绝 webhook/任意路径与重定向。不复制 Secret 或数据库，使用 PAIRING Service Binding 调用原 Worker，原配对和 Telegram webhook 不变。
 
-客户端默认 Pages URL，保留原 Worker 备用。首次请求先健康检测，优先新入口直连，再原入口直连，最后健康系统线路。失败后不立即跨入口重发，后续正常请求使用新检测结果。当前版本号仍为 1.0.34，安装包尚未更新。实现与验证范围见 `ai-artifacts/plans/2026-10-09-pages-relay-design.md`。
+客户端默认 Pages URL，保留原 Worker 备用。首次请求先健康检测，优先新入口直连，再原入口直连，最后健康系统线路。失败后不立即跨入口重发，后续正常请求使用新检测结果。客户端已随 v1.0.35 更新。实现与验证范围见 `ai-artifacts/plans/2026-10-09-pages-relay-design.md`。
 
-验证：163 项 Node 测试和五项 Electron 桌面流程通过，git diff --check 通过。Pages 最终部署 `3d55ef76`；线上 `/relay/health` 返回 200、ok/ready=true，无凭据消息请求返回 401，webhook 请求返回 404。最初公开转发失败，排查确认边缘运行时不支持 redirect:error；已改 manual 并显式拒绝 3xx，删除临时错误详情输出，补充测试。正式客户端 Windows 构建和发布尚未执行，服务器完整链路与真实消息实收仍待验证。
+验证：163 项 Node 测试和五项 Electron 桌面流程通过，git diff --check 通过。Pages 最终部署 `3d55ef76`；线上 `/relay/health` 返回 200、ok/ready=true，无凭据消息请求返回 401，webhook 请求返回 404。最初公开转发失败，排查确认边缘运行时不支持 redirect:error；已改 manual 并显式拒绝 3xx，删除临时错误详情输出，补充测试。正式客户端 Windows 构建和发布已通过，服务器完整链路与真实消息实收仍待验证。
 
 ## 免费 Pages 连接测试（仅测试，未接入推送）
 
