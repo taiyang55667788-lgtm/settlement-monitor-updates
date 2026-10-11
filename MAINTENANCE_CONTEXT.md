@@ -1,12 +1,12 @@
 # 交收监控维护上下文
 
-更新时间：2026-10-09
+更新时间：2026-10-11
 
-## 待发布：读取恢复与告警降噪（2026-10-10）
+## v1.0.37：读取恢复与告警降噪（已发布，2026-10-11）
 
 针对诊断中“根报表页卡住约 150 秒”、单个下级分支导致账号读取失败通知、以及 PC28 首页期号请求回退的问题，已在未发布源码中完成以下调整：连续失败数字成为真正的 Telegram 提醒门槛（仅根账号完整读取失败计数）；分支错误保留为部分完成、旧数据与独立退避；根报表以 45 秒为一次页面/会话重建上限并只即时补试一次，第二次失败走退避；PC28 优先解析已登录页面可见文字，HTTP 获取为后备；读取详情/诊断展示失败范围与降级保护；金额消息删除单档“已进入此档位”。
 
-本地 `pnpm test` 已通过 172/172。桌面 Electron 冒烟在当前无交互宿主的单项进程无法取得最终退出码，不能把启动记录作为通过；Windows 验证、版本号递增、标签与正式发布均未进行，需用户另行授权发布。设计文件：`ai-artifacts/plans/2026-10-10-read-recovery-and-alert-noise-design.md`。
+发布源码/标签提交 `ef1a4e6ba8825f39cedcc2185ec26ef135dd459c`，标签 `v1.0.37`。本地 `pnpm test` 通过 172/172，五项 Electron 桌面流程通过；正式 Windows 工作流 `38104160594` 成功完成测试、桌面流程、构建、更新清单校验、R2 上传与 GitHub Release。R2 `latest.yml` 为 1.0.37，安装包 `Settlement-Monitor-Setup-1.0.37-x64.exe` 独立完整下载为 117472852 字节，SHA-512 `HL+PhXf5hOYiRp32c/DKZ4XTfPv2fqiOz6wGGzB4k2jVcJTVsvyjI0gRUHiafQ4mBKUk5nyqZ7xldZBLLPSuEg==`，与清单一致。Release 为正式版：https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.37 。真实盘口、Telegram 实收与云服务器长期运行仍待升级后观察。设计文件：`ai-artifacts/plans/2026-10-10-read-recovery-and-alert-noise-design.md`。
 
 ## v1.0.36：PC28 盘口已开奖触发读取（已发布，2026-10-09）
 
