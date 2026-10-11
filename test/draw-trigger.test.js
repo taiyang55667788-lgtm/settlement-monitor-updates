@@ -37,6 +37,21 @@ test('site client reads the settled draw from the existing authenticated session
   assert.equal(requests[0].init.credentials, 'include');
 });
 
+test('site client prefers the visible PC28 header before making a fallback request', async () => {
+  const client = new SiteClient({ id: 'pc28', systemType: 'system-166' }, { agentUrl: 'https://market.example/Home/Index' });
+  let fetched = false;
+  client.window = {
+    isDestroyed: () => false,
+    webContents: {
+      getURL: () => 'https://market.example/Home/Index',
+      executeJavaScript: async () => '3491985期 距封盘：00:44 3491984期开奖：3 0 0',
+      session: { fetch: async () => { fetched = true; throw new Error('should not fetch'); } },
+    },
+  };
+  assert.equal(await client.readLatestSettledDraw(), '3491984');
+  assert.equal(fetched, false);
+});
+
 function fixture() {
   return {
     state: {

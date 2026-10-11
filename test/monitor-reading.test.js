@@ -34,6 +34,20 @@ test('session timeout destroys the old page before rebuilding, with only one ret
   }
 });
 
+test('a stalled root report destroys and rebuilds the session once before succeeding', async () => {
+  const client = new SiteClient({}, {}); client.reportReadTimeoutMs = 5;
+  const sequence = []; let calls = 0;
+  client.window = { isDestroyed: () => false, destroy() { sequence.push('destroy'); } };
+  client.open = async () => { sequence.push('open'); client.window = { isDestroyed: () => false, destroy() {} }; };
+  client.readThisWeekSettlementAttempt = async () => {
+    sequence.push('read');
+    if (++calls === 1) return new Promise(() => {});
+    return { agents: [] };
+  };
+  assert.deepEqual(await client.readThisWeekSettlement(), { agents: [] });
+  assert.deepEqual(sequence, ['read', 'destroy', 'open', 'read']);
+});
+
 test('cancelled reads cannot rebuild a page after their outer watchdog fires', async () => {
   const client = new SiteClient({}, {});
   client.readThisWeekSettlementAttempt = async () => {

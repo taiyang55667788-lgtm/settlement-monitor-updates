@@ -54,6 +54,8 @@ function refreshReadingDetails() {
     `最近成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功'}`,
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
+    ...(account.failureScope ? [`失败来源：${account.failureScope}`] : []),
+    ...(account.degradedUntil && Date.parse(account.degradedUntil) > Date.now() ? [`降级保护：报表会话已重建；仍失败将于 ${new Date(account.degradedUntil).toLocaleTimeString('zh-CN')} 后按退避重试`] : []),
     ...(account.drawTrigger?.enabled ? [
       `PC28 开奖触发：${account.drawTrigger.state || '等待首次盘口状态'}；最近已开奖：${account.drawTrigger.latestDraw || '—'}`,
       `开奖状态最近检查：${account.drawTrigger.observedAt ? new Date(account.drawTrigger.observedAt).toLocaleString('zh-CN') : '—'}；开奖后读取：${account.drawTrigger.nextReadAt ? new Date(account.drawTrigger.nextReadAt).toLocaleString('zh-CN') : (account.drawTrigger.fallback ? '已退回固定间隔' : '—')}`,

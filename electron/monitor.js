@@ -234,6 +234,10 @@ class SiteClient {
     this.ocr = null;
     this.ownsWindow = true;
     this.sessionCheckTimeoutMs = 5000;
+    // A report page can occasionally stop responding while the site session is
+    // otherwise healthy.  Keep this shorter than the whole-account watchdog so
+    // one blocked report never consumes an entire automatic interval.
+    this.reportReadTimeoutMs = 45000;
     this.cancelled = false;
   }
 
@@ -599,6 +603,17 @@ class SiteClient {
   async readLatestSettledDraw() {
     if (accountSystemId(this.account) !== 'system-166') return null;
     if (!this.window || this.window.isDestroyed()) throw new Error('盘口会话尚未就绪');
+    // Prefer the rendered, authenticated home page.  The PC28 header is often
+    // filled by page scripts, so the raw response need not contain the latest
+    // settled period even when the user can already see it in the browser.
+    try {
+      const visibleText = await this.window.webContents.executeJavaScript(`String(document.body?.innerText || '')`, true);
+      const visibleDraw = parseSettledDraw(visibleText);
+      if (visibleDraw) return visibleDraw;
+    } catch {
+      // A navigation or a theme without a ready DOM is not a draw failure by
+      // itself.  The authenticated HTTP fallback below remains available.
+    }
     const currentUrl = this.status.agentUrl || this.window.webContents.getURL();
     if (!currentUrl) throw new Error('盘口会话尚未就绪');
     const url = new URL('/Home/Index', currentUrl).href;
@@ -613,10 +628,29 @@ class SiteClient {
 
   async readThisWeekSettlement() {
     for (let attempt = 0; attempt < 2; attempt++) {
-      try { return await this.readThisWeekSettlementAttempt(); }
+      try {
+        return await boundedOperation(
+          () => this.readThisWeekSettlementAttempt(),
+          this.reportReadTimeoutMs,
+          () => {
+            this.disposeDirectReader();
+            this.currentReportPath = null;
+            this.reportRefreshNeeded = true;
+            const stalledWindow = this.window;
+            this.window = null;
+            if (stalledWindow && !stalledWindow.isDestroyed()) stalledWindow.destroy();
+          },
+        );
+      }
       catch (error) {
-        if (error.code !== 'SESSION_CHECK_TIMEOUT' || attempt === 1 || this.cancelled) throw error;
-        this.status.stage = '登录会话无响应，正在重建页面（重试 1/1）';
+        const stalledReport = error.code === 'READ_WATCHDOG';
+        if ((!stalledReport && error.code !== 'SESSION_CHECK_TIMEOUT') || attempt === 1 || this.cancelled) {
+          if (stalledReport) error.code = 'REPORT_PAGE_TIMEOUT';
+          throw error;
+        }
+        this.status.stage = stalledReport
+          ? '本周报表页面无响应，正在重建会话（重试 1/1）'
+          : '登录会话无响应，正在重建页面（重试 1/1）';
         this.onProgress?.();
         const previous = this.window;
         this.disposeDirectReader();
@@ -1245,6 +1279,7 @@ class MonitorService {
     this.stopped = false;
     this.nextAutomaticStartAt = 0;
     this.operationTimeoutMs = network.operationTimeoutMs || 150000;
+    this.rootReportTimeoutMs = Math.min(this.operationTimeoutMs, network.rootReportTimeoutMs || 45000);
     this.outbox = new NotificationOutbox(store, text => this.deliverOperationalTelegram(text), {
       quiet: () => inQuietHours(this.store.state.alertPolicy || {}), changed: onChange,
     });
@@ -1550,7 +1585,11 @@ class MonitorService {
         reportPeriod: snapshotMatchesMetric ? snapshot?.period || null : null,
         consecutiveFailures: account?.monitorHealth?.consecutiveFailures || 0,
         lastSuccessAt: account?.monitorHealth?.lastSuccessAt || '',
-        failureNotified: Boolean(account?.monitorHealth?.failureNotified),
+        // v1 notifications fired once immediately and only used the configured
+        // count for a second escalation.  Do not treat that old marker as a
+        // threshold-era incident, otherwise an upgrade can emit a misleading
+        // recovery message without having sent a threshold alert.
+        failureNotified: account?.monitorHealth?.alertThresholdVersion === 2 && Boolean(account?.monitorHealth?.failureNotified),
         escalationNotified: Boolean(account?.monitorHealth?.escalationNotified),
         freshnessNotified: Boolean(account?.monitorHealth?.freshnessNotified),
         freshnessSince: account?.monitorHealth?.freshnessSince || new Date().toISOString(),
@@ -1766,7 +1805,7 @@ class MonitorService {
       const current = data.accounts.find(item => item.id === account.id);
       if (current) current.monitorHealth = {
         lastSuccessAt: status.lastSuccessAt || '', consecutiveFailures: status.consecutiveFailures || 0,
-        failureNotified: Boolean(status.failureNotified), escalationNotified: Boolean(status.escalationNotified),
+        failureNotified: Boolean(status.failureNotified), escalationNotified: Boolean(status.escalationNotified), alertThresholdVersion: 2,
         freshnessNotified: Boolean(status.freshnessNotified), freshnessSince: status.freshnessSince,
       };
     });
@@ -1776,11 +1815,13 @@ class MonitorService {
     status.consecutiveFailures = failed ? Number(status.consecutiveFailures || 0) + 1 : 0;
     const escalation = Math.max(1, Number(this.store.state.alertPolicy?.failureEscalation) || 3);
     try {
-      if (failed && (!status.failureNotified || (!status.escalationNotified && status.consecutiveFailures >= escalation))) {
-        const escalated = Boolean(status.failureNotified);
-        await this.sendOperationalTelegram(`⚠️ 交收监控${escalated ? '连续失败升级' : '读取失败'}\n账号：${account.name}\n连续失败：${status.consecutiveFailures} 次\n位置：${status.error}\n时间：${new Date().toLocaleString('zh-CN')}`);
+      // The configured value is the notification threshold, not a second
+      // escalation after an immediate first alert.  A full successful root
+      // read resets this chain; child-branch failures do not enter it.
+      if (failed && status.consecutiveFailures >= escalation && !status.failureNotified) {
+        await this.sendOperationalTelegram(`⚠️ 交收监控读取失败\n账号：${account.name}\n连续失败：${status.consecutiveFailures} 次（提醒阈值 ${escalation} 次）\n失败来源：${status.failureScope || status.failureKind || '读取过程'}\n位置：${status.error}\n时间：${new Date().toLocaleString('zh-CN')}`);
         status.failureNotified = true;
-        status.escalationNotified = escalated || escalation === 1;
+        status.escalationNotified = true;
       } else if (!failed && status.failureNotified) {
         await this.sendOperationalTelegram(`✅ 交收监控恢复正常\n账号：${account.name}\n时间：${new Date().toLocaleString('zh-CN')}`);
         status.failureNotified = false;
@@ -1851,6 +1892,7 @@ class MonitorService {
     status.status = 'checking';
     status.error = '';
     status.failureKind = '';
+    status.failureScope = '';
     status.phaseTimings = null;
     status.readProgress = null;
     status.lastQueryMs = null;
@@ -1859,6 +1901,7 @@ class MonitorService {
     this.onChange();
     const client = this.createSiteClient(account, status);
     client.onProgress = this.onChange;
+    client.reportReadTimeoutMs = this.rootReportTimeoutMs;
     const controller = new AbortController();
     this.activeReads.set(accountId, controller);
     const read = operation => boundedOperation(operation, this.operationTimeoutMs, () => {
@@ -1875,7 +1918,15 @@ class MonitorService {
     let manualCrownVerification = false;
     try {
       if (!client.window) await read(() => client.open());
-      const report = await read(() => client.readThisWeekSettlement());
+      // SiteClient owns the first 45-second recovery/rebuild.  Permit its one
+      // rebuilt retry, but still cap this whole path well below the historical
+      // 150-second account watchdog.
+      const report = await boundedOperation(() => client.readThisWeekSettlement(), this.rootReportTimeoutMs * 2 + 5000, () => {
+        client.disposeDirectReader?.();
+        client.currentReportPath = null;
+        client.reportRefreshNeeded = true;
+        if (client.window && !client.window.isDestroyed()) client.window.destroy();
+      }, controller.signal);
       if (!this.isCurrentCheck(accountId, revision)) return;
       status.reportPeriod = client.reportPeriod;
       const rootReadAt = new Date().toISOString();
@@ -2135,11 +2186,17 @@ class MonitorService {
       status.status = childErrors.length ? 'partial' : notificationFailures.length ? 'error' : anyTriggered ? 'triggered' : 'ok';
       status.readProgress = { read: agents.filter(a => !a.stale).length, pendingBranches: 0 };
       status.failureKind = childErrors.length ? '部分报表读取或校验' : notificationFailures.length ? 'Telegram 发送' : '';
+      status.failureScope = childErrors.length ? '下级分支（已延后重试）' : notificationFailures.length ? '金额提醒发送' : '';
       status.error = [
         childErrors.length ? `部分下级代理读取失败：${childErrors.slice(0, 3).join('；')}${childErrors.length > 3 ? `；共 ${childErrors.length} 个代理失败` : ''}` : '',
         notificationFailures.length ? `Telegram 提醒失败：${notificationFailures.join('；')}` : '',
       ].filter(Boolean).join('；');
-      await this.updateHealth(account, status, Boolean(childErrors.length || notificationFailures.length));
+      // Root data is valid even if a descendant was deferred.  Preserve the
+      // partial state for the UI, but never turn it into an account-failure
+      // Telegram alert or let it keep a previous root failure alive.
+      await this.updateHealth(account, status, false);
+      status.reportRecoveryUsed = false;
+      status.degradedUntil = '';
       await this.checkFreshness(account);
       if (client.window && !client.window.isDestroyed()) {
         const crownSessionWindow = activeView && !activeView.isDestroyed() ? activeView : client.window;
@@ -2161,6 +2218,12 @@ class MonitorService {
       status.status = manualRequired ? 'manual' : 'error';
       const detail = error.message || String(error);
       status.failureKind = failureKind(error);
+      status.failureScope = error.code === 'REPORT_PAGE_TIMEOUT' || error.code === 'READ_WATCHDOG'
+        ? '本周报表页面/会话'
+        : status.failureKind === '登录状态' ? '登录会话'
+          : status.failureKind === '验证码' ? '图形验证码'
+            : status.failureKind === '账号凭据' ? '账号凭据'
+              : '根报表读取';
       status.error = isTransientScriptError(error)
         ? '网页正在跳转，程序将在下次检查时自动重试'
         : `${status.stage || '检查过程'}：${detail}`;
@@ -2168,13 +2231,21 @@ class MonitorService {
       status.lastCheckedAt = new Date().toISOString();
       status.subagents = (status.subagents || []).map((agent) => ({ ...agent, stale: true, staleReason: 'failed' }));
       status.alertCandidates = {};
+      if (error.code === 'REPORT_PAGE_TIMEOUT' || error.code === 'READ_WATCHDOG') {
+        status.degradedUntil = new Date(Date.now() + retryDelay(account, Math.max(1, Number(status.consecutiveFailures || 0) + 1))).toISOString();
+        if (!status.reportRecoveryUsed) {
+          status.reportRecoveryUsed = true;
+          this.rerunRequested.add(accountId);
+          status.stage = '本周报表超时，已重建页面和会话，正在补试 1/1';
+        }
+      }
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
       await this.updateHealth(account, status, true);
     } finally {
       status.durationMs = Date.now() - checkStarted;
       status.readSamples = [...(status.readSamples || []).filter(item => Date.now() - Date.parse(item.at) < 86400000), {
         at: new Date().toISOString(), durationMs: status.durationMs, status: status.status,
-        failureKind: status.failureKind, sessionLost: status.sessionLostThisRound, recovery: recovering || status.sessionLostThisRound,
+        failureKind: status.failureKind, failureScope: status.failureScope, sessionLost: status.sessionLostThisRound, recovery: recovering || status.sessionLostThisRound,
         direct: status.directRead ? { ...status.directRead } : null,
       }].slice(-2000);
       status.readSummary = readSummary(status.readSamples);
@@ -2352,7 +2423,7 @@ class MonitorService {
       `${direction} ${metric.valueLabel}：${signedValue}`,
       `提醒间隔：每 ${alertStep.toLocaleString('zh-CN')} 一档`,
       previousLevel ? `上一次档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上一次档位：无（首次提醒）',
-      crossedCount > 1 ? `本次跨越：${firstNewMilestone > 0 ? '+' : ''}${firstNewMilestone.toLocaleString('zh-CN')} 至 ${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}，共 ${crossedCount} 档（已合并为一条消息）` : '已进入此档位',
+      ...(crossedCount > 1 ? [`本次跨越：${firstNewMilestone > 0 ? '+' : ''}${firstNewMilestone.toLocaleString('zh-CN')} 至 ${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}，共 ${crossedCount} 档（已合并为一条消息）`] : []),
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].filter(Boolean).join('\n');
     const metricId = metric.alertMetric || ALERT_METRIC;

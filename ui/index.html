@@ -105,7 +105,7 @@
               <div><p class="eyebrow">提醒策略</p><h2>减少干扰，保留真正需要处理的告警</h2><p>默认不启用静默时间，全天即时通知。只有同时填写开始和结束时间后，才会延后该时段内的新告警；静默结束后会在下次成功读取时发送。</p></div>
               <form id="alert-policy-form">
                 <label>连续读取确认次数<input name="confirmationReads" type="number" min="1" max="10" value="1" /><small>同一档位连续读到指定次数后才发送；1 表示立即发送。</small></label>
-                <label>连续失败升级次数<input name="failureEscalation" type="number" min="1" max="20" value="3" /><small>连续检查失败达到次数后，向 Telegram 发送一次异常通知。</small></label>
+                <label>连续读取失败提醒次数<input name="failureEscalation" type="number" min="1" max="20" value="3" /><small>仅本级完整读取连续失败达到次数后，向 Telegram 发送一次异常通知；下级分支失败会独立延后重试。</small></label>
                 <div class="time-grid"><label>静默开始<input name="quietStart" type="time" /></label><label>静默结束<input name="quietEnd" type="time" /></label></div>
                 <div class="form-actions"><button class="primary">保存提醒策略</button></div>
               </form>

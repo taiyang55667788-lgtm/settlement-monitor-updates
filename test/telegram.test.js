@@ -134,6 +134,18 @@ test('downward returns display the previous negative tier', async () => {
   assert.doesNotMatch(message, /报表区间|当前档位|备注：/);
 });
 
+test('single-tier amount alerts omit the redundant entered-tier sentence', async () => {
+  let message = '';
+  const { service } = createService(async (_url, init) => {
+    message = JSON.parse(init.body).text;
+    return jsonResponse({ ok: true, result: { message_id: 6 } });
+  });
+  await service.sendTelegram({ name: 'main-account' }, 100, 1, 0, 'agent', 100, '', ['agent']);
+  await service.outbox.flush();
+  assert.doesNotMatch(message, /已进入此档位/);
+  assert.doesNotMatch(message, /本次跨越/);
+});
+
 test('general-agent detail alerts use only the general-agent result label', async () => {
   let message = '';
   const { service } = createService(async (_url, init) => {

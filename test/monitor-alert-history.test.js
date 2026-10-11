@@ -345,6 +345,18 @@ test('a failing branch backs off independently; manual refresh recovers it', asy
   assert.deepEqual(service.status('account-1').branchFailures,{});
 });
 
+test('a deferred descendant remains partial but never becomes a root-failure Telegram alert', async () => {
+  const { context, store, deltaAlerts, makeService } = fixture();
+  store.state.alertPolicy = { failureEscalation: 1 };
+  context.childFailure = true;
+  const service = makeService();
+  await service.check('account-1');
+  assert.equal(service.status('account-1').status, 'partial');
+  assert.equal(service.status('account-1').failureScope, '下级分支（已延后重试）');
+  assert.equal(service.status('account-1').consecutiveFailures, 0);
+  assert.equal(deltaAlerts.length, 0);
+});
+
 test('lost session aborts branch retry instead of relogging for each branch', async () => {
   const {context,makeService}=fixture();let attempts=0;
   context.beforeDescendant=()=>{attempts++;throw Error('读取下级时登录状态已失效');};

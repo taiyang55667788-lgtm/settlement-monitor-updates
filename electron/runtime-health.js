@@ -35,7 +35,7 @@ function operationalDiagnostic(accounts, runtime, version, platform, now = Date.
     app: { version, platform }, accounts: accounts.map((account, index) => {
       const live = runtime.get(account.id) || {};
       const samples = (live.readSamples || []).filter(x => now - Date.parse(x.at) < 86400000).slice(-2000).map(x => ({
-        at: x.at, status: x.status, durationMs: x.durationMs, failureKind: x.failureKind || '',
+        at: x.at, status: x.status, durationMs: x.durationMs, failureKind: x.failureKind || '', failureScope: x.failureScope || '',
         sessionLost: Boolean(x.sessionLost), recovery: Boolean(x.recovery),
         direct: x.direct ? { attempts: x.direct.attempts, successes: x.direct.successes, failures: x.direct.failures,
           fallbacks: x.direct.fallbacks, totalMs: x.direct.totalMs, learned: x.direct.learned } : null,

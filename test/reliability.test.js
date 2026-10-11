@@ -119,15 +119,20 @@ test('watchdog closes old work before rejecting and abort does not start work', 
   assert.equal(started, false);
 });
 
-test('partial failure persists across restart and only one recovery is queued after full success', async () => {
-  const store = fixture(); const account = { id: 'a', enabled: true }; store.state.accounts.push(account);
+test('only a configured count of root failures queues one notification, then one recovery', async () => {
+  const store = fixture(); store.state.alertPolicy = { failureEscalation: 3 };
+  const account = { id: 'a', enabled: true }; store.state.accounts.push(account);
   let service = new MonitorService(store, () => {}); let status = service.status('a'); status.error = 'branch failed';
   await service.updateHealth(account, status, true);
   service = new MonitorService(store, () => {}); status = service.status('a');
   await service.updateHealth(account, status, true);
-  assert.equal(store.state.notificationOutbox.length, 1);
+  assert.equal((store.state.notificationOutbox || []).length, 0);
+  await service.updateHealth(account, status, true);
+  assert.equal((store.state.notificationOutbox || []).length, 1);
+  await service.updateHealth(account, status, true);
+  assert.equal((store.state.notificationOutbox || []).length, 1, 'one incident has only one failure alert');
   await service.updateHealth(account, status, false); await service.updateHealth(account, status, false);
-  assert.equal(store.state.notificationOutbox.length, 2);
+  assert.equal((store.state.notificationOutbox || []).length, 2);
   assert.match(store.state.notificationOutbox[1].text, /恢复正常/);
 });
 

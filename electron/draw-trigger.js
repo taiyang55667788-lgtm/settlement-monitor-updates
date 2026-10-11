@@ -15,8 +15,13 @@ function compactText(value) {
 // contains a period number, so accepting a bare number would create false reads.
 function parseSettledDraw(value) {
   const text = compactText(value);
-  const matches = [...text.matchAll(/(?:第)?(\d{5,})期\s*(?:已)?开奖(?:结果)?(?=[:：\s]|$)/g)];
-  return matches.length ? matches[matches.length - 1][1] : null;
+  const matches = [...text.matchAll(/(?:第)?(\d{5,})\s*期\s*(?:已)?开奖(?:结果|号码)?(?=[:：\s]|$)/g)];
+  if (matches.length) return matches[matches.length - 1][1];
+  // A few 166 themes put the period after the settled-label rather than
+  // before it.  Keep the explicit settled wording so the current betting
+  // period/countdown can never trigger a read.
+  const reverse = [...text.matchAll(/(?:上期|上一期|最近一期)(?:开奖(?:结果|号码)?)?[^\d]{0,16}(\d{5,})\s*期?/g)];
+  return reverse.length ? reverse[reverse.length - 1][1] : null;
 }
 
 function compareDrawId(left, right) {
