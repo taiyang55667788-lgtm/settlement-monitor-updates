@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { MonitorService, settlementWeekRange } = require('../electron/monitor');
+const { MonitorService, settlementWeekRange, marketSchedule } = require('../electron/monitor');
 
 function fixture(state) {
   const alerts = [];
@@ -651,9 +651,45 @@ test('single-read change alert waits for a baseline, then records a delivered de
   assert.equal(store.state.alertRecords.some((record) => record.alertType === 'delta' && record.status === 'sent'), true);
 });
 
-test('settlement week switches at Monday 06:00, not midnight', () => {
+test('settlement week switches at Monday 07:00, not midnight or maintenance start', () => {
   assert.deepEqual(settlementWeekRange(new Date(2026, 8, 21, 5, 59)), { start: '2026-09-14', end: '2026-09-20' });
-  assert.deepEqual(settlementWeekRange(new Date(2026, 8, 21, 6, 0)), { start: '2026-09-21', end: '2026-09-27' });
+  assert.deepEqual(settlementWeekRange(new Date(2026, 8, 21, 6, 59)), { start: '2026-09-14', end: '2026-09-20' });
+  assert.deepEqual(settlementWeekRange(new Date(2026, 8, 21, 7, 0)), { start: '2026-09-21', end: '2026-09-27' });
+});
+
+test('daily maintenance includes opening grace and leaves the rest of the day available', () => {
+  for (const [hour, minute, second, closed] of [[5,59,59,false], [6,0,0,true], [6,59,59,true], [7,0,29,true], [7,0,30,false], [23,0,0,false]]) {
+    assert.equal(marketSchedule(new Date(2026, 9, 12, hour, minute, second)).closed, closed);
+  }
+});
+
+test('week transition waiting preserves ledger and does not count as root failure', async () => {
+  const { store, makeService } = fixture();
+  const service = makeService();
+  service.createSiteClient = () => ({ async open() {}, async close() {}, async readThisWeekSettlement() { throw new Error('盘口本周日期应为 新周，当前为 旧周'); } });
+  const before = structuredClone(store.state.accounts[0].alertHistory);
+  await service.check('account-1');
+  assert.equal(service.status('account-1').status, 'market-waiting');
+  assert.equal(service.status('account-1').consecutiveFailures || 0, 0);
+  assert.deepEqual(store.state.accounts[0].alertHistory, before);
+  assert.ok(Date.parse(service.status('account-1').nextCheckAt) > Date.now());
+});
+
+test('maintenance stops even manual reads but continues flushing Telegram queue', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 12, 6, 30) });
+  const { context, store, makeService } = fixture();
+  const service = makeService();
+  let flushed = 0;
+  service.outbox.flush = async () => { flushed++; };
+  await service.tick();
+  await service.check('account-1', { manual: true });
+  assert.equal(flushed, 1);
+  assert.equal(context.descendantReads, 0);
+  assert.equal(service.status('account-1').status, 'market-closed');
+  assert.equal(new Date(service.status('account-1').nextCheckAt).getHours(), 7);
+  assert.equal(new Date(service.status('account-1').nextCheckAt).getSeconds(), 30);
+  assert.equal(service.status('account-1').consecutiveFailures || 0, 0);
+  assert.equal(store.state.accounts[0].alertHistory, undefined);
 });
 
 test('Crown general-agent details alert each general agent by result without reading descendants', async () => {

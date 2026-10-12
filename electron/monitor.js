@@ -73,11 +73,18 @@ const CROWN_BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
 function settlementWeekRange(now = new Date()) {
   const date = new Date(now);
   const day = date.getDay();
-  const beforeMondayCutoff = day === 1 && date.getHours() < 6;
+  const beforeMondayCutoff = day === 1 && date.getHours() < 7;
   date.setDate(date.getDate() - ((day + 6) % 7) - (beforeMondayCutoff ? 7 : 0));
   const format = (value) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
   const start = format(date); date.setDate(date.getDate() + 6);
   return { start, end: format(date) };
+}
+
+function marketSchedule(now = new Date()) {
+  const opening = new Date(now);
+  opening.setHours(7, 0, 30, 0);
+  const closed = now.getHours() === 6 || (now.getHours() === 7 && now < opening);
+  return { closed, nextReadAt: opening.toISOString() };
 }
 
 function inQuietHours(policy, now = new Date()) {
@@ -804,7 +811,7 @@ class SiteClient {
     if (!weekRange) throw new Error('无法确认本周报表日期');
     const settlementPeriod = settlementWeekRange();
     if (weekRange.start !== settlementPeriod.start || weekRange.end !== settlementPeriod.end) {
-      throw new Error(`盘口本周日期应为 ${settlementPeriod.start}—${settlementPeriod.end}（周一 06:00 切换），当前为 ${weekRange.start}—${weekRange.end}`);
+      throw new Error(`盘口本周日期应为 ${settlementPeriod.start}—${settlementPeriod.end}（周一 07:00 切换），当前为 ${weekRange.start}—${weekRange.end}`);
     }
     await this.selectReportOption();
     const querySubmitted = await executeInFrames(this.window, `(() => {
@@ -872,7 +879,7 @@ class SiteClient {
       const period = await executeInFrames(this.window, crownReportPeriodScript(), value => Boolean(value?.start && value?.end));
       const expected = settlementWeekRange();
       if (!period || period.start !== expected.start || period.end !== expected.end) {
-        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 06:00 切换），已停止读取`);
+        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 07:00 切换），已停止读取`);
       }
       this.reportPeriod = period;
       return;
@@ -920,7 +927,7 @@ class SiteClient {
       const period = await executeInFrames(this.window, crownReportPeriodScript(), value => Boolean(value?.start && value?.end));
       const expected = settlementWeekRange();
       if (!period || period.start !== expected.start || period.end !== expected.end) {
-        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 06:00 切换），已停止读取`);
+        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 07:00 切换），已停止读取`);
       }
       this.reportPeriod = period;
       return;
@@ -957,7 +964,7 @@ class SiteClient {
       const period = await executeInFrames(this.window, crownReportPeriodScript(), value => Boolean(value?.start && value?.end));
       const expected = settlementWeekRange();
       if (!period || period.start !== expected.start || period.end !== expected.end) {
-        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 06:00 切换），已停止读取`);
+        throw new Error(`皇冠当前报表日期应为 ${expected.start}—${expected.end}（周一 07:00 切换），已停止读取`);
       }
       this.reportPeriod = period;
       return;
@@ -1717,6 +1724,18 @@ class MonitorService {
     return new Date(Date.now() + Math.max(1, Number(account.intervalMinutes) || 5) * 60000).toISOString();
   }
 
+  pauseForMarket(account, status) {
+    const schedule = marketSchedule();
+    if (!schedule.closed) return false;
+    if (status.status !== 'market-closed') status.openingRecovery = true;
+    status.status = 'market-closed';
+    status.stage = '停盘中，07:00 开盘，07:00:30 恢复读取';
+    status.nextCheckAt = schedule.nextReadAt;
+    this.activeReads.get(account.id)?.abort();
+    this.drawPending.delete(account.id);
+    return true;
+  }
+
   async pollDraws() {
     if (this.stopped || this.suspended || this.drawPollRunning || this.store.state.recoveryReviewRequired) return;
     this.drawPollRunning = true;
@@ -1724,6 +1743,7 @@ class MonitorService {
       const now = Date.now();
       for (const account of this.store.state.accounts.filter(item => item.enabled && this.usesDrawTrigger(item))) {
         const status = this.status(account.id);
+        if (this.pauseForMarket(account, status) || status.status === 'market-waiting' || status.openingRecovery) continue;
         if (status.status === 'manual' || this.openingViews.has(account.id) || this.inFlight.has(account.id)) continue;
         const win = this.viewWindows.get(account.id);
         if (!win || win.isDestroyed()) {
@@ -1788,7 +1808,10 @@ class MonitorService {
   async tick() {
     if (this.suspended || this.stopped || this.store.state.recoveryReviewRequired) return;
     void this.outbox.flush().catch(error => this.store.addEvent('error', `通知队列异常：${error.message}`));
-    for (const account of this.store.state.accounts.filter(item => item.enabled)) await this.checkFreshness(account);
+    for (const account of this.store.state.accounts.filter(item => item.enabled)) {
+      if (!this.pauseForMarket(account, this.status(account.id))) await this.checkFreshness(account);
+    }
+    this.onChange();
     const now = Date.now();
     const due = this.store.state.accounts.filter((account) => {
       const status = this.status(account.id);
@@ -1835,6 +1858,7 @@ class MonitorService {
 
   async checkFreshness(account) {
     const status = this.status(account.id);
+    if (marketSchedule().closed || status.openingRecovery || status.status === 'market-waiting') return;
     const targets = staleTargets(account, status.subagents || [], status.freshnessSince);
     const changed = Boolean(targets.length) !== Boolean(status.freshnessNotified);
     status.staleTargets = targets;
@@ -1877,6 +1901,7 @@ class MonitorService {
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     if (!storedAccount) throw new Error('账号不存在');
     if (!storedAccount.enabled) return;
+    if (this.pauseForMarket(storedAccount, this.status(accountId))) { this.onChange(); return; }
     if (this.openingViews.has(accountId)) return;
     if (this.inFlight.has(accountId)) return;
     this.inFlight.add(accountId);
@@ -1885,7 +1910,7 @@ class MonitorService {
     const account = structuredClone(storedAccount);
     const metric = metricForAccount(account);
     const status = this.status(accountId);
-    const recovering = ['error', 'recovering', 'stale'].includes(status.status) || status.failureKind === '登录状态';
+    const recovering = status.openingRecovery || ['error', 'recovering', 'stale'].includes(status.status) || status.failureKind === '登录状态';
     const bypassBranchBackoff = manual || this.fullScanRequested.has(accountId) || recovering;
     status.sessionLostThisRound = false;
     status.running = true;
@@ -1928,6 +1953,7 @@ class MonitorService {
         if (client.window && !client.window.isDestroyed()) client.window.destroy();
       }, controller.signal);
       if (!this.isCurrentCheck(accountId, revision)) return;
+      if (this.pauseForMarket(account, status)) return;
       status.reportPeriod = client.reportPeriod;
       const rootReadAt = new Date().toISOString();
       const periodKey = `${client.reportPeriod.start}/${client.reportPeriod.end}`;
@@ -2195,6 +2221,7 @@ class MonitorService {
       // partial state for the UI, but never turn it into an account-failure
       // Telegram alert or let it keep a previous root failure alive.
       await this.updateHealth(account, status, false);
+      status.openingRecovery = false;
       status.reportRecoveryUsed = false;
       status.degradedUntil = '';
       await this.checkFreshness(account);
@@ -2208,11 +2235,23 @@ class MonitorService {
         if (!activeView) crownSessionWindow.hide();
       }
     } catch (error) {
+      if (this.pauseForMarket(account, status)) return;
+      if (/当前.*报表日期应为|盘口本周日期应为/.test(error.message || '')) {
+        status.status = 'market-waiting';
+        status.stage = '等待盘口切换本周报表，30 秒后复查';
+        status.error = '';
+        status.failureKind = '';
+        status.failureScope = '';
+        status.openingRecovery = true;
+        status.alertCandidates = {};
+        return;
+      }
       if (error.code === 'READ_INTERRUPTED' || !this.isCurrentCheck(accountId, revision)) {
         status.status = 'recovering';
         status.subagents = (status.subagents || []).map(agent => ({ ...agent, stale: true }));
         return;
       }
+      if (this.pauseForMarket(account, status)) return;
       manualCrownVerification = error?.code === 'CROWN_HUMAN_VERIFICATION_REQUIRED';
       const manualRequired = manualCrownVerification || ['验证码', '账号凭据'].includes(failureKind(error));
       status.status = manualRequired ? 'manual' : 'error';
@@ -2285,13 +2324,16 @@ class MonitorService {
         const current = this.store.state.accounts.find((item) => item.id === accountId);
         if (current?.enabled) setImmediate(() => void this.check(accountId));
       } else {
-        status.nextCheckAt = status.status === 'manual' ? null : new Date(Math.max(Date.now() + 1000, checkStarted + retryDelay(this.store.state.accounts.find(item => item.id === accountId) || account, status.status === 'partial' ? 0 : status.consecutiveFailures))).toISOString();
+        status.nextCheckAt = status.status === 'market-closed' ? marketSchedule().nextReadAt : status.status === 'manual' ? null : status.status === 'market-waiting' || status.openingRecovery
+          ? new Date(Date.now() + 30000).toISOString()
+          : new Date(Math.max(Date.now() + 1000, checkStarted + retryDelay(this.store.state.accounts.find(item => item.id === accountId) || account, status.status === 'partial' ? 0 : status.consecutiveFailures))).toISOString();
         this.onChange();
       }
     }
   }
 
   async processFreshBatch(account, status, period, metric, revision, batch, notificationFailures) {
+    if (marketSchedule().closed) return;
     const accountId = account.id;
     const periodKey = `${period.start}/${period.end}`;
     const persistedAccount = this.store.state.accounts.find((item) => item.id === accountId);
@@ -2517,4 +2559,4 @@ class MonitorService {
   }
 }
 
-module.exports = { MonitorService, SiteClient, settlementWeekRange, MAX_DESCENDANT_DEPTH };
+module.exports = { MonitorService, SiteClient, settlementWeekRange, marketSchedule, MAX_DESCENDANT_DEPTH };

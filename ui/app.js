@@ -4,6 +4,8 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 const statusNames = { waiting: '等待首次检查', checking: '读取中', ok: '运行正常', triggered: '运行正常', error: '读取异常', partial: '部分读取失败', stale: '数据过期', recovering: '正在恢复', manual: '需要手动处理', paused: '已暂停' };
+statusNames['market-closed'] = '停盘中，07:00 恢复';
+statusNames['market-waiting'] = '等待盘口切换本周报表';
 const thresholdDrafts = new Map();
 // Expansion belongs to this UI session; old saved paths must not open the tree
 // automatically on startup. Background renders preserve explicit user choices.
