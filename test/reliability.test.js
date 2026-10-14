@@ -147,6 +147,19 @@ test('freshness sends once while running, then one recovery after fresh data arr
   assert.equal(store.state.notificationOutbox.length, 2);
 });
 
+test('a fresh account cannot hide an expired individual reminder agent', async () => {
+  const store = fixture();
+  const account = { id: 'a', enabled: true, intervalMinutes: 1, subagentThresholds: [{ path: ['fresh'], alertStep: 20 }, { path: ['old'], alertStep: 20 }] };
+  store.state.accounts.push(account);
+  const service = new MonitorService(store, () => {});
+  const status = service.status('a');
+  status.lastSuccessAt = new Date().toISOString();
+  status.subagents = [{ path: ['fresh'], readAt: status.lastSuccessAt }, { path: ['old'], readAt: new Date(Date.now() - 301000).toISOString() }];
+  await service.checkFreshness(account);
+  assert.deepEqual(status.targetHealth.map(item => item.stale), [false, true]);
+  assert.deepEqual(status.staleTargets, [['old']]);
+});
+
 test('a stuck read releases inFlight and suspend prevents new work', async () => {
   const store = fixture(); store.state.accounts.push({ id: 'a', enabled: true }); let opened = 0;
   const service = new MonitorService(store, () => {}, { operationTimeoutMs: 5,

@@ -330,6 +330,19 @@ test('important branches run first and a failed branch is retried only after oth
   assert.equal(service.status('account-1').status, 'ok');
 });
 
+test('a pending branch settlement schedules a thirty-second retry without restarting the whole round', async () => {
+  const { context, makeService } = fixture();
+  context.beforeDescendant = async () => { throw Object.assign(new Error('账目尚未结算到本期，30 秒后复查'), { code: 'SETTLEMENT_PENDING' }); };
+  const service = makeService();
+  await service.check('account-1');
+  const status = service.status('account-1');
+  assert.equal(status.status, 'partial');
+  assert.equal(status.phaseTimings.branches.length, 1, 'do not immediately query the same pending branch again');
+  const delay = Date.parse(status.nextCheckAt) - Date.now();
+  assert.ok(delay > 29000 && delay <= 30000);
+  assert.equal(status.consecutiveFailures, 0);
+});
+
 test('a failing branch backs off independently; manual refresh recovers it', async () => {
   const { context, store, makeService }=fixture();const service=makeService();
   context.childFailure=true;await service.check('account-1');

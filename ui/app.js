@@ -5,7 +5,22 @@ const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximum
 const compactMoney = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 const statusNames = { waiting: '等待首次检查', checking: '读取中', ok: '运行正常', triggered: '运行正常', error: '读取异常', partial: '部分读取失败', stale: '数据过期', recovering: '正在恢复', manual: '需要手动处理', paused: '已暂停' };
 statusNames['market-closed'] = '停盘中，07:00 恢复';
-statusNames['market-waiting'] = '等待盘口切换本周报表';
+statusNames['market-waiting'] = '等待盘口数据就绪';
+
+function nextReadDescription(account) {
+  if (!account.enabled) return '监控已暂停';
+  if (account.status === 'manual') return '等待手动处理';
+  if (account.running) return '正在读取，完成后安排下一轮';
+  const draw = account.drawTrigger;
+  const at = draw?.nextReadAt || account.nextCheckAt;
+  const reason = account.status === 'market-closed' ? '开盘恢复'
+    : account.status === 'market-waiting' ? '盘口数据复查'
+      : account.status === 'error' ? '失败退避重试'
+      : draw?.nextReadAt ? '新开奖触发'
+        : draw?.enabled && !draw.fallback && !account.openingRecovery ? '等待下一期开奖'
+          : account.openingRecovery ? '开盘恢复重试' : '固定间隔或失败退避';
+  return `${reason}${at ? ' · ' + new Date(at).toLocaleTimeString('zh-CN', { hour12: false }) : ''}`;
+}
 const thresholdDrafts = new Map();
 // Expansion belongs to this UI session; old saved paths must not open the tree
 // automatically on startup. Background renders preserve explicit user choices.
@@ -56,6 +71,9 @@ function refreshReadingDetails() {
     `最近成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功'}`,
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
+    ...(account.recoveryAction ? [`自动恢复：${account.recoveryAction}`] : []),
+    ...(account.maintenanceNote ? [`页面维护：${account.maintenanceNote}`] : []),
+    ...(account.settlementCheck ? [`结算核对：${account.settlementCheck.state}${account.settlementCheck.drawId ? '；报表期号 ' + account.settlementCheck.drawId : ''}`] : []),
     ...(account.failureScope ? [`失败来源：${account.failureScope}`] : []),
     ...(account.degradedUntil && Date.parse(account.degradedUntil) > Date.now() ? [`降级保护：报表会话已重建；仍失败将于 ${new Date(account.degradedUntil).toLocaleTimeString('zh-CN')} 后按退避重试`] : []),
     ...(account.drawTrigger?.enabled ? [
@@ -75,6 +93,8 @@ function refreshReadingDetails() {
       ...(account.directRead.lastFailure ? [account.directRead.lastFailure] : []),
     ] : []),
     `下次检查：${account.nextCheckAt ? new Date(account.nextCheckAt).toLocaleString('zh-CN') : '待安排'}`,
+    `读取安排：${nextReadDescription(account)}`,
+    ...(account.targetHealth || []).map(item => `重点代理 ${item.path.join(' / ')}：${item.lastSuccessAt ? new Date(item.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功读取'}${item.stale ? '（已过期）' : ''}`),
     `异常：${account.error || '无'}`,
     `过期重点代理：${(account.staleTargets || []).map(path => path.join(' / ')).join('；') || '无'}`,
     `通知队列：待发 ${appState.notificationQueue?.pending || 0} 条；失败待重试 ${appState.notificationQueue?.failed || 0} 条；收件人已变更暂存 ${appState.notificationQueue?.held || 0} 条`,
@@ -400,7 +420,7 @@ function render(state) {
       <div class="account-main"><div class="account-avatar">${escapeHtml(account.name.slice(0,1))}</div><div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.username)} · ${escapeHtml(systemLabel(account))}${account.routeSpeed ? ` · 最快线路 ${account.routeSpeed}ms` : ''} · ${metric.usesSubagents ? `${agentLabel} ${Number.isFinite(account.subagentCount) ? account.subagentCount : '待读取'} 个` : metric.label}</small></div></div>
       <div class="metric"><small>${metric.usesSubagents ? `${agentLabel}数量` : '监控口径'}</small><strong>${metric.usesSubagents ? (Number.isFinite(account.subagentCount) ? account.subagentCount : '—') : escapeHtml(metric.label)}</strong></div>
       <div class="threshold"><small>已设置提醒</small><strong>${metric.usesSubagents ? `${configuredCount} 个${alertAgentLabel}` : (configuredCount ? '已设置' : '未设置')}</strong><small class="threshold-state ${reachedCount ? '' : 'clear'}">${escapeHtml(thresholdState)}</small></div>
-      <div class="status-wrap"><span class="status ${!account.enabled ? 'paused' : (account.status || 'waiting')}">${!account.enabled ? statusNames.paused : (statusNames[account.status] || statusNames.waiting)}</span><small class="health-detail">最近成功：${account.lastSuccessAt ? escapeHtml(new Date(account.lastSuccessAt).toLocaleTimeString('zh-CN', { hour12: false })) : '尚未成功'}</small><button class="secondary reading-detail-button" data-action="reading-details">查看详情</button></div>
+      <div class="status-wrap"><span class="status ${!account.enabled ? 'paused' : (account.status || 'waiting')}">${!account.enabled ? statusNames.paused : (statusNames[account.status] || statusNames.waiting)}</span><small class="health-detail" title="最近成功：${escapeHtml(account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功')}">${escapeHtml(nextReadDescription(account))}</small><button class="secondary reading-detail-button" data-action="reading-details">查看详情</button></div>
       <div class="actions"><button data-action="view" title="打开盘口；图形验证或验证码时可手动登录">盘内查看</button><button data-action="check" title="立即检查">刷新</button><button data-action="toggle">${account.enabled ? '暂停' : '启用'}</button><button data-action="edit">编辑</button><button data-action="remove">删除</button></div>
       <div class="subagents"><div class="subagents-head"><strong>${metric.sectionLabel}</strong><small>${periodLabel}：${escapeHtml(periodText)} · 提醒从 0 起，跨入新档或从高档返回低档都会提醒；${metric.readsDescendants !== false ? '自动识别最多四级下级代理；点击任一有下级的代理可展开或收起。' : metric.usesSubagents ? `${agentLabel}的提醒只按“${metric.valueLabel}”计算。` : `仅读取“${metric.label}”总额。`}</small></div>${agentToolbar(account)}${subagentList(account)}</div>
     </article>`;

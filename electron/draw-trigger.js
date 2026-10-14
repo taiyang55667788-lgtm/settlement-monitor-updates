@@ -1,5 +1,13 @@
 const DRAW_POLL_MS = 5000;
 const DRAW_READ_DELAY_MS = 10000;
+const DRAW_STALE_MS = 8 * 60000;
+
+function parseReportSettlementDraw(text) {
+  // Require an explicit accounting label, never the site's generic draw header.
+  const matches = [...compactText(text).matchAll(/(?:账目已结算至|报表已结算至|结算截止期号|已结算期号)\s*[:：]?\s*(?:第)?(\d{5,})\s*期?/g)];
+  const ids = [...new Set(matches.map(item => item[1]))];
+  return ids.length === 1 ? ids[0] : null;
+}
 
 function compactText(value) {
   return String(value || '')
@@ -35,11 +43,11 @@ function compareDrawId(left, right) {
 }
 
 function observeSettledDraw(previous, drawId, now = Date.now(), delayMs = DRAW_READ_DELAY_MS) {
-  const state = { drawId: String(drawId), observedAt: now };
+  const state = { drawId: String(drawId), observedAt: now, changedAt: now };
   if (!previous?.drawId) return { state, changed: false, baseline: true };
   const comparison = compareDrawId(drawId, previous.drawId);
-  if (comparison <= 0) return { state, changed: false, reset: comparison < 0 };
+  if (comparison <= 0) return { state: { ...state, drawId: previous.drawId, changedAt: previous.changedAt ?? previous.observedAt }, changed: false, reset: comparison < 0 };
   return { state, changed: true, dueAt: now + delayMs };
 }
 
-module.exports = { DRAW_POLL_MS, DRAW_READ_DELAY_MS, compactText, parseSettledDraw, compareDrawId, observeSettledDraw };
+module.exports = { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, compactText, parseSettledDraw, parseReportSettlementDraw, compareDrawId, observeSettledDraw };
