@@ -28,6 +28,7 @@
           <div class="header-actions"><label class="theme-picker">主题<select id="theme-select" aria-label="界面主题"><option value="ocean">深蓝</option><option value="graphite">石墨黑</option><option value="light">浅色</option><option value="contrast">高对比</option></select></label><span id="header-version" class="version-badge">版本读取中</span><button id="add-account" class="primary">＋ 添加账号</button></div>
         </header>
         <div id="startup-warning" class="panel recovery-warning" role="alert" hidden><span id="startup-warning-text"></span><button id="resume-after-recovery" class="secondary" hidden>已核对备份，恢复监控</button></div>
+        <div id="notification-warning" class="panel recovery-warning child-error" role="alert" hidden></div>
 
         <section id="dashboard-view" class="view active">
           <div class="summary-grid">
@@ -54,6 +55,7 @@
               <button type="button" id="test-telegram" class="secondary" hidden>发送测试消息</button>
               <button type="button" id="diagnose-telegram" class="secondary">检测中转连接</button>
               <p id="telegram-network-result" role="status">盘口独立直连；官方机器人连接中转服务。中转能否直连取决于当前网络。</p>
+              <p id="telegram-delivery-status" role="status"></p>
               <details class="advanced-telegram"><summary>高级设置：手动填写 Bot Token 和 Chat ID</summary>
                 <p>已有手动配置继续有效，但它会由本机直接访问 Telegram。官方机器人配对模式由 Cloudflare 服务转发，本机无需直接连接 Telegram API。</p>
                 <form id="telegram-form">

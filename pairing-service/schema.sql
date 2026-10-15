@@ -18,3 +18,14 @@ CREATE TABLE IF NOT EXISTS commands (
   FOREIGN KEY (device_id) REFERENCES pairings(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS commands_device_created ON commands (device_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notification_receipts (
+  device_id TEXT NOT NULL,
+  notification_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  state TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  confirmed_at INTEGER,
+  telegram_message_id INTEGER,
+  PRIMARY KEY (device_id, notification_id)
+);

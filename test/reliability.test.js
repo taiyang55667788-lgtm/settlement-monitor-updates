@@ -48,7 +48,7 @@ test('queue supports specific retry and cancellation, but not reassignment or ca
   const flushing = box.flush(second.queueId);
   assert.throws(() => box.manage(second.queueId, 'cancel'), /正在发送/);
   release(); await flushing;
-  assert.deepEqual(delivered, ['second']);
+  assert.deepEqual(delivered, [`second\n通知编号：${second.queueId}`]);
   store.state.telegram.chatId = 'new';
   assert.throws(() => box.manage(first.queueId, 'retry'), /收件人/);
   box.manage(first.queueId, 'cancel');
@@ -70,12 +70,15 @@ test('outbox persists before delivery, survives restart, backs off, and records 
   box.attach(receipt, { accountId: 'a', value: 20 });
   assert.equal(calls, 0); assert.equal(store.state.alertRecords.length, 0);
   await box.flush(); await box.flush();
+  assert.equal(box.health.state, 'failed');
   assert.equal(calls, 1); assert.equal(store.state.notificationOutbox.length, 1);
   assert.equal(store.state.alertRecords[0].status, 'failed');
   store.state = JSON.parse(JSON.stringify(store.state)); now += 10001;
   const sent = [];
   const restarted = new NotificationOutbox(store, async text => sent.push(text), { now: () => now });
   await restarted.flush();
+  assert.equal(restarted.health.state, 'ok');
+  assert.ok(restarted.health.lastSuccessAt);
   assert.match(sent[0], /延迟补发，原始时间/);
   assert.equal(store.state.notificationOutbox.length, 0);
   assert.equal(store.state.alertRecords[0].status, 'sent');
@@ -85,13 +88,40 @@ test('outbox respects quiet hours and never transfers messages to a newly paired
   const store = fixture(); let quiet = true; const sent = [];
   const box = new NotificationOutbox(store, async text => sent.push(text), { quiet: () => quiet });
   box.enqueue('amount', 'amount'); box.enqueue('operational');
-  await box.flush(); assert.deepEqual(sent, ['operational']);
+  await box.flush(); assert.deepEqual(sent.map(text => text.split('\n')[0]), ['operational']);
   store.state.telegram.chatId = 'another'; quiet = false;
   await box.flush(); assert.equal(sent.length, 1);
   store.state.telegram.chatId = 'chat';
   await Promise.all([box.flush(), box.flush()]);
-  assert.deepEqual(sent, ['operational', 'amount']);
+  assert.deepEqual(sent.map(text => text.split('\n')[0]), ['operational', 'amount']);
   assert.doesNotMatch(recipientKey(store.state.telegram), /test|chat/);
+});
+
+test('uncertain sends retain the original process and do not block later notifications', async () => {
+  const store = fixture(); let uncertain = true; const sent = [];
+  const box = new NotificationOutbox(store, async (text, metadata) => {
+    sent.push({ text, metadata });
+    if (uncertain) { uncertain = false; throw Error('[SEND_UNCERTAIN] 回执不确定'); }
+    return { notificationId: metadata.notificationId, telegramMessageId: 42, receivedAt: 1, confirmedAt: 2 };
+  });
+  const first = box.enqueue('tier one', 'amount', { record: { accountId: 'a' } });
+  box.enqueue('tier two', 'amount', { record: { accountId: 'a' } });
+  const originalTime = store.state.notificationOutbox[0].createdAt;
+  await box.flush(); await box.flush();
+  assert.equal(store.state.notificationOutbox.length, 1);
+  assert.equal(store.state.notificationOutbox[0].confirmationRequired, true);
+  assert.equal(store.state.alertRecords[0].relayReceipt.telegramMessageId, 42);
+  box.manage(first.queueId, 'retry');
+  const retry = store.state.notificationOutbox[0];
+  assert.notEqual(retry.id, first.queueId);
+  assert.equal(retry.createdAt, originalTime);
+  assert.equal(retry.originalNotificationId, first.queueId);
+  await box.flush();
+  assert.equal(store.state.notificationOutbox.length, 0);
+  assert.deepEqual(sent.map(item => item.text.split('\n')[0]), ['tier one', 'tier two', 'tier one']);
+  assert.ok(store.state.notificationTimeline.some(item => item.type === 'uncertain'));
+  assert.ok(store.state.notificationTimeline.some(item => item.type === 'confirmed-resend'));
+  assert.ok(!JSON.stringify(store.state.notificationTimeline).includes('tier one'));
 });
 
 test('full outbox reports an error without dropping older messages', () => {

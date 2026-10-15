@@ -65,3 +65,38 @@ test('proxy-only reachability stays on system route and both-failed probe never 
   assert.equal(result.system.ok, false);
   assert.match(result.message, /两条线路均失败/);
 });
+
+test('network codes embedded by Chromium are retained without exposing URLs or tokens', async () => {
+  const network = new PairingNetwork('https://relay.example', () => ({
+    async setProxy() {}, async forceReloadProxyConfig() {}, async resolveProxy() { return 'DIRECT'; },
+    async fetch() { throw Error('net::ERR_CONNECTION_RESET https://secret.example/?token=private'); },
+  }));
+  const result = await network.diagnose();
+  assert.equal(result.direct.code, 'ERR_CONNECTION_RESET');
+  assert.equal(result.available, false);
+  assert.equal(result.candidates.length, 1);
+  assert.ok(!JSON.stringify(result).includes('private'));
+  assert.ok(!JSON.stringify(result).includes('secret.example'));
+});
+
+test('an outage is re-probed and switches to the healthy backup without replaying the failed request', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 16, 12) });
+  let primaryOffline = false; const sends = [];
+  const network = new PairingNetwork('https://primary.example', () => ({
+    async setProxy() {}, async forceReloadProxyConfig() {}, async resolveProxy() { return 'DIRECT'; },
+    async fetch(url) {
+      if (url.endsWith('/v1/messages')) sends.push(url);
+      if (primaryOffline && url.startsWith('https://primary.example')) throw Error('net::ERR_CONNECTION_RESET');
+      return Response.json({ ok: true, ready: true });
+    },
+  }), ['https://backup.example']);
+  await network.fetch('https://primary.example/v1/messages', { method: 'POST' });
+  primaryOffline = true; t.mock.timers.tick(15000);
+  await assert.rejects(network.fetch('https://primary.example/v1/messages', { method: 'POST' }), /原请求未立即重发/);
+  assert.equal(sends.length, 2);
+  assert.equal(network.lastFailure.code, 'ERR_CONNECTION_RESET');
+  assert.equal(network.lastDiagnosis.candidates.length, 2);
+  await network.fetch('https://primary.example/v1/messages', { method: 'POST' });
+  assert.equal(sends.at(-1), 'https://backup.example/v1/messages');
+  assert.equal(network.lastDiagnosis.endpoint, 'fallback');
+});

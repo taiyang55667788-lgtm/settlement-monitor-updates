@@ -75,6 +75,7 @@ class NotificationOutbox {
     this.store = store; this.send = send; this.quiet = quiet; this.changed = changed; this.now = now;
     this.running = false;
     this.acknowledged = new Set();
+    this.health = { state: 'unknown', lastSuccessAt: '', lastFailureAt: '', error: '' };
   }
   enqueue(text, kind = 'operational', { record, commit } = {}) {
     const recipient = recipientKey(this.store.state.telegram);
@@ -85,6 +86,7 @@ class NotificationOutbox {
       data.notificationOutbox ||= [];
       if (data.notificationOutbox.length >= 2000) throw new Error('通知待发队列已满，请恢复 Telegram 连接');
       data.notificationOutbox.push(item);
+      data.notificationTimeline = [...(data.notificationTimeline || []), { at: item.createdAt, type: 'queued', notificationId: item.id, pending: data.notificationOutbox.length }].slice(-2000);
       commit?.(data, item);
     });
     this.changed();
@@ -105,6 +107,15 @@ class NotificationOutbox {
       if (action === 'retry') {
         if (item.recipient !== recipientKey(data.telegram)) throw new Error('收件人已变更，不能发给新收件人');
         item.nextAttemptAt = 0;
+        if (item.confirmationRequired) {
+          const originalId = item.id;
+          item.id = crypto.randomUUID();
+          item.originalNotificationId ||= originalId;
+          item.confirmationRequired = false;
+          item.error = '';
+          item.attempts = 0;
+          data.notificationTimeline = [...(data.notificationTimeline || []), { at: new Date(this.now()).toISOString(), type: 'confirmed-resend', notificationId: item.id, originalNotificationId: originalId, pending: data.notificationOutbox.length }].slice(-2000);
+        }
       } else if (action === 'cancel') {
         data.notificationOutbox = data.notificationOutbox.filter(entry => entry.id !== id);
       } else throw new Error('无效队列操作');
@@ -119,6 +130,7 @@ class NotificationOutbox {
       for (let i = 0; i < 10; i++) {
         const recipient = recipientKey(this.store.state.telegram);
         const item = this.store.state.notificationOutbox?.find(entry => entry.recipient === recipient
+          && !entry.confirmationRequired
           && (!requestedId || entry.id === requestedId)
           && !(entry.kind === 'amount' && this.quiet()));
         if (!item || item.nextAttemptAt > this.now()) break;
@@ -126,11 +138,18 @@ class NotificationOutbox {
         try {
           const delayed = item.attempts > 0 || this.now() - Date.parse(item.createdAt) > 60000;
           if (!this.acknowledged.has(item.id)) {
-            await this.send(item.text + (item.record ? `\n通知编号：${item.id.slice(0, 8)}` : '') + (delayed ? `\n⏱ 延迟补发，原始时间：${item.createdAt}` : ''));
+            const receipt = await this.send(item.text + `\n通知编号：${item.id}` + (item.originalNotificationId ? `\n原通知编号：${item.originalNotificationId}` : '') + (delayed ? `\n⏱ 延迟补发，原始时间：${item.createdAt}` : ''), {
+              notificationId: item.id, contentHash: crypto.createHash('sha256').update(item.text).digest('hex'), createdAt: item.createdAt,
+            });
+            if (receipt?.notificationId && receipt.notificationId !== item.id) throw new Error('中转回执通知编号不匹配');
+            this.receipts ||= new Map();
+            this.receipts.set(item.id, receipt?.notificationId ? { notificationId: receipt.notificationId, receivedAt: receipt.receivedAt, confirmedAt: receipt.confirmedAt, telegramMessageId: receipt.telegramMessageId, deduplicated: Boolean(receipt.deduplicated) } : null);
+            this.health = { ...this.health, state: 'ok', lastSuccessAt: new Date(this.now()).toISOString(), error: '' };
             this.acknowledged.add(item.id);
           }
           this.store.update(data => {
             data.notificationOutbox = data.notificationOutbox.filter(entry => entry.id !== item.id);
+            data.notificationTimeline = [...(data.notificationTimeline || []), { at: new Date(this.now()).toISOString(), type: item.attempts ? 'recovered-send' : 'sent', notificationId: item.id, pending: data.notificationOutbox.length, attempts: item.attempts }].slice(-2000);
             const record = item.record;
             const account = data.accounts?.find(account => account.id === record?.accountId);
             if (account && record?.period && record.alertType !== 'delta') {
@@ -141,9 +160,10 @@ class NotificationOutbox {
               const key = alertLedgerKey(record.agentPath, record.alertStep);
               account.deliveredAlertHistory.agents[key] = recordAlertLevel(account.deliveredAlertHistory.agents[key], record.level, new Date(this.now()).toISOString());
             }
-            if (record) data.alertRecords = [{ ...record, id: crypto.randomUUID(), time: new Date(this.now()).toISOString(), status: 'sent', queuedAt: item.createdAt }, ...(data.alertRecords || [])].slice(0, 500);
+            if (record) data.alertRecords = [{ ...record, notificationId: item.id, originalNotificationId: item.originalNotificationId, relayReceipt: this.receipts?.get(item.id) || null, id: crypto.randomUUID(), time: new Date(this.now()).toISOString(), status: 'sent', queuedAt: item.createdAt }, ...(data.alertRecords || [])].slice(0, 500);
           });
           this.acknowledged.delete(item.id);
+          this.receipts?.delete(item.id);
           if (requestedId) break;
         } catch (error) {
           if (this.acknowledged.has(item.id)) {
@@ -152,12 +172,15 @@ class NotificationOutbox {
             this.store.addEvent?.('error', `通知 ${item.id.slice(0, 8)} 已送达，本机保存失败；将重试保存：${error.message}`);
             break;
           }
+          this.health = { ...this.health, state: 'failed', lastFailureAt: new Date(this.now()).toISOString(), error: String(error.message || error) };
           this.store.update(data => {
             const pending = data.notificationOutbox?.find(entry => entry.id === item.id);
             if (pending) {
               pending.attempts++;
               pending.error = String(error.message || error);
+              pending.confirmationRequired = pending.error.includes('[SEND_UNCERTAIN]');
               pending.nextAttemptAt = this.now() + Math.min(300000, 10000 * 2 ** Math.min(pending.attempts - 1, 5));
+              if (pending.attempts === 1 || pending.confirmationRequired) data.notificationTimeline = [...(data.notificationTimeline || []), { at: new Date(this.now()).toISOString(), type: pending.confirmationRequired ? 'uncertain' : 'send-failed', notificationId: pending.id, pending: data.notificationOutbox.length }].slice(-2000);
             }
           });
           if (item.record) this.store.addAlertRecord?.({ ...item.record, status: 'failed', error: String(error.message || error) });

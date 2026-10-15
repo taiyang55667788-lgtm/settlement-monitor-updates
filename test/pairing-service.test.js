@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-async function service({ webhookFails = false, groupAdmins = [700] } = {}) {
+async function service({ webhookFails = false, groupAdmins = [700], sendBehavior } = {}) {
   const { handleRequest } = await import('../pairing-service/src/index.mjs');
   const db = new DatabaseSync(':memory:');
   db.exec(fs.readFileSync(path.join(__dirname, '..', 'pairing-service', 'schema.sql'), 'utf8'));
@@ -50,6 +50,7 @@ async function service({ webhookFails = false, groupAdmins = [700] } = {}) {
       return Response.json({ ok: true, result: { status: groupAdmins.includes(Number(body.user_id)) ? 'administrator' : 'member' } });
     }
     sent.push(JSON.parse(init.body));
+    if (sendBehavior) return sendBehavior(sent.at(-1), sent);
     return Response.json({ ok: true, result: { message_id: sent.length } });
   };
   const call = (method, pathname, { token, body, webhookSecret } = {}) => handleRequest(new Request(`https://worker.example${pathname}`, {
@@ -67,6 +68,67 @@ async function service({ webhookFails = false, groupAdmins = [700] } = {}) {
 function compactUuid(id) {
   return Buffer.from(String(id).replace(/-/g, ''), 'hex').toString('base64url');
 }
+
+async function paired(service) {
+  const created = await (await service.call('POST', '/v1/pairings')).json();
+  await service.call('POST', '/v1/telegram/webhook', { webhookSecret: 'webhook-secret', body: { message: { chat: { id: 12345, type: 'private' }, text: `/start ${created.code}` } } });
+  await Promise.all(service.pending);
+  return created.token;
+}
+
+test('a lost client receipt can be retried by notification id without another Telegram send', async () => {
+  const s = await service(); const token = await paired(s);
+  const body = { text: 'original', notificationId: crypto.randomUUID(), contentHash: 'a'.repeat(64) };
+  const first = await (await s.call('POST', '/v1/messages', { token, body })).json();
+  const count = s.sent.length;
+  const retry = await (await s.call('POST', '/v1/messages', { token, body: { ...body, text: 'original\n⏱ 延迟补发' } })).json();
+  assert.equal(retry.notificationId, body.notificationId);
+  assert.equal(retry.telegramMessageId, first.telegramMessageId);
+  assert.equal(retry.deduplicated, true);
+  assert.equal(s.sent.length, count);
+  assert.equal((await s.call('POST', '/v1/messages', { token, body: { ...body, contentHash: 'b'.repeat(64) } })).status, 409);
+  const secondDevice = await paired(s);
+  assert.equal((await s.call('POST', '/v1/messages', { token: secondDevice, body })).status, 200);
+  assert.equal(s.sent.filter(message => message.text === 'original').length, 2, 'device ids isolate identical notification ids');
+});
+
+test('a definitive Telegram rejection permits retry with the original notification id', async () => {
+  let reject = true;
+  const s = await service({ sendBehavior: message => {
+    if (message.text === 'retryable' && reject) { reject = false; return Response.json({ ok: false }, { status: 429 }); }
+    return Response.json({ ok: true, result: { message_id: 1 } });
+  } });
+  const token = await paired(s);
+  const body = { text: 'retryable', notificationId: crypto.randomUUID(), contentHash: 'a'.repeat(64) };
+  assert.equal((await s.call('POST', '/v1/messages', { token, body })).status, 503);
+  assert.equal(s.db.prepare('SELECT COUNT(*) AS count FROM notification_receipts').get().count, 0);
+  assert.equal((await s.call('POST', '/v1/messages', { token, body })).status, 200);
+});
+
+test('ambiguous Telegram outcome is retained for confirmation and is not blindly replayed', async () => {
+  const s = await service({ sendBehavior: message => message.text === 'ambiguous' ? Promise.reject(Error('lost reply')) : Response.json({ ok: true, result: { message_id: 1 } }) });
+  const token = await paired(s);
+  const body = { text: 'ambiguous', notificationId: crypto.randomUUID(), contentHash: 'a'.repeat(64) };
+  const first = await s.call('POST', '/v1/messages', { token, body });
+  assert.match((await first.json()).error, /SEND_UNCERTAIN/);
+  const count = s.sent.length;
+  const second = await s.call('POST', '/v1/messages', { token, body });
+  assert.equal(second.status, 409); assert.equal(s.sent.length, count);
+  assert.equal(s.db.prepare('SELECT state FROM notification_receipts WHERE notification_id = ?').get(body.notificationId).state, 'uncertain');
+});
+
+test('concurrent requests claim a notification only once', async () => {
+  let release; let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const s = await service({ sendBehavior: message => message.text === 'concurrent' ? new Promise(resolve => { release = () => resolve(Response.json({ ok: true, result: { message_id: 99 } })); started(); }) : Response.json({ ok: true, result: { message_id: 1 } }) });
+  const token = await paired(s);
+  const body = { text: 'concurrent', notificationId: crypto.randomUUID(), contentHash: 'a'.repeat(64) };
+  const first = s.call('POST', '/v1/messages', { token, body }); await ready;
+  const second = await s.call('POST', '/v1/messages', { token, body });
+  assert.equal(second.status, 409); release();
+  assert.equal((await first).status, 200);
+  assert.equal(s.sent.filter(message => message.text === 'concurrent').length, 1);
+});
 
 test('one-time code registers the Telegram command menu, pairs a private chat, and allows authenticated test delivery', async () => {
   const { call, sent, webhookCalls, menuCalls, pending } = await service();

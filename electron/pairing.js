@@ -43,7 +43,7 @@ class PairingClient {
   diagnose() { return this.network.diagnose(); }
   status(token) { return this.request('GET', '/v1/pairings/status', token); }
   test(token) { return this.request('POST', '/v1/messages/test', token); }
-  send(token, text, { replyMarkup } = {}) { return this.request('POST', '/v1/messages', token, { text, ...(replyMarkup ? { replyMarkup } : {}) }); }
+  send(token, text, { replyMarkup, notificationId, contentHash, createdAt } = {}) { return this.request('POST', '/v1/messages', token, { text, ...(notificationId ? { notificationId, contentHash, createdAt } : {}), ...(replyMarkup ? { replyMarkup } : {}) }); }
   nextCommand(token) { return this.request('GET', '/v1/commands/next', token); }
   unlink(token) { return this.request('DELETE', '/v1/pairings', token); }
 }

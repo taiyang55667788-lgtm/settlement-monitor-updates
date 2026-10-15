@@ -30,6 +30,8 @@ function optionalAmount(value) {
 function state() {
   const current = store.publicState(monitor.runtime);
   current.telegram.pairingAvailable = monitor.pairingClient.enabled;
+  current.telegram.delivery = { ...monitor.outbox.health };
+  current.telegram.network = monitor.pairingClient.network?.lastDiagnosis || null;
   return { ...current, updater: updater?.runtime,
     startupCheck: { ...startupCheck(store.state.accounts, monitor.runtime, startupAt, store.state.recoveryReviewRequired ? 'recovered' : store.loadStatus, Boolean(monitor.timer) && !monitor.stopped, upgraded),
       reviewRequired: Boolean(store.state.recoveryReviewRequired) } };
@@ -121,7 +123,11 @@ if (hasInstanceLock) app.whenReady().then(() => {
       format: 'settlement-monitor-diagnostics-v1', exportedAt: new Date().toISOString(),
       app: { version: app.getVersion(), platform: process.platform }, alertPolicy: snapshot.alertPolicy,
       telegram: { mode: snapshot.telegram.mode, paired: Boolean(snapshot.telegram.pairing?.paired), hasBotToken: snapshot.telegram.hasBotToken,
-        network: monitor.pairingClient.network?.lastDiagnosis || null },
+        network: monitor.pairingClient.network?.lastDiagnosis || null,
+        delivery: { ...monitor.outbox.health }, lastNetworkFailure: monitor.pairingClient.network?.lastFailure || null },
+      notificationTimeline: store.state.notificationTimeline || [],
+      notificationNetworkTimeline: store.state.notificationNetworkTimeline || monitor.pairingClient.network?.timeline || [],
+      notificationQueue: { pending: snapshot.notificationQueue.pending, failed: snapshot.notificationQueue.failed, held: snapshot.notificationQueue.held },
       accounts: snapshot.accounts.map(({ username, hasSecurityCode, hasPassword, ...account }) => ({ ...account, username: username ? '***' : '', hasSecurityCode, hasPassword,
         readSamples: monitor.runtime.get(account.id)?.readSamples || [] })),
       events: snapshot.events,

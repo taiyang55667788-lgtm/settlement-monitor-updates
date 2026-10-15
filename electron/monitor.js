@@ -614,22 +614,30 @@ class SiteClient {
     // filled by page scripts, so the raw response need not contain the latest
     // settled period even when the user can already see it in the browser.
     try {
+      const frameDraw = await executeInFrames(this.window, `(() => {
+        const text = String(document.body?.innerText || '');
+        const matches = [...text.matchAll(/(?:第)?(\\d{5,})\\s*期\\s*(?:已)?开奖(?:结果|号码)?(?=[:：\\s]|$)/g)];
+        return matches.length ? matches[matches.length - 1][1] : null;
+      })()`, value => typeof value === 'string' && /^\d{5,}$/.test(value));
+      if (frameDraw) { this.status.drawSource = '已登录页面框架'; return frameDraw; }
       const visibleText = await this.window.webContents.executeJavaScript(`String(document.body?.innerText || '')`, true);
       const visibleDraw = parseSettledDraw(visibleText);
-      if (visibleDraw) return visibleDraw;
+      if (visibleDraw) { this.status.drawSource = '已登录页面'; return visibleDraw; }
     } catch {
       // A navigation or a theme without a ready DOM is not a draw failure by
       // itself.  The authenticated HTTP fallback below remains available.
     }
     const currentUrl = this.status.agentUrl || this.window.webContents.getURL();
+    if (this.cancelled) throw Object.assign(new Error('开奖检测已中断'), { code: 'READ_INTERRUPTED' });
     if (!currentUrl) throw new Error('盘口会话尚未就绪');
     const url = new URL('/Home/Index', currentUrl).href;
     const response = await this.window.webContents.session.fetch(url, {
       method: 'GET', credentials: 'include', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(8000),
     });
-    if (!response.ok) throw new Error(`盘口开奖状态请求失败（${response.status}）`);
+    if (!response.ok) throw Object.assign(new Error(`盘口开奖状态请求失败（${response.status}）`), { code: `DRAW_HTTP_${response.status}` });
     const drawId = parseSettledDraw(await response.text());
-    if (!drawId) throw new Error('盘口未识别到已开奖期号');
+    if (!drawId) throw Object.assign(new Error('盘口未识别到已开奖期号'), { code: 'DRAW_NOT_FOUND' });
+    this.status.drawSource = '首页会话请求';
     return drawId;
   }
 
@@ -1318,6 +1326,9 @@ class MonitorService {
     this.telegramFetch = network.fetch || ((...args) => net.fetch(...args));
     this.resolveTelegramProxy = network.resolveProxy || ((url) => session.defaultSession.resolveProxy(url));
     this.pairingClient = network.pairingClient || new PairingClient();
+    if (this.pairingClient.network) this.pairingClient.network.onTransition = entry => this.store.update(data => {
+      data.notificationNetworkTimeline = [...(data.notificationNetworkTimeline || []), { ...entry, pending: (data.notificationOutbox || []).length }].slice(-300);
+    });
     this.createSiteClient = network.createSiteClient || ((account, status) => new SiteClient(account, status));
     this.runtime = new Map();
     this.inFlight = new Set();
@@ -1326,6 +1337,8 @@ class MonitorService {
     this.rerunRequested = new Set();
     this.fullScanRequested = new Set();
     this.viewWindows = new Map();
+    this.drawWindows = new Map();
+    this.createDrawWindow = network.createDrawWindow || (options => new BrowserWindow(options));
     this.openingViews = new Set();
     this.timer = null;
     this.commandTimer = null;
@@ -1342,7 +1355,7 @@ class MonitorService {
     this.nextAutomaticStartAt = 0;
     this.operationTimeoutMs = network.operationTimeoutMs || 150000;
     this.rootReportTimeoutMs = Math.min(this.operationTimeoutMs, network.rootReportTimeoutMs || 45000);
-    this.outbox = new NotificationOutbox(store, text => this.deliverOperationalTelegram(text), {
+    this.outbox = new NotificationOutbox(store, (text, metadata) => this.deliverOperationalTelegram(text, metadata), {
       quiet: () => inQuietHours(this.store.state.alertPolicy || {}), changed: onChange,
     });
   }
@@ -1459,7 +1472,8 @@ class MonitorService {
     this.timer = null;
     this.drawTimer = null;
     this.drawPending.clear();
-    const windows = [...this.viewWindows.values()];
+    const windows = [...this.viewWindows.values(), ...this.drawWindows.values()];
+    this.drawWindows.clear();
     this.viewWindows.clear();
     this.openingViews.clear();
     for (const win of windows) {
@@ -1739,6 +1753,7 @@ class MonitorService {
     if (this.store.state.accounts.some(account => account.id === accountId)) this.fullScanRequested.add(accountId);
     else this.fullScanRequested.delete(accountId);
     const view = this.viewWindows.get(accountId);
+    this.closeDrawWindow(accountId);
     this.viewWindows.delete(accountId);
     this.openingViews.delete(accountId);
     if (view && !view.isDestroyed()) view.destroy();
@@ -1799,6 +1814,7 @@ class MonitorService {
     status.status = 'market-closed';
     status.stage = '停盘中，07:00 开盘，07:00:30 恢复读取';
     status.nextCheckAt = schedule.nextReadAt;
+    this.closeDrawWindow(account.id);
     this.activeReads.get(account.id)?.abort();
     const day = new Date().toLocaleDateString('sv-SE');
     if (!status.running && !this.openingViews.has(account.id) && status.pageMaintenanceDay !== day) {
@@ -1814,6 +1830,40 @@ class MonitorService {
     }
     this.drawPending.delete(account.id);
     return true;
+  }
+
+  closeDrawWindow(accountId) {
+    const win = this.drawWindows.get(accountId);
+    this.drawWindows.delete(accountId);
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+
+  async readDrawState(client, account, reportWindow) {
+    const existing = this.drawWindows.get(account.id);
+    if (existing && !existing.isDestroyed()) {
+      client.window = existing;
+      return client.readLatestSettledDraw();
+    }
+    try { return await client.readLatestSettledDraw(); }
+    catch (error) {
+      if (error.code !== 'DRAW_NOT_FOUND') throw error;
+    }
+    if (client.cancelled || this.stopped || this.suspended) throw Object.assign(new Error('开奖检测已中断'), { code: 'READ_INTERRUPTED' });
+    // A dedicated authenticated home document keeps its dynamic header alive
+    // without navigating away from the report or submitting login forms.
+    const url = new URL('/Home/Index', reportWindow.webContents.getURL()).href;
+    const win = this.createDrawWindow({ show: false, webPreferences: {
+      session: reportWindow.webContents.session, backgroundThrottling: false,
+      sandbox: true, contextIsolation: true, nodeIntegration: false,
+    } });
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    this.drawWindows.set(account.id, win);
+    client.window = win;
+    return boundedOperation(async () => {
+      await load(win, url);
+      await sleep(800);
+      return client.readLatestSettledDraw();
+    }, 12000, () => this.closeDrawWindow(account.id));
   }
 
   async pollDraws() {
@@ -1835,7 +1885,11 @@ class MonitorService {
           const client = this.createSiteClient(structuredClone(account), status);
           client.window = win;
           client.ownsWindow = false;
-          const drawId = await client.readLatestSettledDraw();
+          const drawId = await boundedOperation(() => this.readDrawState(client, account, win), 16000, () => {
+            client.cancelled = true;
+            this.closeDrawWindow(account.id);
+          });
+          if (this.stopped || this.suspended || !this.store.state.accounts.find(item => item.id === account.id)?.enabled || this.pauseForMarket(account, status)) continue;
           const observed = observeSettledDraw(this.drawState.get(account.id), drawId, now, this.drawReadDelayMs);
           this.drawState.set(account.id, observed.state);
           if (observed.changed) this.drawPending.set(account.id, observed.dueAt);
@@ -1849,19 +1903,25 @@ class MonitorService {
             nextReadAt: dueAt ? new Date(dueAt).toISOString() : '',
             fallback: stalled,
             error: stalled ? '已开奖期号停更超过 8 分钟或出现倒退，按固定间隔兜底' : '',
+            source: status.drawSource || '',
           };
           // A healthy site-draw monitor supersedes the fixed timer.  The fixed
           // timer is restored only when this lightweight state request fails.
           if (stalled) {
+            if (now - (status.drawPageRebuiltAt || 0) >= 60000) {
+              this.closeDrawWindow(account.id);
+              status.drawPageRebuiltAt = now;
+            }
             status.drawTrigger.state = '开奖期号停更，固定间隔兜底';
             if (!status.nextCheckAt) status.nextCheckAt = this.fixedNextCheck(account);
           } else if (!status.recheckRequested && !['error', 'partial', 'recovering'].includes(status.status)) status.nextCheckAt = null;
           status.waitingForDraw = !stalled;
-        } catch {
+        } catch (error) {
           status.waitingForDraw = false;
           status.drawTrigger = {
             ...(status.drawTrigger || {}), enabled: true, state: '开奖状态暂不可读，按固定间隔检查',
-            fallback: true, error: '盘口开奖状态暂不可读', nextReadAt: '',
+            fallback: true, error: `盘口开奖状态暂不可读（${/^DRAW_[A-Z_0-9]+$|^ERR_[A-Z_]+$/.test(error.code || '') ? error.code : 'DRAW_NETWORK_OR_PAGE_ERROR'}）`, nextReadAt: '',
+            failedAt: new Date().toISOString(),
           };
           if (!status.nextCheckAt) status.nextCheckAt = this.fixedNextCheck(account);
         }
@@ -1976,6 +2036,7 @@ class MonitorService {
 
   suspend() {
     this.suspended = true;
+    for (const accountId of this.drawWindows.keys()) this.closeDrawWindow(accountId);
     for (const controller of this.activeReads.values()) controller.abort();
   }
 
@@ -2622,9 +2683,9 @@ class MonitorService {
     return receipt;
   }
 
-  async deliverOperationalTelegram(text) {
+  async deliverOperationalTelegram(text, metadata = {}) {
     const { botToken, chatId, mode, pairing } = this.store.state.telegram;
-    if (mode === 'pairing' && pairing?.paired && pairing.token) return this.pairingClient.send(pairing.token, text);
+    if (mode === 'pairing' && pairing?.paired && pairing.token) return this.pairingClient.send(pairing.token, text, metadata);
     if (mode === 'legacy' && botToken && chatId) return this.telegramJson(botToken, 'sendMessage', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: chatId, text }),
     });

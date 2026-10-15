@@ -52,6 +52,31 @@ test('site client prefers the visible PC28 header before making a fallback reque
   assert.equal(fetched, false);
 });
 
+test('settled draw in a nested authenticated frame is read without a request', async () => {
+  const vm = require('node:vm');
+  const frame = text => ({ isDestroyed: () => false, executeJavaScript: async script => vm.runInNewContext(script, { document: { body: { innerText: text } } }) });
+  const main = frame('本周报表'); main.framesInSubtree = [main, frame('3491985期 距封盘：00:44 3491984期开奖：3 0 0')];
+  const status = {};
+  const client = new SiteClient({ id: 'pc28', systemType: 'system-166' }, status);
+  client.window = { isDestroyed: () => false, webContents: { mainFrame: main, executeJavaScript: async () => { throw Error('main fallback should not run'); } } };
+  assert.equal(await client.readLatestSettledDraw(), '3491984');
+  assert.equal(status.drawSource, '已登录页面框架');
+});
+
+test('dynamic home detection uses a separate window with the same session and is cleaned on suspend', async () => {
+  const store = fixture(); const sharedSession = {}; let loaded = ''; let destroyed = false; let options;
+  const report = { isDestroyed: () => false, webContents: { getURL: () => 'https://market.example/ReportNew/Agent', session: sharedSession } };
+  const home = { isDestroyed: () => destroyed, destroy: () => { destroyed = true; }, loadURL: async url => { loaded = url; }, webContents: { stop() {}, setWindowOpenHandler() {} } };
+  const service = new MonitorService(store, () => {}, { createDrawWindow: config => { options = config; return home; } });
+  const client = { window: report, async readLatestSettledDraw() { if (this.window === report) throw Object.assign(Error('no draw'), { code: 'DRAW_NOT_FOUND' }); return '3491984'; } };
+  assert.equal(await service.readDrawState(client, store.state.accounts[0], report), '3491984');
+  assert.equal(options.webPreferences.session, sharedSession);
+  assert.equal(options.show, false);
+  assert.equal(loaded, 'https://market.example/Home/Index');
+  service.suspend();
+  assert.equal(destroyed, true); assert.equal(service.drawWindows.size, 0);
+});
+
 function fixture() {
   return {
     state: {

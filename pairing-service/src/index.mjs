@@ -188,8 +188,9 @@ async function sendBotMessage(env, fetcher, chatId, message, replyMarkup = null)
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok || !payload?.ok) {
-    throw new Error(`Telegram 发送失败（${response.status}）`);
+    throw Object.assign(new Error(`Telegram 发送失败（${response.status}）`), { safeRetry: [400, 401, 403, 429].includes(response.status) && payload?.ok === false });
   }
+  return payload.result?.message_id || null;
 }
 
 async function answerCallback(env, fetcher, callbackId, text, showAlert = false) {
@@ -354,14 +355,45 @@ async function sendFromDevice(request, env, fetcher, device, testOnly) {
   const body = testOnly ? {} : await readJson(request);
   const message = testOnly ? '✅ 交收监控：Telegram 通知测试成功' : String(body?.text || '').trim();
   if (!message || message.length > 3500) return json({ error: '消息内容必须为 1–3500 个字符' }, 400);
+  const notificationId = body?.notificationId;
+  const contentHash = body?.contentHash;
+  if (notificationId && (!/^[0-9a-f-]{36}$/i.test(notificationId) || !/^[0-9a-f]{64}$/i.test(contentHash || ''))) return json({ error: '通知编号或内容摘要无效' }, 400);
+  if (notificationId) {
+    const receipt = await env.DB.prepare('SELECT * FROM notification_receipts WHERE device_id = ? AND notification_id = ?').bind(device.id, notificationId).first();
+    if (receipt) {
+      if (receipt.content_hash !== contentHash) return json({ error: '通知编号对应的内容不一致' }, 409);
+      if (receipt.state === 'sent') return json({ ok: true, notificationId, deduplicated: true, receivedAt: receipt.received_at, confirmedAt: receipt.confirmed_at, telegramMessageId: receipt.telegram_message_id });
+      const uncertain = receipt.state === 'uncertain' || Date.now() - receipt.received_at > 60000;
+      return json({ error: uncertain ? '[SEND_UNCERTAIN] 中转发送结果不确定，请确认是否补发；原提醒仍保留' : '通知正在发送，请稍后重试' }, 409);
+    }
+  }
   const bucket = Math.floor(Date.now() / 60000);
   const limit = await env.DB.prepare('UPDATE pairings SET sent_bucket = ?, sent_count = CASE WHEN sent_bucket = ? THEN sent_count + 1 ELSE 1 END WHERE id = ? AND (sent_bucket IS NULL OR sent_bucket != ? OR sent_count < ?)')
     .bind(bucket, bucket, device.id, bucket, MAX_MESSAGES_PER_MINUTE).run();
   if (limit.meta.changes !== 1) return json({ error: '发送过于频繁，请稍后重试' }, 429);
   const replyMarkup = testOnly ? null : body?.replyMarkup;
   if (replyMarkup && !validReplyMarkup(replyMarkup)) return json({ error: 'Telegram 按钮格式无效' }, 400);
-  await sendBotMessage(env, fetcher, device.chat_id, message, replyMarkup);
-  return json({ ok: true });
+  const receivedAt = Date.now();
+  if (notificationId) {
+    const claim = await env.DB.prepare('INSERT OR IGNORE INTO notification_receipts (device_id, notification_id, content_hash, state, received_at) VALUES (?, ?, ?, ?, ?)').bind(device.id, notificationId, contentHash, 'sending', receivedAt).run();
+    if (claim.meta.changes !== 1) return json({ error: '通知正在发送，请稍后重试' }, 409);
+  }
+  let messageId;
+  try {
+    messageId = await sendBotMessage(env, fetcher, device.chat_id, message, replyMarkup);
+  } catch (error) {
+    if (notificationId) {
+      if (error.safeRetry) await env.DB.prepare('DELETE FROM notification_receipts WHERE device_id = ? AND notification_id = ?').bind(device.id, notificationId).run();
+      else {
+        await env.DB.prepare('UPDATE notification_receipts SET state = ? WHERE device_id = ? AND notification_id = ?').bind('uncertain', device.id, notificationId).run();
+        return json({ error: '[SEND_UNCERTAIN] Telegram 回执不确定，请确认是否补发；原提醒仍保留' }, 409);
+      }
+    }
+    throw error;
+  }
+  const confirmedAt = Date.now();
+  if (notificationId) await env.DB.prepare('UPDATE notification_receipts SET state = ?, confirmed_at = ?, telegram_message_id = ? WHERE device_id = ? AND notification_id = ?').bind('sent', confirmedAt, messageId, device.id, notificationId).run();
+  return json({ ok: true, ...(notificationId ? { notificationId, receivedAt, confirmedAt, telegramMessageId: messageId } : {}) });
 }
 
 export async function handleRequest(request, env, ctx, fetcher = fetch) {

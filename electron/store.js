@@ -164,6 +164,7 @@ class SecureStore {
         items: (this.state.notificationOutbox || []).map(item => ({
           id: item.id, text: item.text, createdAt: item.createdAt, attempts: item.attempts,
           error: item.error || '', nextAttemptAt: item.nextAttemptAt,
+          confirmationRequired: Boolean(item.confirmationRequired), originalNotificationId: item.originalNotificationId || '',
           held: item.recipient !== recipientKey(this.state.telegram),
         })),
       },

@@ -37,10 +37,10 @@ function renderQueue() {
   const items = appState.notificationQueue?.items || [];
   queuePage = Math.min(queuePage, Math.max(0, Math.ceil(items.length / 20) - 1));
   $('#notification-items').innerHTML = items.slice(queuePage * 20, queuePage * 20 + 20).map(item => `<article class="queued-message">
-    <strong>${item.held ? '收件人变更，暂存中' : '等待发送'} · ${escapeHtml(item.id.slice(0, 8))}</strong>
+    <strong>${item.held ? '收件人变更，暂存中' : item.confirmationRequired ? '发送结果待确认' : '等待发送'} · ${escapeHtml(item.id)}</strong>
     <small>原始时间：${escapeHtml(new Date(item.createdAt).toLocaleString('zh-CN'))} · 已尝试 ${Number(item.attempts) || 0} 次</small>
     <pre>${escapeHtml(item.text)}</pre><p class="child-error">${escapeHtml(item.error)}</p>
-    <button class="secondary" data-queue-action="retry" data-queue-id="${escapeHtml(item.id)}" ${item.held ? 'disabled' : ''}>立即重试</button>
+    <button class="secondary" data-queue-action="retry" data-queue-id="${escapeHtml(item.id)}" ${item.held ? 'disabled' : ''}>${item.confirmationRequired ? '确认补发' : '立即重试'}</button>
     <button class="secondary" data-queue-action="cancel" data-queue-id="${escapeHtml(item.id)}">取消此条</button></article>`).join('') || '<p>暂无待发通知</p>';
   $('#queue-page').textContent = `${queuePage + 1} / ${Math.max(1, Math.ceil(items.length / 20))}`;
   $('#queue-prev').disabled = queuePage === 0;
@@ -78,6 +78,7 @@ function refreshReadingDetails() {
     ...(account.degradedUntil && Date.parse(account.degradedUntil) > Date.now() ? [`降级保护：报表会话已重建；仍失败将于 ${new Date(account.degradedUntil).toLocaleTimeString('zh-CN')} 后按退避重试`] : []),
     ...(account.drawTrigger?.enabled ? [
       `PC28 开奖触发：${account.drawTrigger.state || '等待首次盘口状态'}；最近已开奖：${account.drawTrigger.latestDraw || '—'}`,
+      `开奖检测来源：${account.drawTrigger.source || '尚未识别'}；最近失败：${account.drawTrigger.failedAt ? new Date(account.drawTrigger.failedAt).toLocaleString('zh-CN') : '无记录'}`,
       `开奖状态最近检查：${account.drawTrigger.observedAt ? new Date(account.drawTrigger.observedAt).toLocaleString('zh-CN') : '—'}；开奖后读取：${account.drawTrigger.nextReadAt ? new Date(account.drawTrigger.nextReadAt).toLocaleString('zh-CN') : (account.drawTrigger.fallback ? '已退回固定间隔' : '—')}`,
       ...(account.drawTrigger.error ? [`开奖触发说明：${account.drawTrigger.error}`] : []),
     ] : []),
@@ -443,6 +444,15 @@ function render(state) {
   restoreThresholdDraft(thresholdDraft, state);
   $('#events').innerHTML = (state.events || []).map((event) => `<div class="event ${event.type}"><i></i><time>${new Date(event.time).toLocaleString('zh-CN')}</time><span>${escapeHtml(event.message)}</span></div>`).join('') || '<div class="empty show"><p>暂无运行记录</p></div>';
   $('#notification-queue').textContent = `待发送 ${state.notificationQueue?.pending || 0} 条 · 失败待重试 ${state.notificationQueue?.failed || 0} 条 · 收件人变更暂存 ${state.notificationQueue?.held || 0} 条（暂存消息不会发送给新收件人）`;
+  const delivery = state.telegram.delivery || {};
+  const connection = state.telegram.network;
+  const notificationOffline = delivery.state === 'failed' || (connection?.available === false && Date.parse(connection.checkedAt) > (Date.parse(delivery.lastSuccessAt) || 0));
+  const notificationStatus = `Telegram ${notificationOffline ? '通知异常，自动重试中' : delivery.lastSuccessAt ? '最近发送已获服务确认' : '本次启动尚无发送回执'} · 待发 ${state.notificationQueue?.pending || 0} 条 · 最近成功发送：${delivery.lastSuccessAt ? new Date(delivery.lastSuccessAt).toLocaleString('zh-CN') : '尚无记录'}`;
+  $('#notification-warning').hidden = state.telegram.mode === 'off' || !notificationOffline;
+  $('#notification-warning').textContent = notificationStatus;
+  $('#telegram-delivery-status').textContent = notificationStatus;
+  $('#telegram-delivery-status').className = notificationOffline ? 'child-error' : '';
+  $('#notification-queue').textContent += `；${notificationStatus}`;
   $('#alert-records').innerHTML = (state.alertRecords || []).map((record) => {
     const value = Number(record.value);
     const tier = Number(record.level) * Number(record.alertStep);
@@ -455,7 +465,13 @@ function render(state) {
       `进程启动 ${trigger.processStartedAt}`,
       `与上次转换相比进程变化：${trigger.processChangedSincePrevious === null ? '无记录' : trigger.processChangedSincePrevious ? '是' : '否'}`,
       trigger.settingChange ? `最近修改间隔：${trigger.settingChange.previousStep ?? '关闭'} → ${trigger.settingChange.nextStep ?? '关闭'}（${trigger.settingChange.time}）` : '无间隔修改记录',
-      `通知编号：${record.eventId || '无记录'}`,
+      `通知编号：${record.notificationId || record.eventId || '无记录'}`,
+      ...(record.originalNotificationId ? [`确认补发前编号：${record.originalNotificationId}`] : []),
+      ...(record.relayReceipt ? [
+        `中转接收：${new Date(record.relayReceipt.receivedAt).toLocaleString('zh-CN')}`,
+        `Telegram 接口确认：${new Date(record.relayReceipt.confirmedAt).toLocaleString('zh-CN')}；消息 ID：${record.relayReceipt.telegramMessageId || '无'}`,
+        `中转去重回执：${record.relayReceipt.deduplicated ? '是（没有再次发送）' : '否'}`,
+      ] : []),
     ].join('\n') : '旧记录无触发详情';
     const result = record.status === 'sent' ? 'Telegram 已发送' : `发送失败：${record.error || '未知错误'}`;
     const detail = record.alertType === 'delta' ? `变化 ${record.change > 0 ? '+' : ''}${compactMoney.format(Math.abs(record.change || 0))} / 阈值 ${compactMoney.format(record.alertStep)}` : (Number.isFinite(tier) ? `${tier > 0 ? '+' : '−'}${compactMoney.format(Math.abs(tier))} 档` : '—');
@@ -753,6 +769,8 @@ $('#queue-next').addEventListener('click', () => { queuePage++; renderQueue(); }
 $('#notification-items').addEventListener('click', event => {
   const button = event.target.closest('[data-queue-action]'); if (!button) return;
   const operation = button.dataset.queueAction;
+  const item = appState.notificationQueue?.items.find(item => item.id === button.dataset.queueId);
+  if (operation === 'retry' && item?.confirmationRequired && !confirm('Telegram 可能已经收到此通知，但中转未能确认。确认补发可能产生重复消息；将保留原编号和原始时间。是否补发？')) return;
   if (operation === 'cancel' && !confirm('确定取消这条待发通知？不会撤回已发送消息，也不会清空档位记录。')) return;
   action(() => window.monitorApi.manageNotification(button.dataset.queueId, operation), operation === 'cancel' ? '通知已取消' : '已安排重试（静默时间仍有效）');
 });
