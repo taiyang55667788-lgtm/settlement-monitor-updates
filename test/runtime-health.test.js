@@ -4,6 +4,13 @@ const { EventEmitter } = require('node:events');
 const { readSummary, failureCategory, failedBranch, operationalDiagnostic } = require('../electron/runtime-health');
 const { UpdateService } = require('../electron/updater');
 
+test('successful branch-only retries do not count as complete account successes', () => {
+  const at = new Date().toISOString();
+  const summary = readSummary([{ at, status: 'partial', durationMs: 1000, scope: 'account' }, { at, status: 'ok', durationMs: 100, scope: 'branch' }]);
+  assert.equal(summary.completeRounds, 1); assert.equal(summary.branchRetries, 1);
+  assert.equal(summary.successRate, 0);
+});
+
 test('24h summaries exclude old samples and compute weighted query timing', () => {
   const now = Date.now();
   const samples = [

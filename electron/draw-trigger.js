@@ -1,6 +1,17 @@
 const DRAW_POLL_MS = 5000;
-const DRAW_READ_DELAY_MS = 10000;
+const DRAW_READ_DELAY_MS = 15000;
 const DRAW_STALE_MS = 8 * 60000;
+
+function parseDrawStateResponse(value) {
+  let data;
+  try { data = typeof value === 'string' ? JSON.parse(value) : value; } catch { return null; }
+  if (!data || data.TemplateCode !== 'JNDPCDD' || !/^\d{5,}$/.test(String(data.Installments || '')) || !/^\d{5,}$/.test(String(data.PreInstallments || ''))
+    || compareDrawId(data.PreInstallments, data.Installments) >= 0 || !/^\d,\d,\d$/.test(String(data.PreLotteryResult || ''))) return null;
+  const countdown = Number(data.OpenTimeStamp);
+  return { drawId: String(data.PreInstallments), currentDraw: String(data.Installments),
+    // This is a hint for polling only. A countdown never authorizes a report read.
+    nextPollMs: Number.isFinite(countdown) && countdown > 0 && countdown <= 300 ? Math.max(5000, Math.min(60000, (countdown - 5) * 1000)) : 5000 };
+}
 
 function parseReportSettlementDraw(text) {
   // Require an explicit accounting label, never the site's generic draw header.
@@ -50,4 +61,4 @@ function observeSettledDraw(previous, drawId, now = Date.now(), delayMs = DRAW_R
   return { state, changed: true, dueAt: now + delayMs };
 }
 
-module.exports = { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, compactText, parseSettledDraw, parseReportSettlementDraw, compareDrawId, observeSettledDraw };
+module.exports = { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, compactText, parseSettledDraw, parseReportSettlementDraw, parseDrawStateResponse, compareDrawId, observeSettledDraw };

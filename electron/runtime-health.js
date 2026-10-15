@@ -1,10 +1,12 @@
 function readSummary(samples = [], now = Date.now()) {
   const rows = samples.filter(x => now - Date.parse(x.at) >= 0 && now - Date.parse(x.at) < 86400000);
-  const successful = rows.filter(x => ['ok', 'triggered'].includes(x.status)).length;
+  const accountRows = rows.filter(x => x.scope !== 'branch');
+  const successful = accountRows.filter(x => ['ok', 'triggered'].includes(x.status)).length;
   const sum = key => rows.reduce((n, x) => n + (Number(x.direct?.[key]) || 0), 0);
   const directAttempts = sum('attempts'); const directSuccesses = sum('successes');
   return { rounds: rows.length, successful, partial: rows.filter(x => x.status === 'partial').length,
-    successRate: rows.length ? successful / rows.length : null,
+    completeRounds: accountRows.length, branchRetries: rows.length - accountRows.length,
+    successRate: accountRows.length ? successful / accountRows.length : null,
     averageMs: rows.length ? rows.reduce((n,x)=>n+(Number(x.durationMs)||0),0) / rows.length : null,
     directAttempts, directSuccesses, directRate: directAttempts ? directSuccesses / directAttempts : null,
     directAverageMs: directSuccesses ? sum('totalMs') / directSuccesses : null,
@@ -36,6 +38,7 @@ function operationalDiagnostic(accounts, runtime, version, platform, now = Date.
       const live = runtime.get(account.id) || {};
       const samples = (live.readSamples || []).filter(x => now - Date.parse(x.at) < 86400000).slice(-2000).map(x => ({
         at: x.at, status: x.status, durationMs: x.durationMs, failureKind: x.failureKind || '', failureScope: x.failureScope || '',
+        scope: x.scope === 'branch' ? 'branch' : 'account',
         sessionLost: Boolean(x.sessionLost), recovery: Boolean(x.recovery),
         direct: x.direct ? { attempts: x.direct.attempts, successes: x.direct.successes, failures: x.direct.failures,
           fallbacks: x.direct.fallbacks, totalMs: x.direct.totalMs, learned: x.direct.learned } : null,

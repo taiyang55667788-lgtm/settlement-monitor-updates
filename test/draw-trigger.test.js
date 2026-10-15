@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseSettledDraw, observeSettledDraw, parseReportSettlementDraw, DRAW_STALE_MS } = require('../electron/draw-trigger');
+const { parseSettledDraw, observeSettledDraw, parseReportSettlementDraw, parseDrawStateResponse, DRAW_STALE_MS } = require('../electron/draw-trigger');
 const { MonitorService, SiteClient } = require('../electron/monitor');
 
 test('parses only an explicitly settled PC28 draw, not the current betting draw', () => {
@@ -54,7 +54,7 @@ test('site client prefers the visible PC28 header before making a fallback reque
 
 test('settled draw in a nested authenticated frame is read without a request', async () => {
   const vm = require('node:vm');
-  const frame = text => ({ isDestroyed: () => false, executeJavaScript: async script => vm.runInNewContext(script, { document: { body: { innerText: text } } }) });
+  const frame = text => ({ isDestroyed: () => false, executeJavaScript: async script => vm.runInNewContext(script, { location: { pathname: '/Home/Index' }, document: { body: { innerText: text } } }) });
   const main = frame('本周报表'); main.framesInSubtree = [main, frame('3491985期 距封盘：00:44 3491984期开奖：3 0 0')];
   const status = {};
   const client = new SiteClient({ id: 'pc28', systemType: 'system-166' }, status);
@@ -66,13 +66,15 @@ test('settled draw in a nested authenticated frame is read without a request', a
 test('dynamic home detection uses a separate window with the same session and is cleaned on suspend', async () => {
   const store = fixture(); const sharedSession = {}; let loaded = ''; let destroyed = false; let options;
   const report = { isDestroyed: () => false, webContents: { getURL: () => 'https://market.example/ReportNew/Agent', session: sharedSession } };
-  const home = { isDestroyed: () => destroyed, destroy: () => { destroyed = true; }, loadURL: async url => { loaded = url; }, webContents: { stop() {}, setWindowOpenHandler() {} } };
+  const source = 'https://market.example/IntimeSheet/Index?uid=test-session&loginId=test&page=ALLSetting&lotteryType=JND282';
+  const home = { isDestroyed: () => destroyed, destroy: () => { destroyed = true; }, loadURL: async url => { loaded = url; }, webContents: { getURL: () => loaded, mainFrame: { isDestroyed: () => false, executeJavaScript: async () => source }, stop() {}, setWindowOpenHandler() {} } };
   const service = new MonitorService(store, () => {}, { createDrawWindow: config => { options = config; return home; } });
   const client = { window: report, async readLatestSettledDraw() { if (this.window === report) throw Object.assign(Error('no draw'), { code: 'DRAW_NOT_FOUND' }); return '3491984'; } };
   assert.equal(await service.readDrawState(client, store.state.accounts[0], report), '3491984');
   assert.equal(options.webPreferences.session, sharedSession);
   assert.equal(options.show, false);
-  assert.equal(loaded, 'https://market.example/Home/Index');
+  assert.equal(loaded, source);
+  assert.match(home.settlementDrawQuery.url, /\/IntimeSheet\/GetCurrentInstall/);
   service.suspend();
   assert.equal(destroyed, true); assert.equal(service.drawWindows.size, 0);
 });
@@ -149,6 +151,53 @@ test('settlement evidence requires an explicit accounting period, not a draw hea
   assert.equal(parseReportSettlementDraw('3491984期开奖：3 0 0 本周应收 200000'), null);
   assert.equal(parseReportSettlementDraw('账目已结算至：第3491984期'), '3491984');
   assert.equal(parseReportSettlementDraw('已结算期号：3491984 已结算期号：3491983'), null);
+});
+
+test('verified PC28 response selects the settled previous draw and uses countdown only for polling', () => {
+  const observed = { Installments: '3494518', PreInstallments: '3494517', PreLotteryResult: '7,5,1', OpenTimeStamp: 112, TemplateCode: 'JNDPCDD' };
+  assert.deepEqual(parseDrawStateResponse(observed), { drawId: '3494517', currentDraw: '3494518', nextPollMs: 60000 });
+  assert.equal(parseDrawStateResponse({ ...observed, OpenTimeStamp: 8 }).nextPollMs, 5000);
+  assert.equal(parseDrawStateResponse({ ...observed, PreInstallments: observed.Installments }), null);
+  assert.equal(parseDrawStateResponse({ ...observed, PreLotteryResult: '' }), null);
+  assert.equal(parseDrawStateResponse({ ...observed, TemplateCode: 'other' }), null);
+  assert.equal(parseDrawStateResponse('<form>login</form>'), null);
+});
+
+test('verified instant header reads spanQishu instead of the current betting period', async () => {
+  const vm = require('node:vm'); const status = {};
+  const header = { textContent: '3494517期开奖: 7 5 1', querySelector: selector => selector === '#spanQishu' ? { textContent: '3494517' } : null };
+  const client = new SiteClient({ id: 'pc28', systemType: 'system-166' }, status);
+  client.window = { isDestroyed: () => false, webContents: { mainFrame: {
+    isDestroyed: () => false,
+    executeJavaScript: async script => vm.runInNewContext(script, { URL, location: { pathname: '/IntimeSheet/Index', href: 'https://market.example/IntimeSheet/Index?lotteryType=JND282' }, document: { body: { innerText: '3494518期 距封盘 00:20' }, querySelector: selector => selector === '#drawLotterInfo' ? header : null } }),
+  } } };
+  assert.equal(await client.readLatestSettledDraw(), '3494517');
+  assert.equal(status.drawSource, '即时注单开奖标题（JND282）');
+});
+
+test('dedicated draw query uses the authenticated observed request and returns no account data', async () => {
+  const status = {}; const client = new SiteClient({ id: 'pc28' }, status); let request;
+  client.window = { webContents: { session: { fetch: async (url, init) => {
+    request = { url, init };
+    return Response.json({ Installments: '3494518', PreInstallments: '3494517', PreLotteryResult: '7,5,1', OpenTimeStamp: 112, TemplateCode: 'JNDPCDD', TodayWinLost: 999 });
+  } } } };
+  const query = { url: 'https://market.example/IntimeSheet/GetCurrentInstall?uid=private', body: 'lotteryType=JND282&temaType=0&organizationId=' };
+  assert.equal(await client.readSettledDrawQuery(query), '3494517');
+  assert.equal(request.init.method, 'POST'); assert.equal(request.init.credentials, 'include');
+  assert.equal(status.drawSuggestedPollMs, 60000);
+  assert.ok(!JSON.stringify(status).includes('private')); assert.ok(!JSON.stringify(status).includes('999'));
+});
+
+test('countdown polling still waits fifteen seconds after confirmed draw change before reading', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 16, 12) });
+  const store = fixture(); let draw = '3494517'; let reads = 0;
+  const service = new MonitorService(store, () => {}, { createSiteClient: (_, status) => ({ async readLatestSettledDraw() { status.drawSuggestedPollMs = 60000; return draw; } }) });
+  service.viewWindows.set('pc28', { isDestroyed: () => false }); service.check = async () => { reads++; };
+  await service.pollDraws(); draw = '3494518';
+  t.mock.timers.tick(59000); await service.pollDraws(); assert.equal(reads, 0);
+  t.mock.timers.tick(1000); await service.pollDraws(); assert.equal(reads, 0);
+  t.mock.timers.tick(14000); await service.pollDraws(); assert.equal(reads, 0);
+  t.mock.timers.tick(1000); await service.pollDraws(); assert.equal(reads, 1);
 });
 
 test('daily hidden-page maintenance runs once, preserving account configuration and leaving visible pages alone', async t => {

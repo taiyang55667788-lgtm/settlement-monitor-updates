@@ -358,6 +358,47 @@ test('a failing branch backs off independently; manual refresh recovers it', asy
   assert.deepEqual(service.status('account-1').branchFailures,{});
 });
 
+test('due branch retry reads only the failed branch and preserves healthy descendant timestamps', async () => {
+  const { context, store, makeService } = fixture();
+  store.state.accounts[0].subagentThresholds = [{ path: ['parent', 'slow', 'leaf'], alertStep: 100 }, { path: ['parent', 'healthy', 'leaf'], alertStep: 100 }];
+  context.descendants = new Map([
+    ['parent', { agents: [{ name: 'slow', value: 10 }, { name: 'healthy', value: 20 }], value: 30 }],
+    ['parent/slow', { agents: [{ name: 'leaf', value: 1 }], value: 1 }],
+    ['parent/healthy', { agents: [{ name: 'leaf', value: 2 }], value: 2 }],
+  ]);
+  let fail = true; const reads = [];
+  context.beforeDescendant = async path => { reads.push(path.join('/')); if (fail && path.join('/') === 'parent/slow') throw Error('本周报表加载超时'); };
+  const service = makeService(); await service.check('account-1');
+  const status = service.status('account-1');
+  const healthyAt = status.subagents.find(item => item.path.join('/') === 'parent/healthy/leaf').readAt;
+  const wholeSuccessAt = status.lastSuccessAt;
+  status.branchFailures['["parent","slow"]'].nextAt = Date.now() - 1;
+  status.normalNextCheckAt = new Date(Date.now() + 300000).toISOString();
+  const normalAt = status.normalNextCheckAt;
+  fail = false; reads.length = 0;
+  await service.check('account-1', { branchRetryOnly: true });
+  assert.deepEqual(reads, ['parent/slow']);
+  assert.equal(status.subagents.find(item => item.path.join('/') === 'parent/healthy/leaf').readAt, healthyAt);
+  assert.equal(status.lastSuccessAt, wholeSuccessAt);
+  assert.equal(status.nextCheckAt, normalAt);
+  assert.equal(status.readSamples.at(-1).scope, 'branch');
+  assert.equal(status.scanMode, '到期分支补读');
+});
+
+test('a deferred branch wakes at its own deadline before the normal account interval', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 16, 12) });
+  const { context, makeService } = fixture(); context.childFailure = true;
+  const service = makeService(); await service.check('account-1');
+  const status = service.status('account-1');
+  status.branchFailures['["parent"]'].nextAt = Date.now() + 30000;
+  await service.check('account-1');
+  assert.equal(status.nextCheckReason, 'branch-retry');
+  assert.equal(Date.parse(status.nextCheckAt), Date.now() + 30000);
+  const calls = []; service.check = async (id, options) => calls.push({ id, options });
+  t.mock.timers.tick(30000); await service.tick();
+  assert.deepEqual(calls, [{ id: 'account-1', options: { branchRetryOnly: true } }]);
+});
+
 test('a deferred descendant remains partial but never becomes a root-failure Telegram alert', async () => {
   const { context, store, deltaAlerts, makeService } = fixture();
   store.state.alertPolicy = { failureEscalation: 1 };

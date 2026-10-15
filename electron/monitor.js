@@ -11,7 +11,7 @@ const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, Notif
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
 const { DirectReportReader, clearDirectSession } = require('./direct-report');
 const { failureCategory, failedBranch, readSummary } = require('./runtime-health');
-const { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, parseSettledDraw, parseReportSettlementDraw, compareDrawId, observeSettledDraw } = require('./draw-trigger');
+const { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, parseSettledDraw, parseReportSettlementDraw, parseDrawStateResponse, compareDrawId, observeSettledDraw } = require('./draw-trigger');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -614,7 +614,20 @@ class SiteClient {
     // filled by page scripts, so the raw response need not contain the latest
     // settled period even when the user can already see it in the browser.
     try {
+      const instant = await executeInFrames(this.window, `(() => {
+        if (location.pathname !== '/IntimeSheet/Index') return null;
+        const lottery = new URL(location.href).searchParams.get('lotteryType');
+        if (!['JND282', 'JND28WEB'].includes(lottery)) return null;
+        const header = document.querySelector('#drawLotterInfo');
+        const drawId = header?.querySelector('#spanQishu')?.textContent?.trim();
+        return header && /期开奖/.test(header.textContent) && /^\\d{5,}$/.test(drawId || '') ? { drawId, lottery } : null;
+      })()`, value => Boolean(value?.drawId));
+      if (instant) {
+        this.status.drawSource = `即时注单开奖标题（${instant.lottery}）`;
+        return instant.drawId;
+      }
       const frameDraw = await executeInFrames(this.window, `(() => {
+        if (location.pathname === '/IntimeSheet/Index' && !['JND282', 'JND28WEB'].includes(new URL(location.href).searchParams.get('lotteryType'))) return null;
         const text = String(document.body?.innerText || '');
         const matches = [...text.matchAll(/(?:第)?(\\d{5,})\\s*期\\s*(?:已)?开奖(?:结果|号码)?(?=[:：\\s]|$)/g)];
         return matches.length ? matches[matches.length - 1][1] : null;
@@ -639,6 +652,19 @@ class SiteClient {
     if (!drawId) throw Object.assign(new Error('盘口未识别到已开奖期号'), { code: 'DRAW_NOT_FOUND' });
     this.status.drawSource = '首页会话请求';
     return drawId;
+  }
+
+  async readSettledDrawQuery(query) {
+    const response = await this.window.webContents.session.fetch(query.url, {
+      method: 'POST', credentials: 'include', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(8000),
+      headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, body: query.body,
+    });
+    if (!response.ok) throw Object.assign(new Error('开奖接口暂不可读'), { code: `DRAW_HTTP_${response.status}` });
+    const draw = parseDrawStateResponse(await response.text());
+    if (!draw) throw Object.assign(new Error('开奖接口没有有效的已开奖期号'), { code: 'DRAW_API_INVALID' });
+    this.status.drawSource = '盘口开奖状态接口（JND282）';
+    this.status.drawSuggestedPollMs = draw.nextPollMs;
+    return draw.drawId;
   }
 
   async readThisWeekSettlement() {
@@ -1842,7 +1868,16 @@ class MonitorService {
     const existing = this.drawWindows.get(account.id);
     if (existing && !existing.isDestroyed()) {
       client.window = existing;
-      return client.readLatestSettledDraw();
+      if (existing.settlementDrawQuery && client.readSettledDrawQuery) {
+        try { return await client.readSettledDrawQuery(existing.settlementDrawQuery); }
+        catch (error) { this.status(account.id).drawApiError = /^DRAW_[A-Z_0-9]+$/.test(error.code || '') ? error.code : 'DRAW_API_NETWORK_ERROR'; }
+      }
+      try { return await client.readLatestSettledDraw(); }
+      catch (error) {
+        if (error.code !== 'DRAW_NOT_FOUND') throw error;
+        await this.openInstantDrawPage(existing);
+        return client.readLatestSettledDraw();
+      }
     }
     try { return await client.readLatestSettledDraw(); }
     catch (error) {
@@ -1861,9 +1896,34 @@ class MonitorService {
     client.window = win;
     return boundedOperation(async () => {
       await load(win, url);
-      await sleep(800);
+      await this.openInstantDrawPage(win);
+      if (win.settlementDrawQuery && client.readSettledDrawQuery) {
+        try { return await client.readSettledDrawQuery(win.settlementDrawQuery); } catch {}
+      }
       return client.readLatestSettledDraw();
     }, 12000, () => this.closeDrawWindow(account.id));
+  }
+
+  async openInstantDrawPage(win) {
+    const source = await executeInFrames(win, `(() => {
+      const selected = document.querySelector('#lottery')?.value;
+      const links = [...document.querySelectorAll('a[href]')].filter(a => a.textContent.trim() === '总项').map(a => {
+        try { return new URL(a.href, location.href); } catch { return null; }
+      }).filter(url => url && url.origin === location.origin && url.pathname === '/IntimeSheet/Index'
+        && url.searchParams.get('page') === 'ALLSetting' && ['JND282', 'JND28WEB'].includes(url.searchParams.get('lotteryType')));
+      return (links.find(url => url.searchParams.get('lotteryType') === selected) || links[0])?.href || null;
+    })()`, value => typeof value === 'string' && /^https?:/.test(value));
+    if (!source) throw Object.assign(new Error('盘口未提供可验证的即时注单开奖入口'), { code: 'DRAW_SOURCE_NOT_FOUND' });
+    if (new URL(source).origin !== new URL(win.webContents.getURL()).origin) throw Object.assign(new Error('开奖入口与当前会话不同源'), { code: 'DRAW_SOURCE_MISMATCH' });
+    await load(win, source);
+    const url = new URL(source);
+    if (url.searchParams.get('lotteryType') === 'JND282' && url.searchParams.get('uid') && url.searchParams.get('loginId')) {
+      const api = new URL('/IntimeSheet/GetCurrentInstall', url.origin);
+      api.searchParams.set('uid', url.searchParams.get('uid'));
+      api.searchParams.set('loginId', url.searchParams.get('loginId'));
+      // Session-bearing parameters remain only on this live window, never in diagnostics or persistent configuration.
+      win.settlementDrawQuery = { url: api.href, body: 'lotteryType=JND282&temaType=0&organizationId=' };
+    }
   }
 
   async pollDraws() {
@@ -1874,6 +1934,7 @@ class MonitorService {
       for (const account of this.store.state.accounts.filter(item => item.enabled && this.usesDrawTrigger(item))) {
         const status = this.status(account.id);
         if (this.pauseForMarket(account, status) || status.status === 'market-waiting' || status.openingRecovery) continue;
+        if (status.drawNextProbeAt > now) continue;
         if (status.status === 'manual' || this.openingViews.has(account.id) || this.inFlight.has(account.id)) continue;
         const win = this.viewWindows.get(account.id);
         if (!win || win.isDestroyed()) {
@@ -1883,6 +1944,7 @@ class MonitorService {
         }
         try {
           const client = this.createSiteClient(structuredClone(account), status);
+          status.drawSuggestedPollMs = 0;
           client.window = win;
           client.ownsWindow = false;
           const drawId = await boundedOperation(() => this.readDrawState(client, account, win), 16000, () => {
@@ -1890,7 +1952,9 @@ class MonitorService {
             this.closeDrawWindow(account.id);
           });
           if (this.stopped || this.suspended || !this.store.state.accounts.find(item => item.id === account.id)?.enabled || this.pauseForMarket(account, status)) continue;
-          const observed = observeSettledDraw(this.drawState.get(account.id), drawId, now, this.drawReadDelayMs);
+          status.drawNextProbeAt = Date.now() + (Number(status.drawSuggestedPollMs) || 0);
+          const observedAt = Date.now();
+          const observed = observeSettledDraw(this.drawState.get(account.id), drawId, observedAt, this.drawReadDelayMs);
           this.drawState.set(account.id, observed.state);
           if (observed.changed) this.drawPending.set(account.id, observed.dueAt);
           const dueAt = this.drawPending.get(account.id);
@@ -1899,11 +1963,12 @@ class MonitorService {
             enabled: true,
             state: dueAt ? '已检测新开奖，等待读取' : (observed.baseline ? '已建立开奖基准' : '监测中'),
             latestDraw: observed.state.drawId,
-            observedAt: new Date(now).toISOString(),
+            observedAt: new Date(observedAt).toISOString(),
             nextReadAt: dueAt ? new Date(dueAt).toISOString() : '',
             fallback: stalled,
             error: stalled ? '已开奖期号停更超过 8 分钟或出现倒退，按固定间隔兜底' : '',
             source: status.drawSource || '',
+            nextProbeAt: new Date(status.drawNextProbeAt > Date.now() ? status.drawNextProbeAt : Date.now() + this.drawPollMs).toISOString(),
           };
           // A healthy site-draw monitor supersedes the fixed timer.  The fixed
           // timer is restored only when this lightweight state request fails.
@@ -1917,6 +1982,7 @@ class MonitorService {
           } else if (!status.recheckRequested && !['error', 'partial', 'recovering'].includes(status.status)) status.nextCheckAt = null;
           status.waitingForDraw = !stalled;
         } catch (error) {
+          status.drawNextProbeAt = 0;
           status.waitingForDraw = false;
           status.drawTrigger = {
             ...(status.drawTrigger || {}), enabled: true, state: '开奖状态暂不可读，按固定间隔检查',
@@ -1974,7 +2040,7 @@ class MonitorService {
     });
     if (due.length && now >= this.nextAutomaticStartAt) {
       this.nextAutomaticStartAt = now + 3000;
-      await this.check(due[0].id);
+      await this.check(due[0].id, { branchRetryOnly: this.status(due[0].id).nextCheckReason === 'branch-retry' });
     }
   }
 
@@ -2057,7 +2123,7 @@ class MonitorService {
     this.onChange();
   }
 
-  async check(accountId, { manual = false } = {}) {
+  async check(accountId, { manual = false, branchRetryOnly = false } = {}) {
     if (this.suspended || this.stopped || this.store.state.recoveryReviewRequired) return;
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     if (!storedAccount) throw new Error('账号不存在');
@@ -2072,6 +2138,7 @@ class MonitorService {
     const metric = metricForAccount(account);
     const status = this.status(accountId);
     const recovering = status.openingRecovery || ['error', 'recovering', 'stale'].includes(status.status) || status.failureKind === '登录状态';
+    status.branchRetryRound = false;
     const bypassBranchBackoff = manual || this.fullScanRequested.has(accountId) || recovering;
     status.recheckRequested = false;
     status.sessionLostThisRound = false;
@@ -2123,14 +2190,22 @@ class MonitorService {
       if (status.branchFailurePeriod !== periodKey) { status.branchFailures = {}; status.branchFailurePeriod = periodKey; }
       const cachedSnapshot = this.store.state.accounts.find((item) => item.id === accountId)?.agentSnapshot;
       const cachedAgents = cachedSnapshot?.metric === metric.id ? cachedSnapshot.agents || [] : [];
+      const retryOnly = branchRetryOnly && !manual && !this.fullScanRequested.has(accountId)
+        && cachedSnapshot?.period?.start === client.reportPeriod.start && cachedSnapshot?.period?.end === client.reportPeriod.end;
+      status.branchRetryRound = retryOnly;
       const checkpoint = scanState(storedAccount.scanCheckpoint, metric.id, periodKey);
-      const fullScan = this.fullScanRequested.has(accountId) || Boolean(storedAccount.scanCheckpoint) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1;
+      const fullScan = !retryOnly && (this.fullScanRequested.has(accountId) || Boolean(storedAccount.scanCheckpoint) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1);
       const leafCache = storedAccount.leafCache?.period === periodKey && storedAccount.leafCache.metric === metric.id
         ? structuredClone(storedAccount.leafCache) : { period: periodKey, metric: metric.id, paths: {} };
-      status.scanMode = fullScan ? '全量扫描' : '按提醒读取';
+      status.scanMode = retryOnly ? '到期分支补读' : fullScan ? '全量扫描' : '按提醒读取';
       const agents = metric.usesSubagents
         ? report.agents.map((agent) => ({ ...agent, path: [agent.name], readAt: rootReadAt }))
         : [{ name: metric.label, path: [metric.label], value: report.value, readAt: rootReadAt }];
+      const initialBatch = agents.slice();
+      const freshPaths = new Set(initialBatch.map(agent => agentPathKey(agent.path)));
+      if (retryOnly) for (const cached of cachedAgents) {
+        if (cached.path.length > 1 && report.agents.some(root => root.name === cached.path[0])) agents.push({ ...cached });
+      }
       let configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
       const legacyStep = legacyAlertStep(account);
       if (metric.usesSubagents && !configuredSubagents.length && report.agents.length && legacyStep !== null) {
@@ -2148,10 +2223,11 @@ class MonitorService {
       status.phaseTimings = { loginAndRootMs: Date.now() - checkStarted, branches: [] };
       const publishBatch = async (fresh) => {
         if (!this.isCurrentCheck(accountId, revision)) return;
+        for (const item of fresh) freshPaths.add(agentPathKey(item.path));
         configuredSubagents = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
         const unread = cachedAgents.filter(old => !agents.some(item => agentPathKey(item.path) === agentPathKey(old.path))).map(old => ({ ...old, stale: true, staleReason: 'waiting' }));
         status.subagents = applySubagentAlertSteps([...agents, ...unread], configuredSubagents);
-        status.readProgress = { read: agents.filter(a => !a.stale).length };
+        status.readProgress = { read: freshPaths.size };
         status.subagentCount = report.agents.length;
         status.totalValue = report.value;
         status.stage = '已读取 ' + agents.filter(a => !a.stale).length + ' 个代理，继续读取下级';
@@ -2164,16 +2240,18 @@ class MonitorService {
         }
         this.onChange();
       };
-      await publishBatch(agents.slice());
+      await publishBatch(initialBatch);
       const childErrors = [];
       const retryBranches = [];
       const retriedBranches = new Set();
-      const needsBranch = path => fullScan || path.length === 1 || configuredSubagents.some(setting => {
+      const needsBranch = path => !retryOnly && (fullScan || path.length === 1 || configuredSubagents.some(setting => {
         const target = setting.path || [setting.name];
         return (Number(setting.alertStep) > 0 || Number(setting.deltaAlertStep) > 0)
           && target.length > path.length && path.every((part, index) => target[index] === part);
-      });
-      const branches = metric.readsDescendants !== false ? report.agents.map((agent) => [agent.name]) : [];
+      }));
+      const branches = metric.readsDescendants !== false ? retryOnly
+        ? Object.entries(status.branchFailures).filter(([, failure]) => failure.nextAt <= Date.now()).map(([key]) => JSON.parse(key))
+        : report.agents.map((agent) => [agent.name]) : [];
       const mergeChildren = (path, children, freshRead = true) => {
         const parent = agents.find(item => agentPathKey(item.path) === agentPathKey(path));
         if (!parent) return [];
@@ -2307,6 +2385,7 @@ class MonitorService {
           status.branchFailures[key] = error.code === 'SETTLEMENT_PENDING'
             ? { failures: status.branchFailures[key]?.failures || 0, nextAt: Date.now() + 30000, pendingSettlement: true }
             : failedBranch(status.branchFailures[key], account.intervalMinutes);
+          status.branchFailures[key].error = parent.childError;
           const failureKeys = Object.keys(status.branchFailures);
           if (failureKeys.length > 1000) delete status.branchFailures[failureKeys[0]];
           childErrors.push(`${path.join(' / ')}：${parent.childError}`);
@@ -2343,12 +2422,17 @@ class MonitorService {
           agents.push({ ...cached, stale: true, notRefreshed: true, staleReason: 'on-demand' });
         }
       }
-      status.stage = metric.readsDescendants !== false ? `最多 ${MAX_DESCENDANT_DEPTH} 级代理报表读取完成` : metric.usesSubagents ? '皇冠总代理明细读取完成' : '报表读取完成';
+      for (const key of Object.keys(status.branchFailures || {})) {
+        if (!agents.some(agent => agentPathKey(agent.path) === key)) { delete status.branchFailures[key]; continue; }
+        if (retryOnly && !status.phaseTimings.branches.some(item => agentPathKey(item.path) === key)) childErrors.push(`${JSON.parse(key).join(' / ')}：仍待重试`);
+      }
+      status.stage = childErrors.length ? `本轮结束，${childErrors.length} 个分支待重试` : retryOnly ? '到期分支补读完成' : metric.readsDescendants !== false ? `最多 ${MAX_DESCENDANT_DEPTH} 级代理报表读取完成` : metric.usesSubagents ? '皇冠总代理明细读取完成' : '报表读取完成';
       status.subagents = applySubagentAlertSteps(agents, configuredSubagents);
       status.subagentCount = metric.usesSubagents ? report.agents.length : 1;
       status.totalValue = report.value;
       status.lastCheckedAt = new Date().toISOString();
-      if (!childErrors.length) status.lastSuccessAt = status.lastCheckedAt;
+      if (!childErrors.length && !retryOnly) status.lastSuccessAt = status.lastCheckedAt;
+      status.lastDataUpdateAt = status.lastCheckedAt;
       this.store.update((data) => {
         const current = data.accounts.find((item) => item.id === accountId);
         if (current) {
@@ -2359,7 +2443,7 @@ class MonitorService {
             agents: agents.map(({ name, path, value, noData, turnover, readAt, childCount, stale, notRefreshed, staleReason }) => ({ name, path, value, noData: Boolean(noData), stale: Boolean(stale), staleReason, notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
           };
           if (fullScan && !childErrors.length) delete current.scanCheckpoint;
-          const point = { time: status.lastCheckedAt, metric: metric.id, agents: agents.filter((item) => !item.stale && Number.isFinite(item.value)).map(({ path, value }) => ({ path, value })) };
+          const point = { time: status.lastCheckedAt, metric: metric.id, agents: agents.filter((item) => !item.stale && Date.parse(item.readAt) >= checkStarted && Number.isFinite(item.value)).map(({ path, value }) => ({ path, value })) };
           current.agentTrend = [...(Array.isArray(current.agentTrend) ? current.agentTrend : []), point]
             .filter((item) => Date.parse(item.time) >= Date.now() - 7 * 86400000).slice(-2016);
         }
@@ -2375,7 +2459,7 @@ class MonitorService {
         });
       }
       status.status = childErrors.length ? 'partial' : notificationFailures.length ? 'error' : anyTriggered ? 'triggered' : 'ok';
-      status.readProgress = { read: agents.filter(a => !a.stale).length, pendingBranches: 0 };
+      status.readProgress = { read: freshPaths.size, pendingBranches: Object.keys(status.branchFailures || {}).length };
       status.failureKind = childErrors.length ? '部分报表读取或校验' : notificationFailures.length ? 'Telegram 发送' : '';
       status.failureScope = childErrors.length ? '下级分支（已延后重试）' : notificationFailures.length ? '金额提醒发送' : '';
       status.error = [
@@ -2449,6 +2533,7 @@ class MonitorService {
       status.durationMs = Date.now() - checkStarted;
       status.readSamples = [...(status.readSamples || []).filter(item => Date.now() - Date.parse(item.at) < 86400000), {
         at: new Date().toISOString(), durationMs: status.durationMs, status: status.status,
+        scope: status.branchRetryRound ? 'branch' : 'account',
         failureKind: status.failureKind, failureScope: status.failureScope, sessionLost: status.sessionLostThisRound, recovery: recovering || status.sessionLostThisRound,
         direct: status.directRead ? { ...status.directRead } : null,
       }].slice(-2000);
@@ -2492,8 +2577,14 @@ class MonitorService {
         status.nextCheckAt = status.status === 'market-closed' ? marketSchedule().nextReadAt : status.status === 'manual' ? null : status.status === 'market-waiting' || status.openingRecovery
           ? new Date(Date.now() + 30000).toISOString()
           : new Date(Math.max(Date.now() + 1000, checkStarted + retryDelay(this.store.state.accounts.find(item => item.id === accountId) || account, status.status === 'partial' ? 0 : status.consecutiveFailures))).toISOString();
-        const pendingSettlement = Object.values(status.branchFailures || {}).filter(item => item.pendingSettlement).map(item => item.nextAt);
-        if (status.status === 'partial' && pendingSettlement.length) status.nextCheckAt = new Date(Math.max(Date.now() + 1000, Math.min(Date.parse(status.nextCheckAt), ...pendingSettlement))).toISOString();
+        if (status.branchRetryRound && ['ok', 'triggered', 'partial'].includes(status.status) && status.normalNextCheckAt) status.nextCheckAt = status.normalNextCheckAt;
+        else status.normalNextCheckAt = status.nextCheckAt;
+        status.nextCheckReason = '';
+        const branchDates = Object.values(status.branchFailures || {}).map(item => item.nextAt).filter(Number.isFinite);
+        if (status.status === 'partial' && branchDates.length && Math.min(...branchDates) < Date.parse(status.nextCheckAt)) {
+          status.nextCheckAt = new Date(Math.max(Date.now() + 1000, Math.min(...branchDates))).toISOString();
+          status.nextCheckReason = 'branch-retry';
+        }
         this.onChange();
       }
     }

@@ -16,6 +16,7 @@ function nextReadDescription(account) {
   const reason = account.status === 'market-closed' ? '开盘恢复'
     : account.status === 'market-waiting' ? '盘口数据复查'
       : account.status === 'error' ? '失败退避重试'
+      : account.nextCheckReason === 'branch-retry' ? '到期分支补读'
       : draw?.nextReadAt ? '新开奖触发'
         : draw?.enabled && !draw.fallback && !account.openingRecovery ? '等待下一期开奖'
           : account.openingRecovery ? '开盘恢复重试' : '固定间隔或失败退避';
@@ -68,23 +69,25 @@ function refreshReadingDetails() {
     `账号：${account.name}`, `状态：${statusNames[account.status] || '等待读取'}`,
     `过程：${account.stage || '尚未开始'}`, `模式：${account.scanMode || '首次扫描'}`,
     `已读取：${account.readProgress?.read || 0} 个代理；待查分支：${account.readProgress?.pendingBranches ?? '—'}`,
-    `最近成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未成功'}`,
+    `整轮完整成功：${account.lastSuccessAt ? new Date(account.lastSuccessAt).toLocaleString('zh-CN') : '尚未完整成功'}`,
+    `最近数据更新：${account.lastDataUpdateAt ? new Date(account.lastDataUpdateAt).toLocaleString('zh-CN') : '尚无本次启动更新记录'}`,
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     ...(account.recoveryAction ? [`自动恢复：${account.recoveryAction}`] : []),
     ...(account.maintenanceNote ? [`页面维护：${account.maintenanceNote}`] : []),
-    ...(account.settlementCheck ? [`结算核对：${account.settlementCheck.state}${account.settlementCheck.drawId ? '；报表期号 ' + account.settlementCheck.drawId : ''}`] : []),
+    ...(account.settlementCheck ? [`结算核对：${account.settlementCheck.supported ? account.settlementCheck.state : `报表未提供结算期号；${account.drawTrigger?.fallback || account.drawTriggerEnabled === false ? '按固定间隔读取' : '按已开奖期号触发，确认后延迟15秒读取'}`}${account.settlementCheck.drawId ? '；报表期号 ' + account.settlementCheck.drawId : ''}`] : []),
     ...(account.failureScope ? [`失败来源：${account.failureScope}`] : []),
     ...(account.degradedUntil && Date.parse(account.degradedUntil) > Date.now() ? [`降级保护：报表会话已重建；仍失败将于 ${new Date(account.degradedUntil).toLocaleTimeString('zh-CN')} 后按退避重试`] : []),
     ...(account.drawTrigger?.enabled ? [
       `PC28 开奖触发：${account.drawTrigger.state || '等待首次盘口状态'}；最近已开奖：${account.drawTrigger.latestDraw || '—'}`,
       `开奖检测来源：${account.drawTrigger.source || '尚未识别'}；最近失败：${account.drawTrigger.failedAt ? new Date(account.drawTrigger.failedAt).toLocaleString('zh-CN') : '无记录'}`,
-      `开奖状态最近检查：${account.drawTrigger.observedAt ? new Date(account.drawTrigger.observedAt).toLocaleString('zh-CN') : '—'}；开奖后读取：${account.drawTrigger.nextReadAt ? new Date(account.drawTrigger.nextReadAt).toLocaleString('zh-CN') : (account.drawTrigger.fallback ? '已退回固定间隔' : '—')}`,
+      `开奖状态最近检查：${account.drawTrigger.failedAt || account.drawTrigger.observedAt ? new Date(Math.max(Date.parse(account.drawTrigger.failedAt) || 0, Date.parse(account.drawTrigger.observedAt) || 0)).toLocaleString('zh-CN') : '—'}；开奖后读取：${account.drawTrigger.nextReadAt ? new Date(account.drawTrigger.nextReadAt).toLocaleString('zh-CN') : (account.drawTrigger.fallback ? '已退回固定间隔' : '—')}`,
+      ...(account.drawTrigger.nextProbeAt ? [`下次开奖检测：${new Date(account.drawTrigger.nextProbeAt).toLocaleTimeString('zh-CN')}`] : []),
       ...(account.drawTrigger.error ? [`开奖触发说明：${account.drawTrigger.error}`] : []),
     ] : []),
     ...(account.readSummary ? [
-      `最近24小时（本次启动后）：${account.readSummary.rounds} 轮；完整读取成功率 ${account.readSummary.successRate === null ? '—' : (account.readSummary.successRate * 100).toFixed(1) + '%'}；部分失败 ${account.readSummary.partial} 轮`,
-      `平均整轮耗时：${account.readSummary.averageMs === null ? '—' : (account.readSummary.averageMs / 1000).toFixed(1) + ' 秒'}`,
+      `最近24小时（本次启动后）：${account.readSummary.completeRounds ?? account.readSummary.rounds} 次整轮；${account.readSummary.branchRetries || 0} 次分支补读；完整读取成功率 ${account.readSummary.successRate === null ? '—' : (account.readSummary.successRate * 100).toFixed(1) + '%'}；部分失败 ${account.readSummary.partial} 次`,
+      `平均读取尝试耗时（含恢复及补读）：${account.readSummary.averageMs === null ? '—' : (account.readSummary.averageMs / 1000).toFixed(1) + ' 秒'}`,
       `直接查询成功率：${account.readSummary.directRate === null ? '尚无直接查询' : (account.readSummary.directRate * 100).toFixed(1) + '%'}；平均 ${account.readSummary.directAverageMs === null ? '—' : Math.round(account.readSummary.directAverageMs) + ' 毫秒'}；回退网页 ${account.readSummary.fallbacks} 次`,
       `确认登录失效 ${account.readSummary.sessionLosses} 轮；读取恢复成功 ${account.readSummary.recoveries} 轮`,
     ] : []),
