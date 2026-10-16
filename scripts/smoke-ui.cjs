@@ -18,6 +18,34 @@ app.whenReady().then(async () => {
       poll();
     })`);
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').getAttribute('aria-expanded')`), 'false');
+    await win.webContents.executeJavaScript(`(() => {
+      document.querySelector('[data-action="trend-details"]').click();
+      if (!document.querySelector('#trend-dialog').open) throw Error('走势图详情未打开');
+      if (!document.querySelector('#trend-plot').textContent.includes('暂无')) throw Error('空样本未提示');
+      document.querySelector('#close-trend').click();
+      const now = Date.now();
+      appState.accounts[0].trend = [31, 20, 10, 0].map((minutes, index) => ({ time: new Date(now - minutes * 60000).toISOString(), agents: [{ path: ['parent-01'], value: index * 100 }] }));
+      appState.alertRecords.push({ accountId: 'fixture-account', agentPath: ['parent-01'], time: new Date(now - 60000).toISOString(), status: 'sent', value: 300, alertStep: 100, previousLevel: 2 });
+      document.querySelector('[data-action="trend-details"]').click();
+      if (document.querySelectorAll('#trend-plot [data-point]').length !== 3) throw Error('30分钟过滤错误');
+      document.querySelector('#trend-plot [data-point]').dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      if (!document.querySelector('#trend-inspect').textContent.includes('100.00')) throw Error('悬停金额错误');
+      document.querySelector('#trend-plot .trend-alert-marker').click?.();
+      document.querySelector('#trend-plot .trend-alert-marker').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      if (!document.querySelector('#trend-alerts details').open) throw Error('提醒标记未打开记录');
+      document.querySelector('[data-minutes="60"]').click();
+      if (document.querySelectorAll('#trend-plot [data-point]').length !== 4) throw Error('1小时过滤错误');
+      document.querySelector('[data-minutes="1440"]').click();
+      if (document.querySelector('[data-minutes="1440"]').getAttribute('aria-pressed') !== 'true') throw Error('24小时切换错误');
+      document.querySelector('#close-trend').click();
+      if (document.querySelector('#trend-dialog').open) throw Error('走势详情未关闭');
+    })()`);
+    if (process.env.TREND_SCREENSHOT) {
+      await win.webContents.executeJavaScript(`document.querySelector('[data-action="trend-details"]').click()`);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      require('node:fs').writeFileSync(process.env.TREND_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
+      await win.webContents.executeJavaScript(`document.querySelector('#close-trend').click()`);
+    }
     // The fixture contains persisted expansion paths: startup must ignore them.
     await win.webContents.executeJavaScript(`(() => {
       document.querySelector('.level-1 .tree-toggle').click();
@@ -223,7 +251,7 @@ app.whenReady().then(async () => {
       value: document.querySelector('.subagent-value').textContent,
       turnover: document.querySelector('.subagent-turnover').textContent,
     })`);
-    assert.deepEqual(totalResult, { heading: '总代理结果', label: '本周总代理明细', rows: 1, treeToggle: false, value: '-1,250.00趋势数据积累中', turnover: '3,000.00' });
+    assert.deepEqual(totalResult, { heading: '总代理结果', label: '本周总代理明细', rows: 1, treeToggle: false, value: '-1,250.00趋势数据积累中 · 查看详情', turnover: '3,000.00' });
     await win.webContents.executeJavaScript(`document.querySelector('#add-account').click()`);
     const crownFields = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const deadline = Date.now() + 3000;

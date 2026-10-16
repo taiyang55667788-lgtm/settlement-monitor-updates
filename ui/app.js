@@ -224,12 +224,44 @@ function reminderSettings(name, alertStep, deltaAlertStep) {
 function trendChart(trend, path) {
   const key = pathKey(path);
   const values = (trend || []).map((point) => point.agents?.find((agent) => pathKey(agent.path) === key)?.value).filter(Number.isFinite).slice(-80);
-  if (values.length < 2) return '<span class="trend-empty">趋势数据积累中</span>';
+  if (values.length < 2) return `<button type="button" class="trend-empty" data-action="trend-details" data-trend-path="${escapeHtml(JSON.stringify(path))}">趋势数据积累中 · 查看详情</button>`;
   const low = Math.min(...values); const high = Math.max(...values); const range = high - low || 1;
   const points = values.map((value, index) => `${(index / (values.length - 1) * 100).toFixed(1)},${(26 - ((value - low) / range * 22)).toFixed(1)}`).join(' ');
   const delta = values.at(-1) - values[0];
-  return `<span class="trend-chart ${delta < 0 ? 'down' : 'up'}" title="最近 ${values.length} 次成功读取：最低 ${compactMoney.format(low)}，最高 ${compactMoney.format(high)}，变化 ${delta > 0 ? '+' : ''}${compactMoney.format(delta)}"><svg viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}" /></svg><small>${delta > 0 ? '+' : ''}${compactMoney.format(delta)}</small></span>`;
+  return `<button type="button" data-action="trend-details" data-trend-path="${escapeHtml(JSON.stringify(path))}" class="trend-chart ${delta < 0 ? 'down' : 'up'}" aria-label="查看金额走势详情" title="点击查看详细走势"><svg viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}" /></svg><small>${delta > 0 ? '+' : ''}${compactMoney.format(delta)}</small></button>`;
 }
+
+let selectedTrend = null;
+function renderTrendDetails() {
+  if (!selectedTrend || !$('#trend-dialog').open) return;
+  const account = appState.accounts.find(item => item.id === selectedTrend.accountId);
+  if (!account) { $('#trend-dialog').close(); return; }
+  const agent = account.subagents?.find(item => pathKey(item.path || [item.name]) === pathKey(selectedTrend.path));
+  const data = trendDetails(account.trend, selectedTrend.path, selectedTrend.minutes, Date.now(), Math.max(300000, (Number(account.intervalMinutes) || 5) * 180000));
+  $('#trend-title').textContent = `${selectedTrend.path.join(' / ')} · ${monitorMetric(account).valueLabel}走势`;
+  $$('#trend-ranges button').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.minutes) === selectedTrend.minutes)));
+  const signed = value => `${value > 0 ? '+' : ''}${money.format(value)}`;
+  $('#trend-summary').textContent = `当前金额：${Number.isFinite(agent?.value) ? signed(agent.value) : '暂无'}${agent?.stale ? '（旧数据）' : ''} · 区间最高：${data.high === null ? '暂无' : signed(data.high)} · 最低：${data.low === null ? '暂无' : signed(data.low)} · 样本 ${data.points.length} 个 · 最近成功读取：${agent?.readAt ? new Date(agent.readAt).toLocaleString('zh-CN') : '暂无'}`;
+  $('#trend-inspect').textContent = '悬停、点击或用 Tab 选择数据点查看时间与金额';
+  const x = time => 65 + (time - data.start) / (data.end - data.start) * 675;
+  const y = value => 245 - (value - data.low) / (data.high - data.low || 1) * 210;
+  const alertMetric = { 'receivable-downline': 'weekly-receivable-downline-v2', 'general-agent-result': 'weekly-crown-general-agent-details-v2', 'agent-result': 'weekly-agent-result-v2', 'member-result': 'weekly-member-result-v2' }[account.monitorMetric || 'receivable-downline'];
+  const alerts = (appState.alertRecords || []).filter(record => record.accountId === account.id && pathKey(record.agentPath || []) === pathKey(selectedTrend.path) && (!record.metric || record.metric === alertMetric) && Date.parse(record.time) >= data.start && Date.parse(record.time) <= data.end);
+  $('#trend-plot').innerHTML = data.points.length ? `<svg viewBox="0 0 780 290" role="img" aria-label="按实际读取时间绘制的金额走势"><text x="5" y="25">${escapeHtml(compactMoney.format(data.high))}</text><text x="5" y="245">${escapeHtml(compactMoney.format(data.low))}</text><path class="trend-axis" d="M65 15V250H750"/>${data.segments.map(segment => `<polyline points="${segment.map(point => `${x(point.time)},${y(point.value)}`).join(' ')}"/>`).join('')}${data.points.map((point, i) => `<circle tabindex="0" role="button" aria-label="${escapeHtml(new Date(point.time).toLocaleString('zh-CN') + '，' + signed(point.value))}" data-point="${i}" cx="${x(point.time)}" cy="${y(point.value)}" r="4"><title>${escapeHtml(new Date(point.time).toLocaleString('zh-CN') + ' · ' + signed(point.value))}</title></circle>`).join('')}<text x="65" y="280">${escapeHtml(new Date(data.start).toLocaleTimeString('zh-CN'))}</text><text x="670" y="280">${escapeHtml(new Date(data.end).toLocaleTimeString('zh-CN'))}</text></svg>` : '<p class="trend-no-data">此时间范围暂无成功读取数据</p>';
+  const inspect = event => { const point = data.points[Number(event.target.dataset.point)]; if (event.target.hasAttribute('data-point') && point) $('#trend-inspect').textContent = `${new Date(point.time).toLocaleString('zh-CN')} · ${signed(point.value)}`; };
+  $('#trend-plot').onmouseover = inspect; $('#trend-plot').onclick = inspect; $('#trend-plot').onfocusin = inspect;
+  $('#trend-alerts').innerHTML = alerts.map((record, i) => `<details data-alert-index="${i}"><summary>${escapeHtml(new Date(record.time).toLocaleString('zh-CN'))} · ${escapeHtml(({ sent: '发送成功', failed: '发送失败' })[record.status] || record.status)} · ${Number.isFinite(record.value) ? signed(record.value) : '提醒'}</summary><pre>${escapeHtml(`通知编号：${record.notificationId || record.id || '暂无'}\n上一次档位：${Number.isFinite(record.previousLevel) ? signed(record.previousLevel * record.alertStep) : '暂无'}\n提醒间隔：${record.alertStep || '暂无'}\n备注：${record.remark || '无'}\n${record.error || ''}`)}</pre></details>`).join('') || '<p>此范围暂无保留的提醒记录</p>';
+  const svg = $('#trend-plot svg');
+  if (svg) alerts.forEach((record, i) => {
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    marker.setAttribute('cx', x(Date.parse(record.time))); marker.setAttribute('cy', '18'); marker.setAttribute('r', '6');
+    marker.setAttribute('class', 'trend-alert-marker'); marker.setAttribute('tabindex', '0'); marker.setAttribute('role', 'button'); marker.setAttribute('aria-label', `查看${new Date(record.time).toLocaleString('zh-CN')}提醒记录`);
+    const openRecord = () => { const detail = $('#trend-alerts').querySelector(`[data-alert-index="${i}"]`); detail.open = true; detail.scrollIntoView({ block: 'nearest' }); };
+    marker.addEventListener('click', openRecord); marker.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRecord(); } }); svg.append(marker);
+  });
+}
+$('#close-trend').addEventListener('click', () => $('#trend-dialog').close());
+$('#trend-ranges').addEventListener('click', event => { const button = event.target.closest('[data-minutes]'); if (button && selectedTrend) { selectedTrend.minutes = Number(button.dataset.minutes); renderTrendDetails(); } });
 
 function routePreview(account) {
   if (!account?.routes?.length) return '<span>保存后将自动测速并显示代理线路</span>';
@@ -600,6 +632,10 @@ $('#accounts').addEventListener('click', (event) => {
   const row = event.target.closest('[data-id]');
   if (!button || !row) return;
   const account = appState.accounts.find((item) => item.id === row.dataset.id);
+  if (button.dataset.action === 'trend-details') {
+    selectedTrend = { accountId: account.id, path: JSON.parse(button.dataset.trendPath), minutes: 30 };
+    $('#trend-dialog').showModal(); renderTrendDetails(); return;
+  }
   if (button.dataset.action === 'save-subagent') {
     const subagentRow = button.closest('[data-subagent-index]');
     const subagent = account.subagents[Number(subagentRow.dataset.subagentIndex)];

@@ -166,7 +166,15 @@
       </form>
     </dialog>
 
+    <dialog id="trend-dialog" aria-labelledby="trend-title"><div class="trend-detail-content">
+      <div class="dialog-head"><h2 id="trend-title">金额走势详情</h2><button id="close-trend" class="icon-button" aria-label="关闭走势详情">×</button></div>
+      <div id="trend-ranges" class="agent-toolbar"><button type="button" data-minutes="30">30 分钟</button><button type="button" data-minutes="60">1 小时</button><button type="button" data-minutes="1440">24 小时</button></div>
+      <p id="trend-summary"></p><p id="trend-inspect" aria-live="polite"></p><div id="trend-plot"></div>
+      <p class="trend-note">打开或切换范围时的快照。仅展示已保存的成功读取样本；缺失样本或较长间隔断开，不补造数据。没有缺口也不能证明期间没有短暂故障。顶部红点为提醒记录（发送尝试时间），点击查看。</p>
+      <h3>区间提醒记录</h3><div id="trend-alerts"></div>
+    </div></dialog>
     <div id="toast" role="status" aria-live="polite"></div>
+    <script src="trend-details.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
