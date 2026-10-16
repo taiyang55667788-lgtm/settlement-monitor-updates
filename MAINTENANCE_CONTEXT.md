@@ -1,28 +1,28 @@
 # 交收监控维护上下文
 
-更新日期：2026-10-16。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+更新日期：2026-10-17。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
 ## 当前状态与已验证发布
 
-本地待发布：点击波线图查看金额走势详情（30分钟/1小时/24小时），支持具体样本时间金额、区间高低值及关联提醒记录。设计见 `ai-artifacts/plans/2026-10-16-trend-details-design.md`；复用现有样本，不改抓取、提醒和存储规则。版本号仍1.0.41，尚未发布该功能。文档整理改动也保留在工作区。
+v1.0.42已发布：点击波线图查看金额走势详情（30分钟/1小时/24小时），支持具体样本时间金额、区间高低值及关联提醒记录。设计见 `ai-artifacts/plans/2026-10-16-trend-details-design.md`；复用现有样本，不改抓取、提醒和存储规则。同步完成当前文档与历史版本归档分离，旧原文保留。
 
-本地验证：205项Node测试与五项Electron桌面流程通过；新增弹窗空态、30分钟/1小时/24小时切换、悬停金额、提醒标记打开记录及关闭验证。已检查模拟截图 `/tmp/settlement-trend-details.png`，git diff --check通过；本批尚未执行Windows CI或真实服务器升级验证。
+验证：205项Node测试与五项Electron桌面流程通过；新增弹窗空态、30分钟/1小时/24小时切换、悬停金额、提醒标记打开记录及关闭验证。已检查模拟截图 `/tmp/settlement-trend-details.png`，git diff --check通过；Windows验证及正式发布成功，GitHub正式版与R2清单一致，完整独立下载安装包的大小/SHA-512匹配。真实服务器升级体验尚未验证。
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.41，2026-10-16 发布 |
-| 发布源码/标签 | `ecd465a7ad4c8e850b47dd5d5b72bb2e647c6c41` / `v1.0.41` |
-| Windows 验证任务 | `38795855710`，成功 |
-| 正式发布任务 | `38796297863`，成功 |
-| 测试证据 | 202项 Node 测试、5项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117478765 |
-| SHA-512 | `pe96YePBkg94H7/HESLkO8Ml9HeV2t31ra6QbmsdOfgjCx6CK74Lylq0no9kBLfGM4yGqEbSzBb+lAR1lSfjuw==` |
+| 正式客户端 | v1.0.42，2026-10-17 发布 |
+| 发布源码/标签 | `0c4d6a1089167e80002199e977143bf6b510f2cf` / `v1.0.42` |
+| Windows 验证任务 | `38943833336`，成功 |
+| 正式发布任务 | `38944276846`，成功 |
+| 测试证据 | 205项 Node 测试、5项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117480930 |
+| SHA-512 | `Z5YmL+dHLzxPf1dsVbYw0i/pxI7YmVKDvNQ0zIE08n3Gwsht52dfc/pwHmsgKSIO9JbCbSgV22q7QUGSwtpMXw==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。v1.0.41 未改生产中转；本次整理只改文档，不修改版本号、不构建或发布软件。
+发布证据是上述时间点的记录，不代表持续线上健康。本次仅发布客户端与文档，未改动生产中转服务。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
-- 正式发布：[v1.0.41](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.41)
-- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.41-x64.exe)
+- 正式发布：[v1.0.42](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.42)
+- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.42-x64.exe)
 - 更新源：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev`
 - 官方通知主入口：`https://settlement-connectivity-test.pages.dev`
 - 备用入口：`https://settlement-monitor-pairing.taiyang55667788.workers.dev`
