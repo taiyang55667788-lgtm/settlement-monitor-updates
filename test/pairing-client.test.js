@@ -34,3 +34,20 @@ test('unconfigured service never claims pairing is available', async () => {
   assert.equal(client.enabled, false);
   await assert.rejects(client.start(), /配对服务正在准备中/);
 });
+
+test('command polling rejects invalid payloads instead of claiming successful sync', async () => {
+  for (const payload of [null, {}, { command: [] }, { command: 12 }]) {
+    const client = new PairingClient('https://pair.example', { fetch: async () => Response.json(payload) });
+    await assert.rejects(client.nextCommand('token'), error => error.status === 502);
+  }
+  const client = new PairingClient('https://pair.example', { fetch: async () => Response.json({ command: null }) });
+  assert.deepEqual(await client.nextCommand('token'), { command: null });
+});
+
+test('new command protocol uses non-consuming pending and explicit acknowledgement', async () => {
+  const requests = []; const id = '11111111-2222-4333-8444-555555555555';
+  const client = new PairingClient('https://pair.example', { fetch: async (url, init) => { requests.push({ url, init }); return Response.json(url.endsWith('pending') ? { id, command: { type: 'status' } } : { ok: true }); } });
+  assert.equal((await client.nextCommand('token')).id, id); await client.ackCommand('token', id, id);
+  assert.ok(requests[0].url.endsWith('/v1/commands/pending')); assert.equal(requests[0].init.method, 'GET');
+  assert.deepEqual(JSON.parse(requests[1].init.body), { id, replyId: id });
+});

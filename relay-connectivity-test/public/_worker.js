@@ -1,6 +1,6 @@
 const ORIGIN = 'https://settlement-monitor-pairing.taiyang55667788.workers.dev';
 const ROUTES = new Set(['GET /relay/health', 'POST /v1/pairings', 'GET /v1/pairings/status',
-  'DELETE /v1/pairings', 'GET /v1/commands/next', 'POST /v1/messages/test', 'POST /v1/messages']);
+  'DELETE /v1/pairings', 'GET /v1/commands/next', 'GET /v1/commands/pending', 'POST /v1/commands/ack', 'POST /v1/messages/test', 'POST /v1/messages']);
 export default {
   async fetch(request, env, ctx, fetcher = fetch) {
     const path = new URL(request.url).pathname;

@@ -6,12 +6,13 @@ const { splitReportRows, parseSettlementTable, parseCrownGeneralAgentTable, pars
 const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotifications, recordAlertLevel, migrateZeroTierHistory, bufferedAlertLevel } = require('./alert-ledger');
 const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
+const { CommandReplies } = require('./command-replies');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
 const { DirectReportReader, clearDirectSession } = require('./direct-report');
 const { failureCategory, failedBranch, readSummary } = require('./runtime-health');
-const { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, parseSettledDraw, parseReportSettlementDraw, parseDrawStateResponse, compareDrawId, observeSettledDraw } = require('./draw-trigger');
+const { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, parseSettledDraw, parseReportSettlementDraw, parseDrawStateResponse, drawStateFailure, compareDrawId, observeSettledDraw } = require('./draw-trigger');
 const {
   partitionForAccount,
   isRedirectAbort,
@@ -655,13 +656,16 @@ class SiteClient {
   }
 
   async readSettledDrawQuery(query) {
+    if (query.referrer && new URL(query.referrer).origin !== new URL(query.url).origin) throw Object.assign(new Error('开奖接口上下文不同源'), { code: 'DRAW_SOURCE_MISMATCH' });
     const response = await this.window.webContents.session.fetch(query.url, {
       method: 'POST', credentials: 'include', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(8000),
-      headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, body: query.body,
+      ...(query.referrer ? { referrer: query.referrer, referrerPolicy: 'same-origin' } : {}),
+      headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest', ...(query.referrer ? { Referer: query.referrer } : {}) }, body: query.body,
     });
     if (!response.ok) throw Object.assign(new Error('开奖接口暂不可读'), { code: `DRAW_HTTP_${response.status}` });
-    const draw = parseDrawStateResponse(await response.text());
-    if (!draw) throw Object.assign(new Error('开奖接口没有有效的已开奖期号'), { code: 'DRAW_API_INVALID' });
+    const body = await response.text();
+    const draw = parseDrawStateResponse(body);
+    if (!draw) throw Object.assign(new Error('开奖接口没有有效的已开奖期号'), { code: drawStateFailure(body) || 'DRAW_API_INVALID' });
     this.status.drawSource = '盘口开奖状态接口（JND282）';
     this.status.drawSuggestedPollMs = draw.nextPollMs;
     return draw.drawId;
@@ -1375,6 +1379,8 @@ class MonitorService {
     this.drawPollMs = network.drawPollMs || DRAW_POLL_MS;
     this.drawReadDelayMs = network.drawReadDelayMs ?? DRAW_READ_DELAY_MS;
     this.commandPollRunning = false;
+    this.commandHealth = { state: 'waiting', consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', nextPollAt: '', code: '', phase: '' };
+    this.commandReplies = new CommandReplies(store, this.pairingClient);
     this.activeReads = new Map();
     this.suspended = false;
     this.stopped = false;
@@ -1512,16 +1518,38 @@ class MonitorService {
     if (this.commandPollRunning) return;
     const pairing = this.store.state.telegram.pairing;
     if (this.store.state.telegram.mode !== 'pairing' || !pairing?.paired || !pairing.token) return;
+    if (this.commandHealthToken !== pairing.token) {
+      this.commandHealthToken = pairing.token;
+      this.commandHealth = { state: 'waiting', consecutiveFailures: 0, lastSuccessAt: '', lastFailureAt: '', nextPollAt: '', code: '', phase: '' };
+    }
+    if (Date.parse(this.commandHealth.nextPollAt) > Date.now()) return;
     this.commandPollRunning = true;
+    let phase = 'poll';
     try {
+      if (this.commandReplies.current()) {
+        phase = 'reply';
+        await this.commandReplies.resume(pairing.token);
+        this.commandHealth = { ...this.commandHealth, state: 'ok', consecutiveFailures: 0, nextPollAt: '', code: '', phase: '' };
+        this.onChange(); return;
+      }
       const command = await this.pairingClient.nextCommand(pairing.token);
+      const restored = this.commandHealth.state === 'failed';
+      this.commandHealth = { ...this.commandHealth, state: 'ok', consecutiveFailures: 0, lastSuccessAt: new Date().toISOString(), nextPollAt: '', code: '', phase: '' };
+      if (restored) this.store.addEvent('success', 'Telegram 指令同步已恢复（不代表消息已发送）');
+      if (restored) this.onChange();
       if (!command?.command) return;
+      phase = 'reply';
       const request = typeof command.command === 'string' ? { type: command.command } : command.command;
+      const respond = async (text, options = {}) => {
+        if (this.store.state.telegram.mode !== 'pairing' || this.store.state.telegram.pairing?.token !== pairing.token) throw Error('指令收件人已变化，原指令留待原设备恢复');
+        this.commandReplies.prepare(command.id, text, options.replyMarkup);
+        await this.commandReplies.resume(pairing.token);
+      };
       const enabled = this.store.state.accounts.filter((account) => account.enabled);
       const panel = telegramQueryPanel();
       if (request.type === 'accounts') {
         const accountPanel = telegramAccountPanel(pairing.token, enabled);
-        await this.pairingClient.send(pairing.token, accountPanel ? '👤 请选择要刷新的启用账号：' : '没有可用的账号按钮，请在桌面端确认启用账号后重试。', { replyMarkup: accountPanel || panel });
+        await respond(accountPanel ? '👤 请选择要刷新的启用账号：' : '没有可用的账号按钮，请在桌面端确认启用账号后重试。', { replyMarkup: accountPanel || panel });
         return;
       }
       if (request.type === 'status') {
@@ -1530,7 +1558,7 @@ class MonitorService {
           const lastSuccess = status.lastSuccessAt ? new Date(status.lastSuccessAt).toLocaleString('zh-CN') : '尚无成功读取';
           return `${account.name}：${telegramStatusLabel(status.status)}\n最近成功读取：${lastSuccess}${status.error ? `\n说明：${status.error}` : ''}`;
         });
-        await this.pairingClient.send(pairing.token, `📋 交收监控状态\n${rows.join('\n\n') || '当前没有启用账号。'}`.slice(0, 3400), { replyMarkup: panel });
+        await respond(`📋 交收监控状态\n${rows.join('\n\n') || '当前没有启用账号。'}`.slice(0, 3400), { replyMarkup: panel });
         return;
       }
       const requested = request.type === 'check' && request.accountId
@@ -1538,12 +1566,12 @@ class MonitorService {
         : request.type === 'check' && request.argument
           ? enabled.filter((account) => account.name === request.argument) : enabled;
       if (request.type === 'check' && (request.accountId || request.argument) && !requested.length) {
-        await this.pairingClient.send(pairing.token, request.accountId ? '该账号已停用或不存在，请重新打开账号列表。' : `未找到启用账号：${request.argument}`, { replyMarkup: panel }); return;
+        await respond(request.accountId ? '该账号已停用或不存在，请重新打开账号列表。' : `未找到启用账号：${request.argument}`, { replyMarkup: panel }); return;
       }
       if (['report', 'top', 'check'].includes(request.type)) await Promise.allSettled(requested.map((account) => this.check(account.id)));
       if (request.type === 'alerts') {
         const rows = (this.store.state.alertRecords || []).slice(0, 10).map((item) => `${item.status === 'sent' ? '✅' : '❌'} ${item.accountName} / ${(item.agentPath || []).join(' / ')} · ${item.alertType === 'delta' ? `变化 ${item.change > 0 ? '+' : ''}${item.change}` : `金额 ${item.value > 0 ? '+' : ''}${item.value}`} · ${new Date(item.time).toLocaleString('zh-CN')}`);
-        await this.pairingClient.send(pairing.token, `🧾 最近提醒记录\n${rows.join('\n') || '暂无记录'}`, { replyMarkup: panel }); return;
+        await respond(`🧾 最近提醒记录\n${rows.join('\n') || '暂无记录'}`, { replyMarkup: panel }); return;
       }
       if (request.type === 'top') {
         const rows = requested.flatMap((account) => this.status(account.id).subagents.filter((agent) => !agent.stale && Number.isFinite(agent.value)).map((agent) => ({ account: account.name, agent, value: agent.value }))).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 10).map((item, index) => `${index + 1}. ${item.account} / ${item.agent.path.join(' / ')}：${item.value > 0 ? '+' : ''}${item.value.toLocaleString('zh-CN')}`);
@@ -1552,7 +1580,7 @@ class MonitorService {
           return status.status === 'error' && !status.subagents.some((agent) => !agent.stale);
         }).map((account) => account.name);
         const note = failed.length ? `\n⚠️ ${failed.join('、')} 本次刷新失败，排行不包含过期数据。` : '';
-        await this.pairingClient.send(pairing.token, `🏆 当前金额前 10 名\n${rows.join('\n') || '暂无本次成功读取的数据'}${note}`, { replyMarkup: panel }); return;
+        await respond(`🏆 当前金额前 10 名\n${rows.join('\n') || '暂无本次成功读取的数据'}${note}`, { replyMarkup: panel }); return;
       }
       const rows = requested.map((account) => {
         const status = this.status(account.id);
@@ -1568,10 +1596,19 @@ class MonitorService {
             : `本次刷新成功：${fresh.length} 项数据已更新`;
         return [`账号：${account.name} · ${period}`, refreshState, values.join('\n') || (status.status === 'error' ? '没有可用的历史数据' : '暂无成功读取的数据')].join('\n');
       });
-      await this.pairingClient.send(pairing.token, `${request.type === 'check' ? '🔄 刷新完成' : '📊 当前盘口报表'}\n${rows.join('\n\n')}`.slice(0, 3400), { replyMarkup: panel });
+      await respond(`${request.type === 'check' ? '🔄 刷新完成' : '📊 当前盘口报表'}\n${rows.join('\n\n')}`.slice(0, 3400), { replyMarkup: panel });
       this.store.addEvent('success', `已响应 Telegram /${request.type} 指令`); this.onChange();
     } catch (error) {
-      this.store.addEvent('error', `Telegram 指令处理失败：${error.message || error}`); this.onChange();
+      const failures = this.commandHealth.consecutiveFailures + 1;
+      const delay = Math.min(120000, 15000 * 2 ** Math.min(failures, 3));
+      const code = error.code === 'COMMAND_CONFIRMATION_REQUIRED' ? error.code : Number.isInteger(error.status) ? `HTTP_${error.status}` : 'COMMAND_NETWORK_OR_SERVICE';
+      const previous = this.commandHealth;
+      this.commandHealth = { ...previous, state: 'failed', consecutiveFailures: failures, lastFailureAt: new Date().toISOString(), nextPollAt: new Date(Date.now() + delay).toISOString(), code, phase: phase === 'reply' && this.commandReplies.current()?.stage === 'sent' ? 'ack' : phase };
+      if (previous.state !== 'failed' || previous.code !== code || Date.now() - (this.commandFailureLoggedAt || 0) >= 300000) {
+        this.store.addEvent('error', `Telegram ${phase === 'poll' ? '指令同步' : '指令执行/回复'}失败（${code}），${delay / 1000}秒后重试同步；不自动重放已取出的指令`);
+        this.commandFailureLoggedAt = Date.now();
+      }
+      this.onChange();
     } finally { this.commandPollRunning = false; }
   }
 
@@ -1840,6 +1877,10 @@ class MonitorService {
     status.status = 'market-closed';
     status.stage = '停盘中，07:00 开盘，07:00:30 恢复读取';
     status.nextCheckAt = schedule.nextReadAt;
+    status.waitingForDraw = false;
+    status.drawNextProbeAt = 0;
+    status.drawSuggestedPollMs = 0;
+    status.drawTrigger = { ...(status.drawTrigger || {}), enabled: this.usesDrawTrigger(account), state: '停盘中，开奖检测已暂停', nextReadAt: '', nextProbeAt: '', fallback: false, error: '' };
     this.closeDrawWindow(account.id);
     this.activeReads.get(account.id)?.abort();
     const day = new Date().toLocaleDateString('sv-SE');
@@ -1864,14 +1905,28 @@ class MonitorService {
     if (win && !win.isDestroyed()) win.destroy();
   }
 
+  async tryDrawQuery(client, account, win) {
+    const status = this.status(account.id);
+    if (!win.settlementDrawQuery || !client.readSettledDrawQuery || Date.parse(status.drawApiRetryAt) > Date.now()) return null;
+    try {
+      const draw = await client.readSettledDrawQuery(win.settlementDrawQuery);
+      status.drawApiError = ''; status.drawApiRetryAt = ''; status.drawApiState = 'ok';
+      return draw;
+    } catch (error) {
+      const code = /^DRAW_[A-Z_0-9]+$/.test(error.code || '') ? error.code : 'DRAW_API_NETWORK_ERROR';
+      status.drawApiError = code; status.drawApiFailedAt = new Date().toISOString();
+      status.drawApiRetryAt = new Date(Date.now() + (code.startsWith('DRAW_API_') && code !== 'DRAW_API_NETWORK_ERROR' ? 600000 : 60000)).toISOString();
+      status.drawApiState = 'cooldown';
+      return null;
+    }
+  }
+
   async readDrawState(client, account, reportWindow) {
     const existing = this.drawWindows.get(account.id);
     if (existing && !existing.isDestroyed()) {
       client.window = existing;
-      if (existing.settlementDrawQuery && client.readSettledDrawQuery) {
-        try { return await client.readSettledDrawQuery(existing.settlementDrawQuery); }
-        catch (error) { this.status(account.id).drawApiError = /^DRAW_[A-Z_0-9]+$/.test(error.code || '') ? error.code : 'DRAW_API_NETWORK_ERROR'; }
-      }
+      const queried = await this.tryDrawQuery(client, account, existing);
+      if (queried) return queried;
       try { return await client.readLatestSettledDraw(); }
       catch (error) {
         if (error.code !== 'DRAW_NOT_FOUND') throw error;
@@ -1897,9 +1952,8 @@ class MonitorService {
     return boundedOperation(async () => {
       await load(win, url);
       await this.openInstantDrawPage(win);
-      if (win.settlementDrawQuery && client.readSettledDrawQuery) {
-        try { return await client.readSettledDrawQuery(win.settlementDrawQuery); } catch {}
-      }
+      const queried = await this.tryDrawQuery(client, account, win);
+      if (queried) return queried;
       return client.readLatestSettledDraw();
     }, 12000, () => this.closeDrawWindow(account.id));
   }
@@ -1922,7 +1976,7 @@ class MonitorService {
       api.searchParams.set('uid', url.searchParams.get('uid'));
       api.searchParams.set('loginId', url.searchParams.get('loginId'));
       // Session-bearing parameters remain only on this live window, never in diagnostics or persistent configuration.
-      win.settlementDrawQuery = { url: api.href, body: 'lotteryType=JND282&temaType=0&organizationId=' };
+      win.settlementDrawQuery = { url: api.href, referrer: source, body: 'lotteryType=JND282&temaType=0&organizationId=' };
     }
   }
 

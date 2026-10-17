@@ -2,7 +2,20 @@ const DRAW_POLL_MS = 5000;
 const DRAW_READ_DELAY_MS = 15000;
 const DRAW_STALE_MS = 8 * 60000;
 
+function drawStateFailure(value) {
+  if (typeof value === 'string' && /^\s*</.test(value)) return /(?:Member\/Login|type\s*=\s*["']?password)/i.test(value) ? 'DRAW_API_LOGIN_PAGE' : 'DRAW_API_HTML';
+  let data;
+  try { data = typeof value === 'string' ? JSON.parse(value) : value; } catch { return 'DRAW_API_NOT_JSON'; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return 'DRAW_API_SHAPE';
+  if (data.TemplateCode !== 'JNDPCDD') return 'DRAW_API_TEMPLATE';
+  if (!/^\d{5,}$/.test(String(data.Installments || '')) || !/^\d{5,}$/.test(String(data.PreInstallments || ''))
+    || compareDrawId(data.PreInstallments, data.Installments) >= 0) return 'DRAW_API_PERIOD';
+  if (!/^\d,\d,\d$/.test(String(data.PreLotteryResult || ''))) return 'DRAW_API_RESULT';
+  return '';
+}
+
 function parseDrawStateResponse(value) {
+  if (drawStateFailure(value)) return null;
   let data;
   try { data = typeof value === 'string' ? JSON.parse(value) : value; } catch { return null; }
   if (!data || data.TemplateCode !== 'JNDPCDD' || !/^\d{5,}$/.test(String(data.Installments || '')) || !/^\d{5,}$/.test(String(data.PreInstallments || ''))
@@ -61,4 +74,4 @@ function observeSettledDraw(previous, drawId, now = Date.now(), delayMs = DRAW_R
   return { state, changed: true, dueAt: now + delayMs };
 }
 
-module.exports = { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, compactText, parseSettledDraw, parseReportSettlementDraw, parseDrawStateResponse, compareDrawId, observeSettledDraw };
+module.exports = { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, compactText, parseSettledDraw, parseReportSettlementDraw, parseDrawStateResponse, drawStateFailure, compareDrawId, observeSettledDraw };

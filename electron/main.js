@@ -31,6 +31,9 @@ function state() {
   const current = store.publicState(monitor.runtime);
   current.telegram.pairingAvailable = monitor.pairingClient.enabled;
   current.telegram.delivery = { ...monitor.outbox.health };
+  current.telegram.commands = { ...monitor.commandHealth };
+  current.telegram.commands.confirmationRequired = Boolean(monitor.commandReplies.current()?.confirmationRequired);
+  current.telegram.commands.pendingReply = Boolean(monitor.commandReplies.current());
   current.telegram.network = monitor.pairingClient.network?.lastDiagnosis || null;
   return { ...current, updater: updater?.runtime,
     startupCheck: { ...startupCheck(store.state.accounts, monitor.runtime, startupAt, store.state.recoveryReviewRequired ? 'recovered' : store.loadStatus, Boolean(monitor.timer) && !monitor.stopped, upgraded),
@@ -90,6 +93,12 @@ if (hasInstanceLock) app.whenReady().then(() => {
   updater.start();
 
   ipcMain.handle('state:get', () => state());
+  ipcMain.handle('telegram:command:manage', (_event, action) => {
+    if (monitor.commandPollRunning) throw new Error('指令处理中，请稍后重试');
+    monitor.commandReplies.manage(action);
+    monitor.commandHealth.nextPollAt = '';
+    void monitor.pollTelegramCommands(); publish(); return { ok: true };
+  });
   ipcMain.handle('startup:resume', () => {
     store.update(data => { data.recoveryReviewRequired = false; });
     store.loadStatus = 'loaded'; monitor.resume(); publish(); return { ok: true };
@@ -124,7 +133,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
       app: { version: app.getVersion(), platform: process.platform }, alertPolicy: snapshot.alertPolicy,
       telegram: { mode: snapshot.telegram.mode, paired: Boolean(snapshot.telegram.pairing?.paired), hasBotToken: snapshot.telegram.hasBotToken,
         network: monitor.pairingClient.network?.lastDiagnosis || null,
-        delivery: { ...monitor.outbox.health }, lastNetworkFailure: monitor.pairingClient.network?.lastFailure || null },
+        delivery: { ...monitor.outbox.health }, commands: snapshot.telegram.commands, lastNetworkFailure: monitor.pairingClient.network?.lastFailure || null },
       notificationTimeline: store.state.notificationTimeline || [],
       notificationNetworkTimeline: store.state.notificationNetworkTimeline || monitor.pairingClient.network?.timeline || [],
       notificationQueue: { pending: snapshot.notificationQueue.pending, failed: snapshot.notificationQueue.failed, held: snapshot.notificationQueue.held },

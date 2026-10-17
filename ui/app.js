@@ -81,6 +81,7 @@ function refreshReadingDetails() {
     ...(account.drawTrigger?.enabled ? [
       `PC28 开奖触发：${account.drawTrigger.state || '等待首次盘口状态'}；最近已开奖：${account.drawTrigger.latestDraw || '—'}`,
       `开奖检测来源：${account.drawTrigger.source || '尚未识别'}；最近失败：${account.drawTrigger.failedAt ? new Date(account.drawTrigger.failedAt).toLocaleString('zh-CN') : '无记录'}`,
+      ...(account.drawApiError ? [`开奖接口暂缓重试：${account.drawApiError}；${account.drawApiRetryAt ? new Date(account.drawApiRetryAt).toLocaleString('zh-CN') : '稍后'}再试；当前是否可读取以标题检测状态为准`] : []),
       `开奖状态最近检查：${account.drawTrigger.failedAt || account.drawTrigger.observedAt ? new Date(Math.max(Date.parse(account.drawTrigger.failedAt) || 0, Date.parse(account.drawTrigger.observedAt) || 0)).toLocaleString('zh-CN') : '—'}；开奖后读取：${account.drawTrigger.nextReadAt ? new Date(account.drawTrigger.nextReadAt).toLocaleString('zh-CN') : (account.drawTrigger.fallback ? '已退回固定间隔' : '—')}`,
       ...(account.drawTrigger.nextProbeAt ? [`下次开奖检测：${new Date(account.drawTrigger.nextProbeAt).toLocaleTimeString('zh-CN')}`] : []),
       ...(account.drawTrigger.error ? [`开奖触发说明：${account.drawTrigger.error}`] : []),
@@ -261,6 +262,13 @@ function renderTrendDetails() {
   });
 }
 $('#close-trend').addEventListener('click', () => $('#trend-dialog').close());
+for (const [id, action] of [['command-resend', 'resend'], ['command-cancel', 'cancel']]) {
+  $(`#${id}`).addEventListener('click', async () => {
+    const warning = action === 'resend' ? '查询回复可能已经送达，确认仍要补发？可能产生重复消息。' : '确认放弃此指令？不会补发这条查询回复。';
+    if (!window.confirm(warning)) return;
+    try { await window.monitorApi.manageCommandReply(action); } catch (error) { toast(error.message); }
+  });
+}
 $('#trend-ranges').addEventListener('click', event => { const button = event.target.closest('[data-minutes]'); if (button && selectedTrend) { selectedTrend.minutes = Number(button.dataset.minutes); renderTrendDetails(); } });
 
 function routePreview(account) {
@@ -482,11 +490,18 @@ function render(state) {
   const delivery = state.telegram.delivery || {};
   const connection = state.telegram.network;
   const notificationOffline = delivery.state === 'failed' || (connection?.available === false && Date.parse(connection.checkedAt) > (Date.parse(delivery.lastSuccessAt) || 0));
-  const notificationStatus = `Telegram ${notificationOffline ? '通知异常，自动重试中' : delivery.lastSuccessAt ? '最近发送已获服务确认' : '本次启动尚无发送回执'} · 待发 ${state.notificationQueue?.pending || 0} 条 · 最近成功发送：${delivery.lastSuccessAt ? new Date(delivery.lastSuccessAt).toLocaleString('zh-CN') : '尚无记录'}`;
-  $('#notification-warning').hidden = state.telegram.mode === 'off' || !notificationOffline;
+  const commands = state.telegram.commands || {};
+  $('#telegram-health-connection').textContent = `中转连接：${connection ? connection.available ? '入口可达（不代表查询/发送可用）' : '入口不可达' : '尚未检测'}${connection?.checkedAt ? ' · ' + new Date(connection.checkedAt).toLocaleString('zh-CN') : ''}`;
+  $('#telegram-health-commands').textContent = `指令同步：${state.telegram.mode !== 'pairing' ? '未启用官方配对' : commands.confirmationRequired ? '查询回复发送结果待人工确认' : commands.state === 'failed' ? `异常（${commands.phase === 'ack' ? '完成确认' : commands.phase === 'reply' ? '查询执行/回复' : '轮询'}，${commands.code}）` : commands.pendingReply ? '查询回复待完成' : commands.lastSuccessAt ? '最近轮询成功' : '等待首次同步'}${commands.lastSuccessAt ? ' · ' + new Date(commands.lastSuccessAt).toLocaleString('zh-CN') : ''}`;
+  $('#telegram-health-send').textContent = `金额/运行通知发送：${delivery.state === 'failed' ? '异常，保留队列重试' : delivery.lastSuccessAt ? '最近发送获服务确认（非手机实收证明）' : '本次启动尚无发送回执'}`;
+  $('#command-reply-actions').hidden = state.telegram.mode !== 'pairing' || !commands.confirmationRequired;
+  const commandFailed = state.telegram.mode === 'pairing' && (commands.state === 'failed' || commands.confirmationRequired);
+  const commandStatus = state.telegram.mode === 'pairing' ? `；指令${commands.confirmationRequired ? '回复待人工确认，不自动补发' : commandFailed ? `${commands.phase === 'poll' ? '同步' : commands.phase === 'ack' ? '完成确认' : '执行/回复'}异常（${commands.code}），${commands.nextPollAt ? new Date(commands.nextPollAt).toLocaleTimeString('zh-CN') : '稍后'}重试同步` : commands.lastSuccessAt ? '最近轮询成功' : '等待同步'}` : '';
+  const notificationStatus = `Telegram ${notificationOffline ? '通知异常，自动重试中' : delivery.lastSuccessAt ? '最近发送已获服务确认' : '本次启动尚无发送回执'} · 待发 ${state.notificationQueue?.pending || 0} 条 · 最近成功发送：${delivery.lastSuccessAt ? new Date(delivery.lastSuccessAt).toLocaleString('zh-CN') : '尚无记录'}${commandStatus}`;
+  $('#notification-warning').hidden = state.telegram.mode === 'off' || (!notificationOffline && !commandFailed);
   $('#notification-warning').textContent = notificationStatus;
   $('#telegram-delivery-status').textContent = notificationStatus;
-  $('#telegram-delivery-status').className = notificationOffline ? 'child-error' : '';
+  $('#telegram-delivery-status').className = notificationOffline || commandFailed ? 'child-error' : '';
   $('#notification-queue').textContent += `；${notificationStatus}`;
   $('#alert-records').innerHTML = (state.alertRecords || []).map((record) => {
     const value = Number(record.value);

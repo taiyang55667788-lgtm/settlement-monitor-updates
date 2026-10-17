@@ -2,6 +2,22 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PairingNetwork } = require('../electron/pairing-network');
 
+test('upstream failure is recorded even when health succeeds, with no consuming GET replay', async () => {
+  let consumes = 0;
+  const network = new PairingNetwork('https://relay.example', () => ({
+    async setProxy() {}, async forceReloadProxyConfig() {}, async resolveProxy() { return 'DIRECT'; },
+    async fetch(url) {
+      if (url.endsWith('/v1/commands/next')) { consumes++; return Response.json({ error: 'private' }, { status: 503 }); }
+      return Response.json({ ok: true, ready: true });
+    },
+  }));
+  const response = await network.fetch('https://relay.example/v1/commands/next', { method: 'GET' });
+  assert.equal(response.status, 503); assert.equal(consumes, 1);
+  assert.equal(network.lastFailure.code, 'HTTP_503'); assert.equal(network.lastFailure.operation, 'command-poll');
+  assert.equal(network.lastDiagnosis.available, true);
+  assert.ok(!JSON.stringify(network.lastFailure).includes('private'));
+});
+
 function fixture(fails = []) {
   const calls = [];
   const network = new PairingNetwork('https://relay.example', name => {

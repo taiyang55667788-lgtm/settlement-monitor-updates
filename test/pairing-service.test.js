@@ -76,6 +76,37 @@ async function paired(service) {
   return created.token;
 }
 
+test('pending commands survive reads until a confirmed reply is acknowledged, and ack is idempotent', async () => {
+  const s = await service(); const token = await paired(s);
+  const device = s.db.prepare('SELECT id FROM pairings LIMIT 1').get();
+  const id = crypto.randomUUID();
+  s.db.prepare('INSERT INTO commands (id, device_id, command, created_at) VALUES (?, ?, ?, ?)').run(id, device.id, JSON.stringify({ type: 'report' }), Date.now());
+  const first = await (await s.call('GET', '/v1/commands/pending', { token })).json();
+  assert.deepEqual(first, { id, command: { type: 'report' } });
+  assert.deepEqual(await (await s.call('GET', '/v1/commands/pending', { token })).json(), first);
+  assert.equal((await s.call('POST', '/v1/commands/ack', { token, body: { id, replyId: id } })).status, 409);
+  const message = { text: 'report snapshot', notificationId: id, contentHash: 'b'.repeat(64) };
+  await s.call('POST', '/v1/messages', { token, body: message }); const count = s.sent.length;
+  await s.call('POST', '/v1/messages', { token, body: message }); assert.equal(s.sent.length, count);
+  assert.equal((await s.call('POST', '/v1/commands/ack', { token, body: { id, replyId: id } })).status, 200);
+  assert.deepEqual(await (await s.call('GET', '/v1/commands/pending', { token })).json(), { command: null });
+  assert.equal((await s.call('POST', '/v1/commands/ack', { token, body: { id, replyId: id } })).status, 200);
+});
+
+test('command acknowledgements cannot delete another device command; uncertain sends stay pending', async () => {
+  const s = await service(); const token = await paired(s);
+  const device = s.db.prepare('SELECT id FROM pairings LIMIT 1').get();
+  const id = crypto.randomUUID();
+  s.db.prepare('INSERT INTO commands (id, device_id, command, created_at) VALUES (?, ?, ?, ?)').run(id, device.id, 'status', Date.now());
+  const other = await (await s.call('POST', '/v1/pairings')).json();
+  await s.call('POST', '/v1/commands/ack', { token: other.token, body: { id, cancel: true } });
+  assert.equal((await (await s.call('GET', '/v1/commands/pending', { token })).json()).id, id);
+  s.db.prepare('INSERT INTO notification_receipts (device_id,notification_id,content_hash,state,received_at) VALUES (?,?,?,?,?)').run(device.id, id, 'a'.repeat(64), 'uncertain', Date.now());
+  assert.equal((await s.call('POST', '/v1/commands/ack', { token, body: { id, replyId: id } })).status, 409);
+  assert.equal((await s.call('POST', '/v1/commands/ack', { token, body: { id, cancel: true } })).status, 200);
+  assert.equal(s.db.prepare('SELECT count(*) AS n FROM commands').get().n, 0);
+});
+
 test('a lost client receipt can be retried by notification id without another Telegram send', async () => {
   const s = await service(); const token = await paired(s);
   const body = { text: 'original', notificationId: crypto.randomUUID(), contentHash: 'a'.repeat(64) };

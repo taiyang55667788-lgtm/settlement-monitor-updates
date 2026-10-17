@@ -350,6 +350,28 @@ async function nextCommand(env, device) {
   try { return json({ command: JSON.parse(command.command) }); } catch { return json({ command: { type: command.command } }); }
 }
 
+async function pendingCommand(env, device) {
+  const row = await env.DB.prepare('SELECT id, command FROM commands WHERE device_id = ? ORDER BY created_at ASC, id ASC LIMIT 1').bind(device.id).first();
+  if (!row) return json({ command: null });
+  let command;
+  try { command = JSON.parse(row.command); } catch { command = { type: row.command }; }
+  return json({ id: row.id, command });
+}
+
+async function acknowledgeCommand(request, env, device) {
+  const body = await readJson(request);
+  if (!/^[0-9a-f-]{36}$/i.test(body?.id || '')) return json({ error: '指令编号无效' }, 400);
+  const command = await env.DB.prepare('SELECT id FROM commands WHERE id = ? AND device_id = ?').bind(body.id, device.id).first();
+  if (!command) return json({ ok: true }); // Lost acknowledgement response is safe to retry.
+  if (body.cancel !== true) {
+    if (!/^[0-9a-f-]{36}$/i.test(body.replyId || '')) return json({ error: '回复编号无效' }, 400);
+    const receipt = await env.DB.prepare('SELECT state FROM notification_receipts WHERE device_id = ? AND notification_id = ?').bind(device.id, body.replyId).first();
+    if (receipt?.state !== 'sent') return json({ error: '查询回复尚未确认发送，指令保留' }, 409);
+  }
+  await env.DB.prepare('DELETE FROM commands WHERE id = ? AND device_id = ?').bind(body.id, device.id).run();
+  return json({ ok: true });
+}
+
 async function sendFromDevice(request, env, fetcher, device, testOnly) {
   if (!device.chat_id) return json({ error: '请先完成 Telegram 配对' }, 409);
   const body = testOnly ? {} : await readJson(request);
@@ -413,6 +435,8 @@ export async function handleRequest(request, env, ctx, fetcher = fetch) {
       return json({ ok: true });
     }
     if (request.method === 'GET' && pathname === '/v1/commands/next') return await nextCommand(env, device);
+    if (request.method === 'GET' && pathname === '/v1/commands/pending') return await pendingCommand(env, device);
+    if (request.method === 'POST' && pathname === '/v1/commands/ack') return await acknowledgeCommand(request, env, device);
     if (request.method === 'POST' && pathname === '/v1/messages/test') return await sendFromDevice(request, env, fetcher, device, true);
     if (request.method === 'POST' && pathname === '/v1/messages') return await sendFromDevice(request, env, fetcher, device, false);
     return json({ error: '未找到接口' }, 404);

@@ -88,7 +88,8 @@ function fixture() {
   };
 }
 
-test('draw monitor waits for a later settled draw then triggers one report read', async () => {
+test('draw monitor waits for a later settled draw then triggers one report read', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 18, 12) });
   const store = fixture(); let draw = '3491984'; const calls = [];
   const service = new MonitorService(store, () => {}, {
     drawReadDelayMs: 0,
@@ -106,7 +107,8 @@ test('draw monitor waits for a later settled draw then triggers one report read'
   assert.equal(service.status('pc28').drawTrigger.latestDraw, '3491985');
 });
 
-test('draw monitor retains fixed-interval fallback if the settled-draw state is unavailable', async () => {
+test('draw monitor retains fixed-interval fallback if the settled-draw state is unavailable', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 18, 12) });
   const store = fixture();
   const service = new MonitorService(store, () => {}, {
     createSiteClient: () => ({ readLatestSettledDraw: async () => { throw new Error('unavailable'); } }),
@@ -181,9 +183,12 @@ test('dedicated draw query uses the authenticated observed request and returns n
     request = { url, init };
     return Response.json({ Installments: '3494518', PreInstallments: '3494517', PreLotteryResult: '7,5,1', OpenTimeStamp: 112, TemplateCode: 'JNDPCDD', TodayWinLost: 999 });
   } } } };
-  const query = { url: 'https://market.example/IntimeSheet/GetCurrentInstall?uid=private', body: 'lotteryType=JND282&temaType=0&organizationId=' };
+  const query = { url: 'https://market.example/IntimeSheet/GetCurrentInstall?uid=private', referrer: 'https://market.example/IntimeSheet/Index?uid=private', body: 'lotteryType=JND282&temaType=0&organizationId=' };
   assert.equal(await client.readSettledDrawQuery(query), '3494517');
   assert.equal(request.init.method, 'POST'); assert.equal(request.init.credentials, 'include');
+  assert.equal(request.init.referrer, query.referrer); assert.equal(request.init.referrerPolicy, 'same-origin');
+  assert.equal(request.init.headers.Referer, query.referrer);
+  await assert.rejects(client.readSettledDrawQuery({ ...query, referrer: 'https://other.example' }), error => error.code === 'DRAW_SOURCE_MISMATCH');
   assert.equal(status.drawSuggestedPollMs, 60000);
   assert.ok(!JSON.stringify(status).includes('private')); assert.ok(!JSON.stringify(status).includes('999'));
 });
@@ -208,11 +213,44 @@ test('daily hidden-page maintenance runs once, preserving account configuration 
   service.viewWindows.set('pc28', { isDestroyed: () => false, isVisible: () => true, destroy: () => destroyed++ });
   service.pauseForMarket(store.state.accounts[0], service.status('pc28'));
   assert.equal(destroyed, 0);
+  const status = service.status('pc28');
+  assert.equal(status.waitingForDraw, false); assert.equal(status.drawNextProbeAt, 0);
+  assert.equal(status.drawTrigger.nextReadAt, ''); assert.equal(status.drawTrigger.nextProbeAt, '');
+  assert.match(status.drawTrigger.state, /停盘/);
   service.viewWindows.set('pc28', { isDestroyed: () => false, isVisible: () => false, destroy: () => destroyed++, webContents: {} });
   service.pauseForMarket(store.state.accounts[0], service.status('pc28'));
   service.pauseForMarket(store.state.accounts[0], service.status('pc28'));
   assert.equal(destroyed, 1);
   assert.deepEqual(store.state, before);
+});
+
+test('draw API rejects unsafe shapes with only categorical error codes', () => {
+  const { drawStateFailure } = require('../electron/draw-trigger');
+  assert.equal(drawStateFailure('<form action="/Member/Login"><input type="password"></form>'), 'DRAW_API_LOGIN_PAGE');
+  assert.equal(drawStateFailure('<html>private</html>'), 'DRAW_API_HTML');
+  assert.equal(drawStateFailure('private'), 'DRAW_API_NOT_JSON');
+  assert.equal(drawStateFailure([]), 'DRAW_API_SHAPE');
+  assert.equal(drawStateFailure({ TemplateCode: 'other-private' }), 'DRAW_API_TEMPLATE');
+  assert.equal(drawStateFailure({ TemplateCode: 'JNDPCDD' }), 'DRAW_API_PERIOD');
+  assert.equal(drawStateFailure({ TemplateCode: 'JNDPCDD', Installments: '3494518', PreInstallments: '3494517', PreLotteryResult: 'invalid' }), 'DRAW_API_RESULT');
+});
+
+test('invalid draw API cools down while title remains usable, then valid response clears error', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 18, 10) });
+  const store = fixture(); const service = new MonitorService(store, () => {});
+  const win = { isDestroyed: () => false, settlementDrawQuery: { url: 'https://private.example', body: 'secret' } };
+  service.drawWindows.set('pc28', win);
+  let attempts = 0;
+  const client = { readSettledDrawQuery: async () => { attempts++; throw Object.assign(Error('secret'), { code: 'DRAW_API_TEMPLATE' }); }, readLatestSettledDraw: async () => '3494517' };
+  assert.equal(await service.readDrawState(client, store.state.accounts[0], win), '3494517');
+  assert.equal(await service.readDrawState(client, store.state.accounts[0], win), '3494517');
+  assert.equal(attempts, 1); assert.equal(service.status('pc28').drawApiError, 'DRAW_API_TEMPLATE');
+  assert.ok(!JSON.stringify(service.status('pc28')).includes('secret'));
+  t.mock.timers.tick(600000);
+  client.readSettledDrawQuery = async () => { attempts++; return '3494518'; };
+  assert.equal(await service.readDrawState(client, store.state.accounts[0], win), '3494518');
+  assert.equal(attempts, 2); assert.equal(service.status('pc28').drawApiError, '');
+  assert.equal(service.status('pc28').drawApiRetryAt, '');
 });
 
 test('branch watchdog destroys only its stalled page and reports a branch failure', async () => {

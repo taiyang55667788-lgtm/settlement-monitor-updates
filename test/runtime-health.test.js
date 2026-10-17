@@ -11,6 +11,15 @@ test('successful branch-only retries do not count as complete account successes'
   assert.equal(summary.successRate, 0);
 });
 
+test('market closure and waiting are not attempted reads or failed successes', () => {
+  const at = new Date().toISOString();
+  const samples = ['ok', 'market-closed', 'market-waiting', 'paused', 'waiting'].map(status => ({ at, status, scope: 'account', durationMs: 999 }));
+  const summary = readSummary(samples);
+  assert.equal(summary.rounds, 1); assert.equal(summary.completeRounds, 1); assert.equal(summary.successRate, 1);
+  assert.equal(readSummary(samples.slice(1)).successRate, null);
+  assert.equal(readSummary([{ at, status: 'ok' }, { at, status: 'manual' }]).successRate, 0.5);
+});
+
 test('24h summaries exclude old samples and compute weighted query timing', () => {
   const now = Date.now();
   const samples = [

@@ -14,12 +14,64 @@ function setup() {
     async start() { return { token: 'device-token', code: 'ABCDEFGHJK', expiresAt: Date.now() + 600000, botUsername: 'SampleMonitorBot' }; },
     async status(token) { calls.push(['status', token]); return { paired: true }; },
     async test(token) { calls.push(['test', token]); },
-    async send(token, message, options) { calls.push(['send', token, message, options]); },
+    async send(token, message, options) { calls.push(['send', token, message, options]); return { notificationId: options?.notificationId }; },
+    async ackCommand() { return { ok: true }; },
     async unlink(token) { calls.push(['unlink', token]); },
   };
   const service = new MonitorService(store, () => {}, { pairingClient });
   return { store, service, events, calls };
 }
+
+test('command polling backs off separately from delivery and reports recovery once', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 9, 18) });
+  const { store, service, events } = setup();
+  store.state.telegram = { mode: 'pairing', pairing: { paired: true, token: 'test-token' } };
+  let calls = 0;
+  service.pairingClient.nextCommand = async () => { calls++; throw Object.assign(Error('private response'), { status: 503 }); };
+  const delivery = structuredClone(service.outbox.health);
+  await service.pollTelegramCommands(); await service.pollTelegramCommands();
+  assert.equal(calls, 1); assert.equal(service.commandHealth.code, 'HTTP_503');
+  t.mock.timers.tick(30000); await service.pollTelegramCommands();
+  assert.equal(calls, 2); assert.equal(service.commandHealth.consecutiveFailures, 2);
+  assert.equal(events.filter(event => event[0] === 'error').length, 1);
+  assert.ok(!JSON.stringify(service.commandHealth).includes('private'));
+  t.mock.timers.tick(60000);
+  service.pairingClient.nextCommand = async () => ({ command: null });
+  await service.pollTelegramCommands(); await service.pollTelegramCommands();
+  assert.equal(service.commandHealth.state, 'ok'); assert.equal(service.commandHealth.nextPollAt, '');
+  assert.equal(events.filter(event => event[0] === 'success').length, 1);
+  assert.deepEqual(service.outbox.health, delivery);
+});
+
+test('changing pairing token does not inherit a prior recipient polling backoff', async () => {
+  const { store, service } = setup();
+  store.state.telegram = { mode: 'pairing', pairing: { paired: true, token: 'first' } };
+  service.pairingClient.nextCommand = async () => { throw Error('network'); };
+  await service.pollTelegramCommands();
+  store.state.telegram.pairing.token = 'second';
+  service.pairingClient.nextCommand = async () => ({ command: null });
+  await service.pollTelegramCommands();
+  assert.equal(service.commandHealth.state, 'ok');
+});
+
+test('monitor resumes a frozen reply and acknowledgement without re-reading the report', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 18, 12) });
+  const { store, service } = setup(); const id = '11111111-2222-4333-8444-555555555555';
+  store.state.telegram = { mode: 'pairing', pairing: { paired: true, token: 'device-token' } };
+  store.state.accounts = [{ id: 'a', name: 'a', enabled: true }];
+  let reads = 0, polls = 0, sends = 0, acks = 0;
+  service.check = async () => { reads++; };
+  service.status = () => ({ status: 'ok', subagents: [] });
+  service.pairingClient.nextCommand = async () => { polls++; return { id, command: { type: 'report' } }; };
+  service.pairingClient.send = async (_, __, options) => { sends++; if (sends === 1) throw Error('lost receipt'); return { notificationId: options.notificationId }; };
+  service.pairingClient.ackCommand = async () => { acks++; if (acks === 1) throw Object.assign(Error('service'), { status: 503 }); };
+  await service.pollTelegramCommands(); assert.equal(service.commandReplies.current().stage, 'prepared');
+  t.mock.timers.tick(30000); await service.pollTelegramCommands();
+  assert.equal(service.commandHealth.phase, 'ack'); assert.equal(service.commandReplies.current().stage, 'sent');
+  t.mock.timers.tick(60000); await service.pollTelegramCommands();
+  assert.equal(reads, 1); assert.equal(polls, 1); assert.equal(sends, 2); assert.equal(acks, 2);
+  assert.equal(service.commandReplies.current(), undefined);
+});
 
 test('pairing activates only after Telegram confirms, and routes alerts through the server', async () => {
   const { store, service, calls } = setup();
@@ -70,7 +122,7 @@ test('report reply identifies retained stale values after the requested refresh 
   const { store, service, calls } = setup();
   store.state.telegram = { mode: 'pairing', pairing: { paired: true, token: 'device-token' } };
   store.state.accounts = [{ id: 'account-1', name: '一号盘', enabled: true }];
-  service.pairingClient.nextCommand = async () => ({ command: { type: 'report' } });
+  service.pairingClient.nextCommand = async () => ({ id: '11111111-2222-4333-8444-555555555555', command: { type: 'report' } });
   service.check = async () => {};
   service.status = () => ({
     status: 'error', error: '登录状态失效', reportPeriod: { start: '2026-09-28', end: '2026-10-04' },
@@ -92,13 +144,13 @@ test('account selector creates source-isolated buttons and refreshes only the se
   const secondId = 'ffffffff-1111-4222-8333-444444444444';
   store.state.telegram = { mode: 'pairing', pairing: { paired: true, token: `${deviceId}.secret` } };
   store.state.accounts = [{ id: firstId, name: '一号盘', enabled: true }, { id: secondId, name: '二号盘', enabled: true }];
-  service.pairingClient.nextCommand = async () => ({ command: { type: 'accounts' } });
+  service.pairingClient.nextCommand = async () => ({ id: '11111111-2222-4333-8444-555555555555', command: { type: 'accounts' } });
   await service.pollTelegramCommands();
   const selector = calls.find((entry) => entry[0] === 'send');
   assert.match(selector[3].replyMarkup.inline_keyboard[0][0].callback_data, /^q:check:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{22}$/);
 
   const checked = [];
-  service.pairingClient.nextCommand = async () => ({ command: { type: 'check', accountId: secondId } });
+  service.pairingClient.nextCommand = async () => ({ id: '11111111-2222-4333-8444-555555555555', command: { type: 'check', accountId: secondId } });
   service.check = async (id) => { checked.push(id); };
   service.status = () => ({ status: 'ok', reportPeriod: null, subagents: [], error: '' });
   await service.pollTelegramCommands();
@@ -110,7 +162,7 @@ test('status command is read-only and returns the query panel', async () => {
   const { store, service, calls } = setup();
   store.state.telegram = { mode: 'pairing', pairing: { paired: true, token: 'device-token' } };
   store.state.accounts = [{ id: 'account-1', name: '一号盘', enabled: true }];
-  service.pairingClient.nextCommand = async () => ({ command: { type: 'status' } });
+  service.pairingClient.nextCommand = async () => ({ id: '11111111-2222-4333-8444-555555555555', command: { type: 'status' } });
   service.check = async () => { throw new Error('status must not refresh'); };
   service.status = () => ({ status: 'ok', lastSuccessAt: '2026-10-04T01:00:00.000Z', error: '' });
   await service.pollTelegramCommands();

@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('monitorApi', {
   getState: () => ipcRenderer.invoke('state:get'),
   resumeAfterRecovery: () => ipcRenderer.invoke('startup:resume'),
   manageNotification: (id, action) => ipcRenderer.invoke('notification:manage', { id, action }),
+  manageCommandReply: (action) => ipcRenderer.invoke('telegram:command:manage', action),
   saveTheme: (theme) => ipcRenderer.invoke('appearance:theme', theme),
   saveAlertPolicy: (policy) => ipcRenderer.invoke('alert-policy:save', policy),
   exportDiagnostics: () => ipcRenderer.invoke('support:export-diagnostics'),

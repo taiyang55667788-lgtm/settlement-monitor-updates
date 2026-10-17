@@ -19,6 +19,19 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector('.tree-toggle').getAttribute('aria-expanded')`), 'false');
     await win.webContents.executeJavaScript(`(() => {
+      const before = structuredClone(appState);
+      render({ ...appState, telegram: { mode: 'pairing', delivery: { state: 'ok', lastSuccessAt: new Date().toISOString() }, commands: { state: 'failed', phase: 'poll', code: 'HTTP_503', nextPollAt: new Date(Date.now() + 30000).toISOString() } } });
+      if (document.querySelector('#notification-warning').hidden) throw Error('指令异常未显示');
+      const message = document.querySelector('#telegram-delivery-status').textContent;
+      if (!message.includes('最近发送已获服务确认') || !message.includes('指令同步异常')) throw Error('发送与指令状态混淆');
+      if (!document.querySelector('#telegram-health-commands').textContent.includes('异常')) throw Error('缺少独立指令状态');
+      if (!document.querySelector('#telegram-health-send').textContent.includes('获服务确认')) throw Error('指令故障覆盖发送健康');
+      render({ ...appState, telegram: { ...appState.telegram, network: { available: true }, commands: { state: 'failed', confirmationRequired: true } } });
+      if (!document.querySelector('#telegram-health-connection').textContent.includes('不代表查询/发送可用')) throw Error('健康探测误报业务可用');
+      if (document.querySelector('#command-reply-actions').hidden) throw Error('待确认回复缺少人工处理入口');
+      render(before);
+    })()`);
+    await win.webContents.executeJavaScript(`(() => {
       document.querySelector('[data-action="trend-details"]').click();
       if (!document.querySelector('#trend-dialog').open) throw Error('走势图详情未打开');
       if (!document.querySelector('#trend-plot').textContent.includes('暂无')) throw Error('空样本未提示');

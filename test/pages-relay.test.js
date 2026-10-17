@@ -5,6 +5,15 @@ async function worker() {
   const source = readFileSync(require('node:path').join(__dirname, '../relay-connectivity-test/public/_worker.js'));
   return (await import('data:text/javascript;base64,' + source.toString('base64'))).default;
 }
+test('Pages allows pending and ack command protocol without an extra request or credential forwarding', async () => {
+  const w = await worker(); const calls = [];
+  for (const [method, path] of [['GET', '/v1/commands/pending'], ['POST', '/v1/commands/ack']]) {
+    const response = await w.fetch(new Request('https://pages.example' + path, { method, headers: { authorization: 'Bearer device', cookie: 'private' }, ...(method === 'POST' ? { body: '{}' } : {}) }), {}, {}, async (url, init) => { calls.push({ url, init }); return Response.json({ ok: true }); });
+    assert.equal(response.status, 200); assert.ok(calls.at(-1).url.endsWith(path));
+    assert.equal(calls.at(-1).init.headers.get('cookie'), null);
+  }
+  assert.equal(calls.length, 2);
+});
 test('Pages relay preserves credentials only to fixed upstream and never forwards webhook or arbitrary URL', async () => {
   const w = await worker(); const calls = [];
   const fetcher = async (url, init) => { calls.push({url,init}); return Response.json({ok:true,ready:true}); };

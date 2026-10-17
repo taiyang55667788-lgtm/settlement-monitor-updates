@@ -96,7 +96,10 @@ class PairingNetwork {
       const target = new URL(url);
       if (target.origin !== new URL(this.baseUrl).origin) throw new Error('Invalid relay origin');
       const response = await ses.fetch(this.activeBase + target.pathname + target.search, { ...init, redirect: 'error', credentials: 'omit' });
-      if (response.status >= 500 && Date.now() - this.lastProbeAt >= 15000) await this.diagnose();
+      if (response.status >= 500) {
+        this.lastFailure = { at: new Date().toISOString(), code: `HTTP_${response.status}`, route: this.route, endpoint: this.activeBase === this.baseUrl ? 'primary' : 'fallback', operation: ['/v1/commands/next', '/v1/commands/pending'].includes(target.pathname) ? 'command-poll' : target.pathname === '/v1/commands/ack' ? 'command-ack' : 'relay-request' };
+        if (Date.now() - this.lastProbeAt >= 15000) await this.diagnose();
+      }
       return response;
     } catch (error) {
       let detail = '';

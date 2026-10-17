@@ -17,6 +17,7 @@ app.whenReady().then(async () => {
       if (req.method !== 'POST' || !req.headers.cookie?.includes('fixtureSession=yes')) { res.statusCode = 403; res.end('login'); return; }
       let body = ''; for await (const chunk of req) body += chunk;
       assert.equal(new URLSearchParams(body).get('lotteryType'), 'JND282');
+      if (!req.headers.referer?.endsWith('/IntimeSheet/Index')) { res.statusCode = 403; res.end('missing request context'); return; }
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ Installments: '3494518', PreInstallments: '3494517', PreLotteryResult: '7,5,1', OpenTimeStamp: 112, TemplateCode: 'JNDPCDD' })); return;
     }
@@ -91,7 +92,7 @@ app.whenReady().then(async () => {
     assert.equal(client.status.directRead.fallbacks,1);
     assert.deepEqual(client.currentReportPath,['first']);
     phase='reading the verified draw response through Electron session.fetch';
-    assert.equal(await client.readSettledDrawQuery({ url: origin + '/IntimeSheet/GetCurrentInstall', body: 'lotteryType=JND282&temaType=0&organizationId=' }), '3494517');
+    assert.equal(await client.readSettledDrawQuery({ url: origin + '/IntimeSheet/GetCurrentInstall', referrer: origin + '/IntimeSheet/Index', body: 'lotteryType=JND282&temaType=0&organizationId=' }), '3494517');
     assert.equal(client.status.drawSuggestedPollMs, 60000);
     console.log('Direct report Electron smoke passed: UI learning, four-level session.fetch, cookie isolation, safe fallback, PC28 draw response');
   } catch(error) {console.error(`${phase}: ${error.stack}`); process.exitCode=1;}

@@ -56,6 +56,8 @@
               <button type="button" id="diagnose-telegram" class="secondary">检测中转连接</button>
               <p id="telegram-network-result" role="status">盘口独立直连；官方机器人连接中转服务。中转能否直连取决于当前网络。</p>
               <p id="telegram-delivery-status" role="status"></p>
+              <div class="telegram-health" aria-label="Telegram 分项状态"><p id="telegram-health-connection"></p><p id="telegram-health-commands"></p><p id="telegram-health-send"></p></div>
+              <div id="command-reply-actions" hidden><button type="button" id="command-resend" class="secondary">确认补发查询回复</button><button type="button" id="command-cancel" class="secondary">放弃此指令</button></div>
               <details class="advanced-telegram"><summary>高级设置：手动填写 Bot Token 和 Chat ID</summary>
                 <p>已有手动配置继续有效，但它会由本机直接访问 Telegram。官方机器人配对模式由 Cloudflare 服务转发，本机无需直接连接 Telegram API。</p>
                 <form id="telegram-form">

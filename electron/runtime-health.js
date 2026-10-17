@@ -1,5 +1,6 @@
 function readSummary(samples = [], now = Date.now()) {
-  const rows = samples.filter(x => now - Date.parse(x.at) >= 0 && now - Date.parse(x.at) < 86400000);
+  const rows = samples.filter(x => now - Date.parse(x.at) >= 0 && now - Date.parse(x.at) < 86400000
+    && ['ok', 'triggered', 'partial', 'error', 'manual', 'recovering'].includes(x.status));
   const accountRows = rows.filter(x => x.scope !== 'branch');
   const successful = accountRows.filter(x => ['ok', 'triggered'].includes(x.status)).length;
   const sum = key => rows.reduce((n, x) => n + (Number(x.direct?.[key]) || 0), 0);
