@@ -2,9 +2,9 @@
 
 更新日期：2026-10-18。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
-## 本地待发布：诊断反馈四项修复
+## v1.0.43 已发布：诊断反馈四项修复
 
-用户授权实施，未授权本批发布。设计与边界见 `ai-artifacts/plans/2026-10-18-diagnostic-reliability-design.md`。版本号仍1.0.42；生产中转未改动。
+用户已明确授权联合发布。设计与边界见 `ai-artifacts/plans/2026-10-18-diagnostic-reliability-design.md`；中转与客户端均已更新。
 
 - Telegram指令轮询与金额发送独立健康状态；指令失败30/60/120秒退避、日志限频、恢复一次提示，诊断与界面显示具体阶段/HTTP类别/下次同步时间；配对设备变更重置退避。HTTP200无有效command字段视为无效响应。业务503在健康探测成功时仍保留为业务故障，不重放消费性GET或发送POST。
 - 开奖接口带真实同源即时注单页面referrer，严格校验仍保留；无效响应只导出分类码，不保存原始正文。内容校验失败冷却10分钟、HTTP/网络失败冷却1分钟，期间继续标题读取，API成功后清空当前错误。登录页、HTML、非JSON、模板、期号与结果错误分开。
@@ -12,35 +12,33 @@
 
 诊断显示最近读取约5秒、标题开奖来源可用；Telegram指令上游503根因、原DRAW_API_INVALID实际响应原因尚未取得服务端或现场证据。本批是客户端恢复/可观测性修复，不代表已根治生产云端间歇故障。金额通知持久队列、档位和补发规则不变。
 
-本地验证：212项Node测试通过；五项Electron桌面流程通过（含新增发送健康与指令健康分离显示、实际请求Cookie/Referer核对）。显式Referer为必要修正：Electron单独referrer参数未发送该头，已通过模拟服务实收校验。停盘/等待排除统计，实际验证码/凭据失败进入manual仍计未完整成功。git diff --check通过；尚未执行本批Windows CI或发布，需升级后的新诊断及必要的云端日志验证真实恢复。
+本批最终221项Node测试、五项Electron桌面流程、Windows验证及正式发布通过。显式Referer已由模拟服务实收校验；停盘/等待排除统计，实际验证码/凭据失败进入manual仍计未完整成功。真实恢复仍需升级后的新诊断验证。
 
 ## 当前状态与已验证发布
 
-新增本地待发布：用户选择轻量指令确认与三项健康状态，不做开奖时间线。设计见 `ai-artifacts/plans/2026-10-18-lightweight-command-ack-design.md`。新pending接口领取不删除，查询回复冻结加密保存，成功回执后ack删除；回复/确认中断按原编号继续，不重新生成回复。未知发送结果需人工确认补发或放弃。旧/next保留，新版不降级消费旧接口。Pages放行pending/ack路径；无schema迁移、无新增依赖/定时器/浏览器窗口，未部署任何云端修改。
+已联合发布：轻量指令确认与三项健康状态，不做开奖时间线。设计见 `ai-artifacts/plans/2026-10-18-lightweight-command-ack-design.md`。新pending接口领取不删除，查询回复冻结加密保存，成功回执后ack删除；回复/确认中断按原编号继续，不重新生成回复。未知发送结果需人工确认补发或放弃。旧/next保留，新版不降级消费旧接口。Pages已放行pending/ack路径；无schema迁移、无新增依赖/定时器/浏览器窗口。
 
 每收件人仅一份待完成回复，跨配对暂存最多10份，正文最多3500字符、按钮最多8KB，不包含额外历史；公开状态/诊断仅暴露待完成与待确认标记，不导出回复正文或凭据。界面区分中转连接、指令同步/回复/确认、金额及运行通知发送；复用既有请求，不加高频探测。真实进程内存增量未实测，不承诺零增长。后续联合发布需先核对并备份配对，再Worker→Pages→客户端；旧客户端行为兼容，不把本地测试当线上恢复证明。
 
-本批最终验证：221项Node测试、五项Electron桌面流程通过，Worker语法检查及git diff --check通过。含pending保留/确认幂等/无回执不删除/跨设备隔离、冻结回复与重启恢复、发送回执与ack先后丢失不重读报表、人工不确定处理/数量上限、Pages新路径与UI三态。未运行本批Windows CI、未部署Worker/Pages、未发布客户端；源码仍1.0.42。云端间歇503及服务器真实效果仍需后续上线验证。
+验证覆盖pending保留/确认幂等/无回执不删除/跨设备隔离、冻结回复与重启恢复、发送回执与ack先后丢失不重读报表、人工不确定处理/数量上限、Pages新路径与UI三态。生产隔离设备实测两个入口pending不删除、无回执拒绝ack、成功/重复ack与旧接口正常；测试使用合成回执，不发真实Telegram消息。测试设备及关联指令/回执已清理，原3条配对保留。发布前曾实际遇D1过载7429，随后查询恢复；不能据发布成功声称已根治间歇503或完成长期实机验收。
 
-v1.0.42已发布：点击波线图查看金额走势详情（30分钟/1小时/24小时），支持具体样本时间金额、区间高低值及关联提醒记录。设计见 `ai-artifacts/plans/2026-10-16-trend-details-design.md`；复用现有样本，不改抓取、提醒和存储规则。同步完成当前文档与历史版本归档分离，旧原文保留。
-
-验证：205项Node测试与五项Electron桌面流程通过；新增弹窗空态、30分钟/1小时/24小时切换、悬停金额、提醒标记打开记录及关闭验证。已检查模拟截图 `/tmp/settlement-trend-details.png`，git diff --check通过；Windows验证及正式发布成功，GitHub正式版与R2清单一致，完整独立下载安装包的大小/SHA-512匹配。真实服务器升级体验尚未验证。
+此前v1.0.42的走势详情继续保留，其发布证据见 [历史记录](docs/history/RELEASE-1.0.42.md)。
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.42，2026-10-17 发布 |
-| 发布源码/标签 | `0c4d6a1089167e80002199e977143bf6b510f2cf` / `v1.0.42` |
-| Windows 验证任务 | `38943833336`，成功 |
-| 正式发布任务 | `38944276846`，成功 |
-| 测试证据 | 205项 Node 测试、5项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117480930 |
-| SHA-512 | `Z5YmL+dHLzxPf1dsVbYw0i/pxI7YmVKDvNQ0zIE08n3Gwsht52dfc/pwHmsgKSIO9JbCbSgV22q7QUGSwtpMXw==` |
+| 正式客户端 | v1.0.43，2026-10-18 发布 |
+| 发布源码/标签 | `741b10e4b82e90c3e5a4b668a771a54c916ce928` / `v1.0.43` |
+| Windows 验证任务 | `39078403863`，成功 |
+| 正式发布任务 | `39078779101`，成功 |
+| 测试证据 | 221项 Node 测试、5项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117483643 |
+| SHA-512 | `mQnj1PCRbz6gNIxzK/mzTYdehXn9BUeeampOMam+3kgmDAVMRzXfQSA6oyTLxgIgdN1IZowpfCz5zjvqKsdtTA==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。本次仅发布客户端与文档，未改动生产中转服务。
+发布证据是上述时间点的记录，不代表持续线上健康。本次已按Worker→Pages→客户端顺序联合更新，并独立完整下载校验安装包。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
-- 正式发布：[v1.0.42](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.42)
-- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.42-x64.exe)
+- 正式发布：[v1.0.43](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.43)
+- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.43-x64.exe)
 - 更新源：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev`
 - 官方通知主入口：`https://settlement-connectivity-test.pages.dev`
 - 备用入口：`https://settlement-monitor-pairing.taiyang55667788.workers.dev`
@@ -90,7 +88,7 @@ v1.0.42已发布：点击波线图查看金额走势详情（30分钟/1小时/24
 
 Worker `notification_receipts`按设备/通知UUID原子占用，验证正文摘要，保存Telegram message_id和时间。同编号成功重试只返回回执；明确拒绝可重试，不确定结果保留待确认，其他消息继续。用户确认补发使用新编号关联原编号/原时间。不能保证Telegram与D1之间exactly-once，也没有跨设备同盘口业务去重。
 
-最后已核验生产变更来自v1.0.40：Worker版本 `d24633af-164e-46e8-95c1-957aae0a1216`，当时100%流量；D1去重表已创建，迁移前后3条配对保留，Worker与Pages健康检查当时ready。备份位于本机 `/Users/ty/Documents/Codex/项目备份/交收监控/2026-10-16-v1.0.40/pairing-before.sql`，权限600，不在仓库。以上不是本次实时云端检测结果。
+本次已核验：Worker版本 `06c3878e-e048-4362-b7e4-47103ce8f47f`、100%流量；Pages部署 `ff2a18af`，主域两个新接口生产实测通过。无schema变更，3条配对保留，两个入口健康检查ready。D1完整备份 `/Users/ty/Documents/Codex/项目备份/交收监控/2026-10-18-v1.0.43/pairing-before.sql`，24544字节、权限600，不在Git；已在内存SQLite还原核对3条配对、0指令、67回执，隔离测试清理后3/0/68（正常业务期间回执可增长）。这是本次发布时点证据，不保证以后持续健康。
 
 队列最多2000条，满时明确报错；收件人变更暂存旧队列。通知时间线最多2000条、线路变更最多300条；诊断不包含正文或凭据。成功编号暂不自动清理，需观察D1存储。
 
@@ -112,7 +110,7 @@ git diff --check
 
 ## 待验证与后续重点
 
-- Windows服务器升级v1.0.41后的新期号→15秒→报表读取整条链、实际结算延迟和长期稳定性，尚未完成实机验收。
+- Windows服务器升级v1.0.43后的新期号→15秒→报表读取、指令确认恢复、实际结算延迟和长期稳定性，尚未完成实机验收。
 - 浏览器/API来源验证不能证明Windows长跑；源码测试和Telegram回执不能证明手机实收。
 - 反馈“没提醒”时先核对路径、设置、最后非零档位、50%降档线、连续确认、数据更新时间、队列/回执，再区分读取与通知故障。
 - 网站变化先只读核对真实菜单、分页、表头、日期和金额，不猜URL、末列或结算期号。改动后补定向测试并跑全套验证。
