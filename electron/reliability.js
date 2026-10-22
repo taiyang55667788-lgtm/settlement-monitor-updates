@@ -124,10 +124,11 @@ class NotificationOutbox {
     this.changed();
   }
   async flush(requestedId) {
-    if (this.running) return;
+    if (this.running || this.stopped) return;
     this.running = true;
     try {
       for (let i = 0; i < 10; i++) {
+        if (this.stopped) break;
         const recipient = recipientKey(this.store.state.telegram);
         const item = this.store.state.notificationOutbox?.find(entry => entry.recipient === recipient
           && !entry.confirmationRequired

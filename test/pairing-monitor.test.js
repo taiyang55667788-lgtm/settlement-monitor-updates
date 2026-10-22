@@ -54,6 +54,16 @@ test('changing pairing token does not inherit a prior recipient polling backoff'
   assert.equal(service.commandHealth.state, 'ok');
 });
 
+test('quit while a command request is pending does not prepare or send a new reply', async () => {
+  const { store, service, calls } = setup(); let finish;
+  store.state.telegram = { mode: 'pairing', pairing: { paired: true, token: 'device-token' } };
+  service.pairingClient.nextCommand = () => new Promise(resolve => { finish = resolve; });
+  const pending = service.pollTelegramCommands(); service.stop();
+  finish({ id: '11111111-2222-4333-8444-555555555555', command: { type: 'status' } }); await pending;
+  assert.equal(calls.filter(call => call[0] === 'send').length, 0);
+  assert.equal(service.commandReplies.current(), undefined);
+});
+
 test('monitor resumes a frozen reply and acknowledgement without re-reading the report', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 18, 12) });
   const { store, service } = setup(); const id = '11111111-2222-4333-8444-555555555555';

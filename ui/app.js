@@ -319,13 +319,16 @@ function subagentList(account) {
   const only = reminderOnlyAccounts.has(account.id);
   const targets = account.subagents.filter(hasReminder).map(agent => agent.path || [agent.name]);
   const indexed = account.subagents.map((subagent, index) => ({ subagent, index })).filter(({subagent}) => {
+    if (agentVisibility.confirmedNoData(subagent)) return false;
     const path = subagent.path || [subagent.name];
     return !only || targets.some(target => target.length >= path.length && path.every((part, index) => target[index] === part));
   });
-  if (!indexed.length) return '<div class="subagent-empty">暂无已设置提醒的代理；点击“显示全部代理”进行设置。</div>';
+  if (!indexed.length) return account.subagents.some(agentVisibility.confirmedNoData)
+    ? '<div class="subagent-empty">暂无可显示的代理；本周暂无数据的代理已隐藏，提醒设置保留，有数据后自动显示。</div>'
+    : '<div class="subagent-empty">暂无已设置提醒的代理；点击“显示全部代理”进行设置。</div>';
   const childrenOf = (parentPath) => indexed.filter(({ subagent }) => {
     const path = subagent.path || [subagent.name];
-    return path.length === parentPath.length + 1 && parentPath.every((part, index) => path[index] === part);
+    return pathKey(agentVisibility.visibleParent(path, indexed)) === pathKey(parentPath);
   });
   const isExpanded = (path) => only ? !filteredCollapsedPaths.has(thresholdDraftKey(account.id, path))
     : expandedAgentPaths.has(thresholdDraftKey(account.id, path));
@@ -346,7 +349,7 @@ function subagentList(account) {
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
     return `<tr class="subagent-row level-${depth} ${depth === 1 ? 'first-level' : 'nested-level'} ${subagent.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="${index}" data-agent-key="${escapeHtml(pathKey(path))}" data-depth="${depth}" style="--tree-depth:${depth}">
       <td><div class="subagent-name">${canExpand ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth > 1 ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${readsDescendants ? `第${depth}级代理${depth > 1 ? ` · 上级 ${escapeHtml(path.at(-2))}` : ''}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${dataAge(subagent)}${subagent.stale ? `<small class="child-error">${staleLabel(subagent)}</small>` : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
-      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.noData ? '本周暂无数据' : `${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}`}</td>
+      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.noData ? '本轮未确认（上次暂无数据）' : `${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}`}</td>
       ${hasTurnover ? `<td class="subagent-turnover">${Number.isFinite(subagent.turnover) ? money.format(subagent.turnover) : '—'}</td>` : ''}
       <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small>${thresholdProgress(subagent)}${recentAlert(subagent)}</td>
       <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(subagent.name)} 的备注" /></td>
@@ -368,7 +371,7 @@ function subagentList(account) {
     if (!children.length) return `${row}<tr class="child-placeholder"><td colspan="${columns}">${item.subagent.childError ? '下级读取失败，请刷新重试' : '暂无下级代理'}</td></tr>`;
     return `${row}${children.map(renderBranch).join('')}`;
   };
-  const roots = indexed.filter(({ subagent }) => (subagent.path || [subagent.name]).length === 1);
+  const roots = indexed.filter(({ subagent }) => !agentVisibility.visibleParent(subagent.path || [subagent.name], indexed).length);
   return `<div class="agent-table-scroll"><table class="${tableClass}">${header}<tbody>${roots.map(renderBranch).join('')}</tbody></table></div>`;
 }
 

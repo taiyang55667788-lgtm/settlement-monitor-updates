@@ -1487,6 +1487,7 @@ class MonitorService {
   start() {
     if (this.timer) return;
     this.stopped = false;
+    this.outbox.stopped = false;
     this.timer = setInterval(() => this.tick(), 10000);
     this.commandTimer = setInterval(() => void this.pollTelegramCommands(), 15000);
     this.drawTimer = setInterval(() => void this.pollDraws(), this.drawPollMs);
@@ -1497,6 +1498,7 @@ class MonitorService {
 
   stop() {
     this.stopped = true;
+    this.outbox.stopped = true;
     for (const controller of this.activeReads.values()) controller.abort();
     clearInterval(this.timer);
     clearInterval(this.commandTimer);
@@ -1533,6 +1535,7 @@ class MonitorService {
         this.onChange(); return;
       }
       const command = await this.pairingClient.nextCommand(pairing.token);
+      if (this.stopped || this.suspended) return; // Non-consuming pending command remains server-side.
       const restored = this.commandHealth.state === 'failed';
       this.commandHealth = { ...this.commandHealth, state: 'ok', consecutiveFailures: 0, lastSuccessAt: new Date().toISOString(), nextPollAt: '', code: '', phase: '' };
       if (restored) this.store.addEvent('success', 'Telegram 指令同步已恢复（不代表消息已发送）');
@@ -1613,6 +1616,7 @@ class MonitorService {
   }
 
   async openAccountView(accountId) {
+    if (this.stopped || this.maintenance?.running) throw new Error('监控已停止或正在安全清理，请稍后再打开');
     const account = this.store.state.accounts.find((item) => item.id === accountId);
     if (!account) throw new Error('账号不存在');
     const existing = this.viewWindows.get(accountId);
@@ -1638,7 +1642,7 @@ class MonitorService {
           await resolver.close();
         }
       }
-      if (!this.store.state.accounts.some((item) => item.id === accountId) || (this.revisions.get(accountId) || 0) !== viewRevision) {
+      if (this.stopped || !this.store.state.accounts.some((item) => item.id === accountId) || (this.revisions.get(accountId) || 0) !== viewRevision) {
         throw new Error('账号配置已经变化，请重新打开盘内查看');
       }
       const win = new BrowserWindow({
@@ -2076,7 +2080,7 @@ class MonitorService {
 
   isCurrentCheck(accountId, revision) {
     const current = this.store.state.accounts.find((item) => item.id === accountId);
-    return Boolean(current?.enabled) && (this.revisions.get(accountId) || 0) === revision;
+    return !this.stopped && Boolean(current?.enabled) && (this.revisions.get(accountId) || 0) === revision;
   }
 
   async tick() {
@@ -2085,6 +2089,7 @@ class MonitorService {
     for (const account of this.store.state.accounts.filter(item => item.enabled)) {
       if (!this.pauseForMarket(account, this.status(account.id))) await this.checkFreshness(account);
     }
+    if (marketSchedule().closed && this.maintenance) void this.maintenance.run().catch(() => this.store.addEvent('error', '安全清理未完成，本次跳过，不影响已保存配置'));
     this.onChange();
     const now = Date.now();
     const due = this.store.state.accounts.filter((account) => {
@@ -2178,7 +2183,7 @@ class MonitorService {
   }
 
   async check(accountId, { manual = false, branchRetryOnly = false } = {}) {
-    if (this.suspended || this.stopped || this.store.state.recoveryReviewRequired) return;
+    if (this.suspended || this.stopped || this.maintenance?.running || this.store.state.recoveryReviewRequired) return;
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     if (!storedAccount) throw new Error('账号不存在');
     if (!storedAccount.enabled) return;
@@ -2645,7 +2650,7 @@ class MonitorService {
   }
 
   async processFreshBatch(account, status, period, metric, revision, batch, notificationFailures) {
-    if (marketSchedule().closed) return;
+    if (this.stopped || marketSchedule().closed) return;
     const accountId = account.id;
     const periodKey = `${period.start}/${period.end}`;
     const persistedAccount = this.store.state.accounts.find((item) => item.id === accountId);

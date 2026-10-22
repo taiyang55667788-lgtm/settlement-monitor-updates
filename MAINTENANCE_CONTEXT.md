@@ -1,6 +1,14 @@
 # 交收监控维护上下文
 
-更新日期：2026-10-18。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+更新日期：2026-10-23。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+
+## 本地待发布：v1.0.44 退出、无数据显示与安全清理
+
+用户已明确授权“完成后验证完直接发布”。设计见 `ai-artifacts/plans/2026-10-23-exit-no-data-safe-cleanup-design.md`。主窗口关闭确认后停止监控、保存状态、销毁隐藏页并退出；最小化/断开远程桌面不等于退出，可保存不再提示偏好。保存失败取消退出并停读。只隐藏已确认noData且非stale/notRefreshed代理，原路径索引/设置/档位与后台读取不变，恢复数据后显示。
+
+自动诊断只清应用diagnostics目录、严格文件名及operational诊断格式匹配的普通独立文件，30天/10份至少保留最新1份；拒绝链接和目录，不碰手动导出、备份/损坏恢复文件。HTTP缓存超过200MiB、仅06点停盘且无读取/可见盘口时清理，日配额先持久化，最多每天一次；复用tick，不加定时器或依赖。只用clearCache，保留Cookie/站点存储、账号、档位、待发通知、待确认回复及云端记录。新增真实Electron完整退出与缓存安全流程，桌面流程由5项增至6项。本批不部署云端。
+
+本地验证：234项Node测试和6项Electron桌面流程通过，git diff --check通过。包含实际clearCache保留Cookie/localStorage、关闭主窗口销毁隐藏窗口并退出进程、受保护队列/档位保留、无数据隐藏/失败可见/恢复显示及原配置索引不变；Windows与正式发布状态待下方记录更新。
 
 ## v1.0.43 已发布：诊断反馈四项修复
 

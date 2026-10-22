@@ -1,6 +1,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, powerMonitor, net } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, powerMonitor, net, session } = require('electron');
+const { AppExit } = require('./app-exit');
+const { SafeMaintenance, pruneDiagnostics } = require('./safe-maintenance');
+const { partitionForAccount } = require('./navigation');
 const { SecureStore } = require('./store');
 const { MonitorService, MAX_DESCENDANT_DEPTH } = require('./monitor');
 const { UpdateService } = require('./updater');
@@ -14,6 +17,7 @@ let mainWindow;
 let store;
 let monitor;
 let updater;
+let exitCoordinator;
 const startupAt = Date.now();
 let upgraded = false;
 const hasInstanceLock = app.requestSingleInstanceLock();
@@ -50,6 +54,7 @@ function saveUpdateDiagnostic() {
   const destination = path.join(folder, `before-update-${app.getVersion()}-${Date.now()}.json`);
   const data = operationalDiagnostic(store.state.accounts, monitor.runtime, app.getVersion(), process.platform);
   fs.writeFileSync(destination, JSON.stringify(data, null, 2), { mode: 0o600, flag: 'wx' });
+  try { pruneDiagnostics(app.getPath('userData')); } catch { /* Retention failure must not discard the new diagnostic. */ }
   return destination;
 }
 
@@ -68,6 +73,7 @@ function createWindow() {
       sandbox: true,
     },
   });
+  exitCoordinator.attach(mainWindow);
   mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
 }
 
@@ -79,6 +85,16 @@ if (hasInstanceLock) app.whenReady().then(() => {
   catch (error) { store.addEvent('error', `启动版本记录保存失败：${error.message}`); }
   monitor = new MonitorService(store, publish);
   updater = new UpdateService(store, publish, saveUpdateDiagnostic);
+  exitCoordinator = new AppExit({ app, monitor, updater, store, windows: () => BrowserWindow.getAllWindows(),
+    confirm: win => dialog.showMessageBoxSync(win, { type: 'question', title: '退出交收监控', message: '退出后将停止读取和推送。', detail: '如需继续后台监控，请取消并使用最小化。未发送通知、提醒档位和待确认回复会保留；未点击保存的界面修改不会保存。', buttons: ['退出应用', '取消'], defaultId: 1, cancelId: 1, checkboxLabel: '以后关闭主窗口直接退出，不再提示', checkboxChecked: false }),
+    error: message => dialog.showErrorBox('退出未完成', message),
+    beforeExit: () => { if (updater.runtime.status === 'ready') { try { updater.prepareInstall(); } catch { updater.disableAutomaticInstall(); } } },
+  });
+  monitor.maintenance = new SafeMaintenance({ userData: app.getPath('userData'), store,
+    sessions: () => store.state.accounts.map(account => session.fromPartition(partitionForAccount(account.id))),
+    idle: () => !monitor.stopped && !monitor.suspended && new Date().getHours() === 6 && !monitor.inFlight.size && !monitor.openingViews.size && !monitor.drawPollRunning && ![...monitor.viewWindows.values()].some(win => !win.isDestroyed() && win.isVisible()),
+  });
+  try { monitor.maintenance.prune(); } catch { store.addEvent('error', '自动诊断清理失败，本次跳过；配置和手动导出文件未清理'); }
   createWindow();
   monitor.start();
   powerMonitor.on('suspend', () => monitor.suspend());
@@ -365,16 +381,6 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
+  if (exitCoordinator?.quitting) return;
   if (BrowserWindow.getAllWindows().length === 0) { createWindow(); monitor?.start(); updater?.start(); }
-});
-app.on('before-quit', () => {
-  if (updater?.runtime.status === 'ready') {
-    try { updater.prepareInstall(); }
-    catch {
-      // A normal app exit remains possible, but do not auto-install an update
-      // when its pre-update diagnostic could not be saved.
-      updater.disableAutomaticInstall();
-    }
-  }
-  monitor?.stop(); store?.flush();
 });
