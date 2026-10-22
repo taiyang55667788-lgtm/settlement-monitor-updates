@@ -2,13 +2,13 @@
 
 更新日期：2026-10-23。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
-## 本地待发布：v1.0.44 退出、无数据显示与安全清理
+## v1.0.44 已发布：退出、无数据显示与安全清理
 
 用户已明确授权“完成后验证完直接发布”。设计见 `ai-artifacts/plans/2026-10-23-exit-no-data-safe-cleanup-design.md`。主窗口关闭确认后停止监控、保存状态、销毁隐藏页并退出；最小化/断开远程桌面不等于退出，可保存不再提示偏好。保存失败取消退出并停读。只隐藏已确认noData且非stale/notRefreshed代理，原路径索引/设置/档位与后台读取不变，恢复数据后显示。
 
 自动诊断只清应用diagnostics目录、严格文件名及operational诊断格式匹配的普通独立文件，30天/10份至少保留最新1份；拒绝链接和目录，不碰手动导出、备份/损坏恢复文件。HTTP缓存超过200MiB、仅06点停盘且无读取/可见盘口时清理，日配额先持久化，最多每天一次；复用tick，不加定时器或依赖。只用clearCache，保留Cookie/站点存储、账号、档位、待发通知、待确认回复及云端记录。新增真实Electron完整退出与缓存安全流程，桌面流程由5项增至6项。本批不部署云端。
 
-本地验证：234项Node测试和6项Electron桌面流程通过，git diff --check通过。包含实际clearCache保留Cookie/localStorage、关闭主窗口销毁隐藏窗口并退出进程、受保护队列/档位保留、无数据隐藏/失败可见/恢复显示及原配置索引不变；Windows与正式发布状态待下方记录更新。
+本地验证：234项Node测试和6项Electron桌面流程通过，git diff --check通过。包含实际clearCache保留Cookie/localStorage、关闭主窗口销毁隐藏窗口并退出进程、受保护队列/档位保留、无数据隐藏/失败可见/恢复显示及原配置索引不变。Windows验证、正式发布、GitHub Release与R2完整安装包校验均通过，证据见下表；真实服务器长期运行仍需升级后观察。
 
 ## v1.0.43 已发布：诊断反馈四项修复
 
@@ -24,7 +24,7 @@
 
 ## 当前状态与已验证发布
 
-已联合发布：轻量指令确认与三项健康状态，不做开奖时间线。设计见 `ai-artifacts/plans/2026-10-18-lightweight-command-ack-design.md`。新pending接口领取不删除，查询回复冻结加密保存，成功回执后ack删除；回复/确认中断按原编号继续，不重新生成回复。未知发送结果需人工确认补发或放弃。旧/next保留，新版不降级消费旧接口。Pages已放行pending/ack路径；无schema迁移、无新增依赖/定时器/浏览器窗口。
+此前v1.0.43已联合发布：轻量指令确认与三项健康状态，不做开奖时间线；v1.0.44继续保留。设计见 `ai-artifacts/plans/2026-10-18-lightweight-command-ack-design.md`。新pending接口领取不删除，查询回复冻结加密保存，成功回执后ack删除；回复/确认中断按原编号继续，不重新生成回复。未知发送结果需人工确认补发或放弃。旧/next保留，新版不降级消费旧接口。Pages已放行pending/ack路径；无schema迁移、无新增依赖/定时器/浏览器窗口。
 
 每收件人仅一份待完成回复，跨配对暂存最多10份，正文最多3500字符、按钮最多8KB，不包含额外历史；公开状态/诊断仅暴露待完成与待确认标记，不导出回复正文或凭据。界面区分中转连接、指令同步/回复/确认、金额及运行通知发送；复用既有请求，不加高频探测。真实进程内存增量未实测，不承诺零增长。后续联合发布需先核对并备份配对，再Worker→Pages→客户端；旧客户端行为兼容，不把本地测试当线上恢复证明。
 
@@ -34,19 +34,19 @@
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.43，2026-10-18 发布 |
-| 发布源码/标签 | `741b10e4b82e90c3e5a4b668a771a54c916ce928` / `v1.0.43` |
-| Windows 验证任务 | `39078403863`，成功 |
-| 正式发布任务 | `39078779101`，成功 |
-| 测试证据 | 221项 Node 测试、5项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117483643 |
-| SHA-512 | `mQnj1PCRbz6gNIxzK/mzTYdehXn9BUeeampOMam+3kgmDAVMRzXfQSA6oyTLxgIgdN1IZowpfCz5zjvqKsdtTA==` |
+| 正式客户端 | v1.0.44，2026-10-23 发布 |
+| 发布源码/标签 | `1502b1123c089f852c84a52ef3f42aedd45d4a1e` / `v1.0.44` |
+| Windows 验证任务 | `39858238553`，成功 |
+| 正式发布任务 | `39858666235`，成功 |
+| 测试证据 | 234项 Node 测试、6项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117485653 |
+| SHA-512 | `w2E21sc1m+3PRuO2TjVni3UnkVAFuecbQgWksNbUtozabDeOD4bmCqAICgpxk/t5EPUMNIvdB+SdCMaVXYnYOg==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。本次已按Worker→Pages→客户端顺序联合更新，并独立完整下载校验安装包。
+发布证据是上述时间点的记录，不代表持续线上健康。v1.0.44仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。v1.0.43联合发布证据见 [历史记录](docs/history/RELEASE-1.0.43.md)。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
-- 正式发布：[v1.0.43](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.43)
-- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.43-x64.exe)
+- 正式发布：[v1.0.44](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.44)
+- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.44-x64.exe)
 - 更新源：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev`
 - 官方通知主入口：`https://settlement-connectivity-test.pages.dev`
 - 备用入口：`https://settlement-monitor-pairing.taiyang55667788.workers.dev`
@@ -96,7 +96,7 @@
 
 Worker `notification_receipts`按设备/通知UUID原子占用，验证正文摘要，保存Telegram message_id和时间。同编号成功重试只返回回执；明确拒绝可重试，不确定结果保留待确认，其他消息继续。用户确认补发使用新编号关联原编号/原时间。不能保证Telegram与D1之间exactly-once，也没有跨设备同盘口业务去重。
 
-本次已核验：Worker版本 `06c3878e-e048-4362-b7e4-47103ce8f47f`、100%流量；Pages部署 `ff2a18af`，主域两个新接口生产实测通过。无schema变更，3条配对保留，两个入口健康检查ready。D1完整备份 `/Users/ty/Documents/Codex/项目备份/交收监控/2026-10-18-v1.0.43/pairing-before.sql`，24544字节、权限600，不在Git；已在内存SQLite还原核对3条配对、0指令、67回执，隔离测试清理后3/0/68（正常业务期间回执可增长）。这是本次发布时点证据，不保证以后持续健康。
+云端最后已核验时点为2026-10-18（v1.0.43），v1.0.44未重新部署或验收云端：Worker版本 `06c3878e-e048-4362-b7e4-47103ce8f47f`、100%流量；Pages部署 `ff2a18af`，当时主域两个新接口生产实测通过。无schema变更，3条配对保留，两个入口健康检查ready。D1完整备份 `/Users/ty/Documents/Codex/项目备份/交收监控/2026-10-18-v1.0.43/pairing-before.sql`，24544字节、权限600，不在Git；已在内存SQLite还原核对3条配对、0指令、67回执，隔离测试清理后3/0/68（正常业务期间回执可增长）。这是历史发布时点证据，不保证以后持续健康。
 
 队列最多2000条，满时明确报错；收件人变更暂存旧队列。通知时间线最多2000条、线路变更最多300条；诊断不包含正文或凭据。成功编号暂不自动清理，需观察D1存储。
 
@@ -110,7 +110,7 @@ pnpm test:desktop
 git diff --check
 ```
 
-五项桌面流程：四级报表DOM、层级UI、配置迁移持久化、直接查询/会话隔离/开奖响应、通知网络。测试使用模拟环境，真实盘口结构需另行只读核对。
+六项桌面流程：四级报表DOM、层级UI、配置迁移持久化、直接查询/会话隔离/开奖响应、通知网络、真实Electron退出与缓存安全。测试使用模拟环境，真实盘口结构需另行只读核对。
 
 发布需要用户明确授权；“做完”不等于发布授权。改版本号并完成本地验证后，提交源码；先 `workflow_dispatch`验证Windows安装包，不上传更新。成功后推送对应`v*`标签，正式工作流重新测试、构建并上传R2/GitHub Release。最后独立读取latest.yml并完整下载安装包，比较版本、大小、SHA-512，记录源码/标签/工作流。不能只凭标签推送或CI成功宣布完整发布。
 
@@ -118,7 +118,7 @@ git diff --check
 
 ## 待验证与后续重点
 
-- Windows服务器升级v1.0.43后的新期号→15秒→报表读取、指令确认恢复、实际结算延迟和长期稳定性，尚未完成实机验收。
+- Windows服务器升级v1.0.44后的新期号→15秒→报表读取、指令确认恢复、实际结算延迟、维护清理及长期稳定性，尚未完成实机验收。
 - 浏览器/API来源验证不能证明Windows长跑；源码测试和Telegram回执不能证明手机实收。
 - 反馈“没提醒”时先核对路径、设置、最后非零档位、50%降档线、连续确认、数据更新时间、队列/回执，再区分读取与通知故障。
 - 网站变化先只读核对真实菜单、分页、表头、日期和金额，不猜URL、末列或结算期号。改动后补定向测试并跑全套验证。
