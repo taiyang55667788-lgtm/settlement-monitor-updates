@@ -2,9 +2,9 @@
 
 更新日期：2026-10-23。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
-## v1.0.45 发布中：状态可观测性与消息展示
+## v1.0.45 已发布：状态可观测性与消息展示
 
-用户授权三项：开奖触发的读取结束后不再残留“正在读取”，按成功/部分完成/失败/人工处理归位，不覆盖新待执行期号；Telegram指令及通知错误增加超时/HTTP服务故障/拒绝/不确定分类，恢复清除当前分类；会话恢复原因在详情、运行日志及脱敏诊断记录，无法确定过期或异地时不猜测，不改变原登录恢复策略。无新增请求、定时器或依赖。保留之前未发布的方向圆点、交收提醒标题、路径最前括号备注。设计见 `ai-artifacts/plans/2026-10-23-status-observability-design.md`。本地验证及发布状态以后续记录为准，未发布前正式版仍是v1.0.44。
+用户授权三项：开奖触发的读取结束后不再残留“正在读取”，按成功/部分完成/失败/人工处理归位，不覆盖新待执行期号；Telegram指令及通知错误增加超时/HTTP服务故障/拒绝/不确定分类，恢复清除当前分类；会话恢复原因在详情、运行日志及脱敏诊断记录，无法确定过期或异地时不猜测，不改变原登录恢复策略。无新增请求、定时器或依赖。方向圆点、交收提醒标题、路径最前括号备注一并发布，升级前旧待发正文保持原样。设计见 `ai-artifacts/plans/2026-10-23-status-observability-design.md`。238项Node测试、6项桌面流程、Windows验证构建及正式发布通过，GitHub Release/R2清单与独立完整安装包大小、SHA-512一致。未做真实手机实收或服务器长期验收，不声称根治云端502。
 
 ## v1.0.44 已发布：退出、无数据显示与安全清理
 
@@ -40,19 +40,19 @@ v1.0.45后续改动：Telegram金额消息增加第二方向圆点，比较同�
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.44，2026-10-23 发布 |
-| 发布源码/标签 | `1502b1123c089f852c84a52ef3f42aedd45d4a1e` / `v1.0.44` |
-| Windows 验证任务 | `39858238553`，成功 |
-| 正式发布任务 | `39858666235`，成功 |
-| 测试证据 | 234项 Node 测试、6项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117485653 |
-| SHA-512 | `w2E21sc1m+3PRuO2TjVni3UnkVAFuecbQgWksNbUtozabDeOD4bmCqAICgpxk/t5EPUMNIvdB+SdCMaVXYnYOg==` |
+| 正式客户端 | v1.0.45，2026-10-23 发布 |
+| 发布源码/标签 | `0551edd408a939f820e28591327cba267662631a` / `v1.0.45` |
+| Windows 验证任务 | `39880952550`，成功 |
+| 正式发布任务 | `39881267795`，成功 |
+| 测试证据 | 238项 Node 测试、6项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117486926 |
+| SHA-512 | `1Gy+5PBpEbn3KpPRD9mCL7s0YIjhcFI4f5lTgBRjLO9dzQUZgNFNc0wcMFO3ACvBrEXHSiOsoynOyRJjITPhiw==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。v1.0.44仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。v1.0.43联合发布证据见 [历史记录](docs/history/RELEASE-1.0.43.md)。
+发布证据是上述时间点的记录，不代表持续线上健康。v1.0.45仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
-- 正式发布：[v1.0.44](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.44)
-- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.44-x64.exe)
+- 正式发布：[v1.0.45](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.45)
+- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.45-x64.exe)
 - 更新源：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev`
 - 官方通知主入口：`https://settlement-connectivity-test.pages.dev`
 - 备用入口：`https://settlement-monitor-pairing.taiyang55667788.workers.dev`
@@ -124,7 +124,7 @@ git diff --check
 
 ## 待验证与后续重点
 
-- Windows服务器升级v1.0.44后的新期号→15秒→报表读取、指令确认恢复、实际结算延迟、维护清理及长期稳定性，尚未完成实机验收。
+- Windows服务器升级v1.0.45后的新期号→15秒→报表读取、指令确认恢复、实际结算延迟、维护清理、方向圆点实收及长期稳定性，尚未完成实机验收。
 - 浏览器/API来源验证不能证明Windows长跑；源码测试和Telegram回执不能证明手机实收。
 - 反馈“没提醒”时先核对路径、设置、最后非零档位、50%降档线、连续确认、数据更新时间、队列/回执，再区分读取与通知故障。
 - 网站变化先只读核对真实菜单、分页、表头、日期和金额，不猜URL、末列或结算期号。改动后补定向测试并跑全套验证。
