@@ -7,6 +7,7 @@ const { ALERT_METRIC, alertLedgerKey, alertHistoryForPeriod, pendingAlertNotific
 const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = require('./monitor-systems');
 const { PairingClient } = require('./pairing');
 const { CommandReplies } = require('./command-replies');
+const { sessionReason, telegramFault, finishDrawRead } = require('./status-detail');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
@@ -488,7 +489,10 @@ class SiteClient {
     }
     const formReady = await waitUntil(this.window, `document.querySelectorAll('input').length >= 3`, 12000);
     if (!formReady) throw new Error('代理登录页加载失败');
-    if (this.status.lastSuccessAt) this.status.sessionLostThisRound = true;
+    if (this.status.lastSuccessAt) {
+      this.status.sessionLostThisRound = true;
+      this.status.sessionRecoveryReason ||= '登录页要求重新登录（失效原因未确认）';
+    }
     let lastFailure = '';
     let previousCaptchaFingerprint = '';
     for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -770,10 +774,12 @@ class SiteClient {
           && kind !== '网络或加载超时') || attempt === 3) throw error;
         if (error.code === 'SESSION_EXPIRED' || /登录状态已失效|登陆状态已失效|会话.*失效|登录已过期/.test(error.message || '')) {
           this.status.recoveryAction = '已确认登录失效，重新登录';
+          this.status.sessionRecoveryReason = sessionReason(error);
           this.status.sessionLostThisRound = true;
           await this.login(agentUrl);
         } else {
           this.status.recoveryAction = '重新查询报表，保留登录会话';
+          this.status.sessionRecoveryReason = sessionReason(error);
           this.currentReportPath = null;
           this.reportRefreshNeeded = true;
         }
@@ -1531,13 +1537,13 @@ class MonitorService {
       if (this.commandReplies.current()) {
         phase = 'reply';
         await this.commandReplies.resume(pairing.token);
-        this.commandHealth = { ...this.commandHealth, state: 'ok', consecutiveFailures: 0, nextPollAt: '', code: '', phase: '' };
+        this.commandHealth = { ...this.commandHealth, state: 'ok', category: '', consecutiveFailures: 0, nextPollAt: '', code: '', phase: '' };
         this.onChange(); return;
       }
       const command = await this.pairingClient.nextCommand(pairing.token);
       if (this.stopped || this.suspended) return; // Non-consuming pending command remains server-side.
       const restored = this.commandHealth.state === 'failed';
-      this.commandHealth = { ...this.commandHealth, state: 'ok', consecutiveFailures: 0, lastSuccessAt: new Date().toISOString(), nextPollAt: '', code: '', phase: '' };
+      this.commandHealth = { ...this.commandHealth, state: 'ok', category: '', consecutiveFailures: 0, lastSuccessAt: new Date().toISOString(), nextPollAt: '', code: '', phase: '' };
       if (restored) this.store.addEvent('success', 'Telegram 指令同步已恢复（不代表消息已发送）');
       if (restored) this.onChange();
       if (!command?.command) return;
@@ -1606,9 +1612,9 @@ class MonitorService {
       const delay = Math.min(120000, 15000 * 2 ** Math.min(failures, 3));
       const code = error.code === 'COMMAND_CONFIRMATION_REQUIRED' ? error.code : Number.isInteger(error.status) ? `HTTP_${error.status}` : 'COMMAND_NETWORK_OR_SERVICE';
       const previous = this.commandHealth;
-      this.commandHealth = { ...previous, state: 'failed', consecutiveFailures: failures, lastFailureAt: new Date().toISOString(), nextPollAt: new Date(Date.now() + delay).toISOString(), code, phase: phase === 'reply' && this.commandReplies.current()?.stage === 'sent' ? 'ack' : phase };
+      this.commandHealth = { ...previous, state: 'failed', category: telegramFault(error), consecutiveFailures: failures, lastFailureAt: new Date().toISOString(), nextPollAt: new Date(Date.now() + delay).toISOString(), code, phase: phase === 'reply' && this.commandReplies.current()?.stage === 'sent' ? 'ack' : phase };
       if (previous.state !== 'failed' || previous.code !== code || Date.now() - (this.commandFailureLoggedAt || 0) >= 300000) {
-        this.store.addEvent('error', `Telegram ${phase === 'poll' ? '指令同步' : '指令执行/回复'}失败（${code}），${delay / 1000}秒后重试同步；不自动重放已取出的指令`);
+        this.store.addEvent('error', `Telegram ${phase === 'poll' ? '指令同步' : '指令执行/回复'}失败：${telegramFault(error)}（${code}），${delay / 1000}秒后重试同步；不自动重放已取出的指令`);
         this.commandFailureLoggedAt = Date.now();
       }
       this.onChange();
@@ -2201,6 +2207,8 @@ class MonitorService {
     const bypassBranchBackoff = manual || this.fullScanRequested.has(accountId) || recovering;
     status.recheckRequested = false;
     status.sessionLostThisRound = false;
+    status.sessionRecoveryReason = '';
+    status.recoveryAction = '';
     status.running = true;
     status.status = 'checking';
     status.error = '';
@@ -2565,6 +2573,7 @@ class MonitorService {
       status.status = manualRequired ? 'manual' : 'error';
       const detail = error.message || String(error);
       status.failureKind = failureKind(error);
+      status.sessionRecoveryReason ||= sessionReason(error);
       status.failureScope = error.code === 'REPORT_PAGE_TIMEOUT' || error.code === 'READ_WATCHDOG'
         ? '本周报表页面/会话'
         : status.failureKind === '登录状态' ? '登录会话'
@@ -2589,14 +2598,16 @@ class MonitorService {
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
       await this.updateHealth(account, status, true);
     } finally {
+      finishDrawRead(status);
       status.durationMs = Date.now() - checkStarted;
       status.readSamples = [...(status.readSamples || []).filter(item => Date.now() - Date.parse(item.at) < 86400000), {
         at: new Date().toISOString(), durationMs: status.durationMs, status: status.status,
         scope: status.branchRetryRound ? 'branch' : 'account',
-        failureKind: status.failureKind, failureScope: status.failureScope, sessionLost: status.sessionLostThisRound, recovery: recovering || status.sessionLostThisRound,
+        failureKind: status.failureKind, failureScope: status.failureScope, sessionReason: status.sessionRecoveryReason || '', sessionLost: status.sessionLostThisRound, recovery: recovering || status.sessionLostThisRound,
         direct: status.directRead ? { ...status.directRead } : null,
       }].slice(-2000);
       status.readSummary = readSummary(status.readSamples);
+      if (status.sessionLostThisRound) this.store.addEvent('info', `${account.name}：登录恢复原因：${status.sessionRecoveryReason || '登录状态校验失效（具体原因未确认）'}`, accountId);
       const timings = status.phaseTimings;
       const slowest = timings?.branches.reduce((max, item) => !max || item.durationMs > max.durationMs ? item : max, null);
       this.store.addEvent('info', `${account.name}：本轮耗时 ${(status.durationMs / 1000).toFixed(1)} 秒${timings ? `；登录及首层 ${(timings.loginAndRootMs / 1000).toFixed(1)} 秒；分支 ${timings.branches.length} 个` : ''}${slowest ? `；最慢分支 ${slowest.path.join(' / ')} ${(slowest.durationMs / 1000).toFixed(1)} 秒` : ''}${status.failureKind ? `；故障类型：${status.failureKind}` : ''}`, accountId);
@@ -2775,10 +2786,11 @@ class MonitorService {
     const firstNewMilestone = (previousLevel + Math.sign(level - previousLevel || level)) * alertStep;
     const direction = value < 0 ? '🔴' : '🔵';
     const signedValue = `${value > 0 ? '+' : ''}${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const displayPath = (remark ? `（${remark}）` : '') + path.join(' / ');
     const text = [
-      `${direction} ${metric.valueLabel}提醒${notification.initialSummary ? '（首次读取汇总）' : ''}`,
+      `${direction} ${metric.valueLabel === '本周应收下线' ? '交收提醒' : `${metric.valueLabel}提醒`}${notification.initialSummary ? '（首次读取汇总）' : ''}`,
       `账号：${account.name}`,
-      (metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${path.join(' / ')}` : `监控项：${metric.label}`) + (remark ? `（${remark}）` : ''),
+      metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${displayPath}` : `监控项：${remark ? `（${remark}）` : ''}${metric.label}`,
       `${direction} ${metric.valueLabel}：${signedValue}`,
       `提醒间隔：每 ${alertStep.toLocaleString('zh-CN')} 一档`,
       previousLevel ? `上一次档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上一次档位：无（首次提醒）',
@@ -2806,7 +2818,7 @@ class MonitorService {
       downwardBufferRatio: 0.5,
     };
     const record = { accountId: account.id, accountName: account.name, agentName: subagentName,
-      agentPath: path, value, level, previousLevel, alertStep, remark, period, metric: metricId, trigger };
+      agentPath: path, value, level, previousLevel, alertStep, remark, period, metric: metricId, trigger, amountDirectionDots: true };
     return this.enqueueNotification(text, 'amount', { record, commit: data => {
       if (!account.id) return; // Standalone message formatting/test calls have no monitored account.
       const current = data.accounts.find(item => item.id === account.id);

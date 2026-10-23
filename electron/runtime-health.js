@@ -41,6 +41,7 @@ function operationalDiagnostic(accounts, runtime, version, platform, now = Date.
         at: x.at, status: x.status, durationMs: x.durationMs, failureKind: x.failureKind || '', failureScope: x.failureScope || '',
         scope: x.scope === 'branch' ? 'branch' : 'account',
         sessionLost: Boolean(x.sessionLost), recovery: Boolean(x.recovery),
+        sessionReason: x.sessionReason || '',
         direct: x.direct ? { attempts: x.direct.attempts, successes: x.direct.successes, failures: x.direct.failures,
           fallbacks: x.direct.fallbacks, totalMs: x.direct.totalMs, learned: x.direct.learned } : null,
       }));

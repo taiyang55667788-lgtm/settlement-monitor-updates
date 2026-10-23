@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const { alertLedgerKey, recordAlertLevel } = require('./alert-ledger');
+const { telegramFault } = require('./status-detail');
 
 function recipientKey(telegram = {}) {
   const identity = telegram.mode === 'pairing' && telegram.pairing?.paired && telegram.pairing.token
@@ -7,6 +8,24 @@ function recipientKey(telegram = {}) {
     : telegram.mode === 'legacy' && telegram.botToken && telegram.chatId
       ? ['legacy', telegram.botToken, telegram.chatId] : null;
   return identity ? crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex') : '';
+}
+
+function amountComparisonKey(item) {
+  const record = item.record;
+  return JSON.stringify([item.recipient, record.metric, record.period, record.agentPath]);
+}
+
+function freezeAmountDots(data, item) {
+  const record = item.record;
+  if (!record?.amountDirectionDots || item.amountDotsFrozen || item.attempts > 0) return;
+  const account = data.accounts?.find(account => account.id === record.accountId);
+  const key = amountComparisonKey(item);
+  const previous = account?.deliveredAmountComparisons?.[key]?.value;
+  const dot = Number.isFinite(previous) && record.value !== previous
+    ? record.value > previous ? '🔵' : '🔴' : '';
+  // Freeze before sending so retries always keep the same body and content hash.
+  item.text = item.text.replace(/^(🔵|🔴) /gm, `$1${dot} `);
+  item.amountDotsFrozen = true;
 }
 
 function importantBranch(path, settings = []) {
@@ -137,6 +156,10 @@ class NotificationOutbox {
         if (!item || item.nextAttemptAt > this.now()) break;
         this.activeId = item.id;
         try {
+          if (item.record?.amountDirectionDots && !item.amountDotsFrozen && item.attempts === 0) {
+            this.store.update(data => freezeAmountDots(data, data.notificationOutbox.find(entry => entry.id === item.id)));
+            Object.assign(item, this.store.state.notificationOutbox.find(entry => entry.id === item.id));
+          }
           const delayed = item.attempts > 0 || this.now() - Date.parse(item.createdAt) > 60000;
           if (!this.acknowledged.has(item.id)) {
             const receipt = await this.send(item.text + `\n通知编号：${item.id}` + (item.originalNotificationId ? `\n原通知编号：${item.originalNotificationId}` : '') + (delayed ? `\n⏱ 延迟补发，原始时间：${item.createdAt}` : ''), {
@@ -145,7 +168,7 @@ class NotificationOutbox {
             if (receipt?.notificationId && receipt.notificationId !== item.id) throw new Error('中转回执通知编号不匹配');
             this.receipts ||= new Map();
             this.receipts.set(item.id, receipt?.notificationId ? { notificationId: receipt.notificationId, receivedAt: receipt.receivedAt, confirmedAt: receipt.confirmedAt, telegramMessageId: receipt.telegramMessageId, deduplicated: Boolean(receipt.deduplicated) } : null);
-            this.health = { ...this.health, state: 'ok', lastSuccessAt: new Date(this.now()).toISOString(), error: '' };
+            this.health = { ...this.health, state: 'ok', category: '', lastSuccessAt: new Date(this.now()).toISOString(), error: '' };
             this.acknowledged.add(item.id);
           }
           this.store.update(data => {
@@ -153,6 +176,15 @@ class NotificationOutbox {
             data.notificationTimeline = [...(data.notificationTimeline || []), { at: new Date(this.now()).toISOString(), type: item.attempts ? 'recovered-send' : 'sent', notificationId: item.id, pending: data.notificationOutbox.length, attempts: item.attempts }].slice(-2000);
             const record = item.record;
             const account = data.accounts?.find(account => account.id === record?.accountId);
+            if (account && record?.period && record.alertType !== 'delta' && Number.isFinite(record.value)) {
+              account.deliveredAmountComparisons ||= {};
+              const comparisonKey = amountComparisonKey(item);
+              delete account.deliveredAmountComparisons[comparisonKey];
+              account.deliveredAmountComparisons[comparisonKey] = { value: record.value, at: new Date(this.now()).toISOString() };
+              // Bounded metadata, independent from trigger tiers and the pending queue.
+              const keys = Object.keys(account.deliveredAmountComparisons);
+              for (const key of keys.slice(0, Math.max(0, keys.length - 500))) delete account.deliveredAmountComparisons[key];
+            }
             if (account && record?.period && record.alertType !== 'delta') {
               const period = `${record.period.start}/${record.period.end}`;
               if (account.deliveredAlertHistory?.period !== period || account.deliveredAlertHistory?.metric !== record.metric) {
@@ -173,7 +205,7 @@ class NotificationOutbox {
             this.store.addEvent?.('error', `通知 ${item.id.slice(0, 8)} 已送达，本机保存失败；将重试保存：${error.message}`);
             break;
           }
-          this.health = { ...this.health, state: 'failed', lastFailureAt: new Date(this.now()).toISOString(), error: String(error.message || error) };
+          this.health = { ...this.health, state: 'failed', category: telegramFault(error), lastFailureAt: new Date(this.now()).toISOString(), error: String(error.message || error) };
           this.store.update(data => {
             const pending = data.notificationOutbox?.find(entry => entry.id === item.id);
             if (pending) {

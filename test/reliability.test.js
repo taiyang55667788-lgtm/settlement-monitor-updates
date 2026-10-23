@@ -14,6 +14,35 @@ test('only validated parent absence creates fresh no-data targets, not failed or
 });
 const { MonitorService } = require('../electron/monitor');
 
+test('amount dots compare successful delivery, survive restart and freeze retries without changing tiers', async () => {
+  const store = fixture();
+  store.state.accounts = [{ id: 'a' }];
+  const sent = [];
+  let fail = false;
+  const send = async text => { sent.push(text); if (fail) throw new Error('offline'); };
+  let box = new NotificationOutbox(store, send);
+  const enqueue = (value, path = ['agent']) => box.enqueue(`${value < 0 ? '🔴' : '🔵'} 提醒\n${value < 0 ? '🔴' : '🔵'} 金额`, 'amount', { record: {
+    accountId: 'a', agentPath: path, value, metric: 'weekly', period: { start: 's', end: 'e' }, amountDirectionDots: true,
+  } });
+  enqueue(120000); await box.flush(); assert.match(sent.at(-1), /^🔵 提醒/);
+  enqueue(200000); enqueue(120000); await box.flush();
+  assert.match(sent.at(-2), /^🔵🔵 提醒/); assert.match(sent.at(-1), /^🔵🔴 提醒/);
+  store.state = JSON.parse(JSON.stringify(store.state));
+  box = new NotificationOutbox(store, send);
+  enqueue(-200000); await box.flush(); assert.match(sent.at(-1), /^🔴🔴 提醒/);
+  enqueue(-100000); await box.flush(); assert.match(sent.at(-1), /^🔴🔵 提醒/);
+  enqueue(-100000); await box.flush(); assert.match(sent.at(-1), /^🔴 提醒/);
+  enqueue(999999, ['other']); await box.flush(); assert.match(sent.at(-1), /^🔵 提醒/);
+  fail = true; enqueue(300000); await box.flush();
+  const frozen = store.state.notificationOutbox[0].text;
+  assert.match(frozen, /^🔵🔵 提醒/);
+  fail = false; store.state.notificationOutbox[0].nextAttemptAt = 0;
+  box = new NotificationOutbox(store, send); await box.flush();
+  assert.ok(sent.at(-1).startsWith(frozen));
+  assert.equal(store.state.notificationOutbox.length, 0);
+  assert.equal(store.state.accounts[0].alertHistory, undefined);
+});
+
 function fixture() {
   return { state: { telegram: { mode: 'legacy', botToken: 'test', chatId: 'chat' }, accounts: [], alertRecords: [] },
     update(fn) { fn(this.state); }, addEvent() {}, addAlertRecord(item) { this.state.alertRecords.push(item); } };

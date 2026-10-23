@@ -86,8 +86,8 @@ test('amount alerts show inline remarks and previous tier without redundant fiel
   await service.sendTelegram({ name: 'main-account' }, 350, 3, 1, 'subagent-a', 100, '独霸', ['parent', 'subagent-a'], period);
   await service.outbox.flush();
 
-  assert.match(message, /代理层级：parent \/ subagent-a（独霸）/);
-  assert.match(message, /🔵 本周应收下线提醒/);
+  assert.match(message, /代理层级：（独霸）parent \/ subagent-a/);
+  assert.match(message, /🔵 交收提醒/);
   assert.match(message, /🔵 本周应收下线：\+350\.00/);
   assert.match(message, /提醒间隔：每 100 一档/);
   assert.match(message, /上一次档位：\+100/);
@@ -111,7 +111,7 @@ test('negative receivable-downline uses red marker and migration summary label',
   await service.sendTelegram({ name: 'main-account' }, -350, -3, 0, 'subagent-a', 100, '', ['subagent-a'],
     { start: '2026-09-14', end: '2026-09-20' }, { initialSummary: true });
   await service.outbox.flush();
-  assert.match(message, /🔴 本周应收下线提醒（首次读取汇总）/);
+  assert.match(message, /🔴 交收提醒（首次读取汇总）/);
   assert.match(message, /🔴 本周应收下线：-350\.00/);
   assert.match(message, /共 3 档（已合并为一条消息）/);
   assert.match(message, /上一次档位：无（首次提醒）/);
@@ -128,7 +128,7 @@ test('downward returns display the previous negative tier', async () => {
   await service.sendTelegram({ name: 'main-account' }, -350000, -1, -2, 'agent', 300000, '喜力', ['agent'],
     { start: '2026-09-14', end: '2026-09-20' });
   await service.outbox.flush();
-  assert.match(message, /代理层级：agent（喜力）/);
+  assert.match(message, /代理层级：（喜力）agent/);
   assert.match(message, /上一次档位：-600,000/);
   assert.match(message, /本周应收下线：-350,000\.00/);
   assert.doesNotMatch(message, /报表区间|当前档位|备注：/);
@@ -156,7 +156,7 @@ test('general-agent detail alerts use only the general-agent result label', asyn
     { start: '2026-09-14', end: '2026-09-20' });
   await service.outbox.flush();
   assert.match(message, /🔵 总代理结果提醒/);
-  assert.match(message, /总代理：general-a（总代理备注）/);
+  assert.match(message, /总代理：（总代理备注）general-a/);
   assert.match(message, /🔵 总代理结果：\+250\.00/);
   assert.doesNotMatch(message, /实货量/);
 });

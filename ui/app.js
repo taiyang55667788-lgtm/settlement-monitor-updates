@@ -74,6 +74,7 @@ function refreshReadingDetails() {
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     ...(account.recoveryAction ? [`自动恢复：${account.recoveryAction}`] : []),
+    ...(account.sessionRecoveryReason ? [`恢复原因：${account.sessionRecoveryReason}`] : []),
     ...(account.maintenanceNote ? [`页面维护：${account.maintenanceNote}`] : []),
     ...(account.settlementCheck ? [`结算核对：${account.settlementCheck.supported ? account.settlementCheck.state : `报表未提供结算期号；${account.drawTrigger?.fallback || account.drawTriggerEnabled === false ? '按固定间隔读取' : '按已开奖期号触发，确认后延迟15秒读取'}`}${account.settlementCheck.drawId ? '；报表期号 ' + account.settlementCheck.drawId : ''}`] : []),
     ...(account.failureScope ? [`失败来源：${account.failureScope}`] : []),
@@ -494,6 +495,7 @@ function render(state) {
   const connection = state.telegram.network;
   const notificationOffline = delivery.state === 'failed' || (connection?.available === false && Date.parse(connection.checkedAt) > (Date.parse(delivery.lastSuccessAt) || 0));
   const commands = state.telegram.commands || {};
+  const failureDetails = [commands.state === 'failed' && commands.category ? `指令：${commands.category}` : '', delivery.state === 'failed' && delivery.category ? `发送：${delivery.category}` : ''].filter(Boolean).join('；');
   $('#telegram-health-connection').textContent = `中转连接：${connection ? connection.available ? '入口可达（不代表查询/发送可用）' : '入口不可达' : '尚未检测'}${connection?.checkedAt ? ' · ' + new Date(connection.checkedAt).toLocaleString('zh-CN') : ''}`;
   $('#telegram-health-commands').textContent = `指令同步：${state.telegram.mode !== 'pairing' ? '未启用官方配对' : commands.confirmationRequired ? '查询回复发送结果待人工确认' : commands.state === 'failed' ? `异常（${commands.phase === 'ack' ? '完成确认' : commands.phase === 'reply' ? '查询执行/回复' : '轮询'}，${commands.code}）` : commands.pendingReply ? '查询回复待完成' : commands.lastSuccessAt ? '最近轮询成功' : '等待首次同步'}${commands.lastSuccessAt ? ' · ' + new Date(commands.lastSuccessAt).toLocaleString('zh-CN') : ''}`;
   $('#telegram-health-send').textContent = `金额/运行通知发送：${delivery.state === 'failed' ? '异常，保留队列重试' : delivery.lastSuccessAt ? '最近发送获服务确认（非手机实收证明）' : '本次启动尚无发送回执'}`;
@@ -503,7 +505,7 @@ function render(state) {
   const notificationStatus = `Telegram ${notificationOffline ? '通知异常，自动重试中' : delivery.lastSuccessAt ? '最近发送已获服务确认' : '本次启动尚无发送回执'} · 待发 ${state.notificationQueue?.pending || 0} 条 · 最近成功发送：${delivery.lastSuccessAt ? new Date(delivery.lastSuccessAt).toLocaleString('zh-CN') : '尚无记录'}${commandStatus}`;
   $('#notification-warning').hidden = state.telegram.mode === 'off' || (!notificationOffline && !commandFailed);
   $('#notification-warning').textContent = notificationStatus;
-  $('#telegram-delivery-status').textContent = notificationStatus;
+  $('#telegram-delivery-status').textContent = notificationStatus + (failureDetails ? `；${failureDetails}` : '');
   $('#telegram-delivery-status').className = notificationOffline || commandFailed ? 'child-error' : '';
   $('#notification-queue').textContent += `；${notificationStatus}`;
   $('#alert-records').innerHTML = (state.alertRecords || []).map((record) => {
