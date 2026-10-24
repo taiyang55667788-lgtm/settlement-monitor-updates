@@ -17,7 +17,8 @@ function amountComparisonKey(item) {
 
 function freezeAmountDots(data, item) {
   const record = item.record;
-  if (!record?.amountDirectionDots || item.amountDotsFrozen || item.attempts > 0) return;
+  // Legacy queued messages only; tier-v2 bodies already contain their final dots.
+  if (record?.amountDirectionDots !== true || item.amountDotsFrozen || item.attempts > 0) return;
   const account = data.accounts?.find(account => account.id === record.accountId);
   const key = amountComparisonKey(item);
   const previous = account?.deliveredAmountComparisons?.[key]?.value;
@@ -156,7 +157,7 @@ class NotificationOutbox {
         if (!item || item.nextAttemptAt > this.now()) break;
         this.activeId = item.id;
         try {
-          if (item.record?.amountDirectionDots && !item.amountDotsFrozen && item.attempts === 0) {
+          if (item.record?.amountDirectionDots === true && !item.amountDotsFrozen && item.attempts === 0) {
             this.store.update(data => freezeAmountDots(data, data.notificationOutbox.find(entry => entry.id === item.id)));
             Object.assign(item, this.store.state.notificationOutbox.find(entry => entry.id === item.id));
           }
@@ -176,7 +177,7 @@ class NotificationOutbox {
             data.notificationTimeline = [...(data.notificationTimeline || []), { at: new Date(this.now()).toISOString(), type: item.attempts ? 'recovered-send' : 'sent', notificationId: item.id, pending: data.notificationOutbox.length, attempts: item.attempts }].slice(-2000);
             const record = item.record;
             const account = data.accounts?.find(account => account.id === record?.accountId);
-            if (account && record?.period && record.alertType !== 'delta' && Number.isFinite(record.value)) {
+            if (account && record?.amountDirectionDots === true && record?.period && record.alertType !== 'delta' && Number.isFinite(record.value)) {
               account.deliveredAmountComparisons ||= {};
               const comparisonKey = amountComparisonKey(item);
               delete account.deliveredAmountComparisons[comparisonKey];

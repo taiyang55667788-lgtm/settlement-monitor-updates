@@ -75,6 +75,46 @@ test('Telegram API errors retain the useful description', async () => {
   );
 });
 
+test('tier direction dots match previous tier even without a delivered amount baseline', async () => {
+  const messages = [];
+  const { service } = createService(async (_url, init) => {
+    messages.push(JSON.parse(init.body).text);
+    return jsonResponse({ ok: true, result: { message_id: 2 } });
+  });
+  const cases = [
+    [401019.71, 4, 3, '🔵🔵'], [224664.81, 2, 0, '🔵'],
+    [120000, 1, 2, '🔵🔴'], [-329929.27, -3, -4, '🔴🔵'],
+    [-450000, -4, -3, '🔴🔴'], [-150000, -1, 0, '🔴'],
+    [250000, 2, -2, '🔵🔵'], [-250000, -2, 2, '🔴🔴'],
+    [350000, 3, 3, '🔵'],
+  ];
+  for (const [value, level, previousLevel, dots] of cases) {
+    await service.sendTelegram({ name: 'main-account' }, value, level, previousLevel, 'tg8899', 100000, '', ['tg8899'], { start: '2026-10-19', end: '2026-10-25' });
+    const queued = service.store.state.notificationOutbox[0];
+    assert.equal(queued.record.amountDirectionDots, 'tier-v2');
+    assert.ok(queued.text.startsWith(`${dots} 交收提醒`));
+    await service.outbox.flush();
+    assert.ok(messages.at(-1).startsWith(`${dots} 交收提醒`));
+    assert.ok(messages.at(-1).includes(`\n${dots} 本周应收下线：`));
+  }
+});
+
+test('tier direction messages keep identical body and id after failure and restart', async () => {
+  const { NotificationOutbox } = require('../electron/reliability');
+  const { service } = createService(async () => jsonResponse({ ok: false, description: 'offline' }, 503));
+  await service.sendTelegram({ name: 'main-account' }, 401019.71, 4, 3, 'tg8899', 100000, '', ['tg8899'], { start: 's', end: 'e' });
+  const original = structuredClone(service.store.state.notificationOutbox[0]);
+  await service.outbox.flush();
+  service.store.state = JSON.parse(JSON.stringify(service.store.state));
+  service.store.state.notificationOutbox[0].nextAttemptAt = 0;
+  let sent;
+  const restarted = new NotificationOutbox(service.store, async text => { sent = text; });
+  await restarted.flush();
+  assert.ok(sent.startsWith(original.text));
+  assert.ok(sent.includes(`通知编号：${original.id}`));
+  assert.match(sent, /^🔵🔵 交收提醒/);
+});
+
 test('amount alerts show inline remarks and previous tier without redundant fields', async () => {
   let message = '';
   const { service } = createService(async (_url, init) => {
@@ -87,8 +127,8 @@ test('amount alerts show inline remarks and previous tier without redundant fiel
   await service.outbox.flush();
 
   assert.match(message, /代理层级：（独霸）parent \/ subagent-a/);
-  assert.match(message, /🔵 交收提醒/);
-  assert.match(message, /🔵 本周应收下线：\+350\.00/);
+  assert.match(message, /🔵🔵 交收提醒/);
+  assert.match(message, /🔵🔵 本周应收下线：\+350\.00/);
   assert.match(message, /提醒间隔：每 100 一档/);
   assert.match(message, /上一次档位：\+100/);
   assert.match(message, /本次跨越：\+200 至 \+300，共 2 档/);

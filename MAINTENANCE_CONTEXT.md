@@ -1,6 +1,8 @@
 # 交收监控维护上下文
 
-更新日期：2026-10-23。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+更新日期：2026-10-24。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+
+2026-10-24 v1.0.46发布中：第二圆点按本次level和消息previousLevel的数值比较，首点仍按金额正负；首次previousLevel=0或同档单点。新消息正文生成时确定，以`amountDirectionDots: 'tier-v2'`绕过旧金额基准加点；旧队列保留原有兼容处理，失败/不确定消息正文及编号不变，不删除原基准数据，不改提醒触发与账本推进。设计见 `ai-artifacts/plans/2026-10-24-tier-direction-dots-design.md`。用户已明确授权发布；本次仅更新客户端，不部署云端。Windows验证及正式发布证据待完成后记录。
 
 ## v1.0.45 已发布：状态可观测性与消息展示
 

@@ -2784,7 +2784,8 @@ class MonitorService {
     const previousMilestone = previousLevel * alertStep;
     const crossedCount = Math.abs(level - previousLevel);
     const firstNewMilestone = (previousLevel + Math.sign(level - previousLevel || level)) * alertStep;
-    const direction = value < 0 ? '🔴' : '🔵';
+    const direction = (value < 0 ? '🔴' : '🔵')
+      + (previousLevel !== 0 && level !== previousLevel ? level > previousLevel ? '🔵' : '🔴' : '');
     const signedValue = `${value > 0 ? '+' : ''}${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const displayPath = (remark ? `（${remark}）` : '') + path.join(' / ');
     const text = [
@@ -2818,7 +2819,7 @@ class MonitorService {
       downwardBufferRatio: 0.5,
     };
     const record = { accountId: account.id, accountName: account.name, agentName: subagentName,
-      agentPath: path, value, level, previousLevel, alertStep, remark, period, metric: metricId, trigger, amountDirectionDots: true };
+      agentPath: path, value, level, previousLevel, alertStep, remark, period, metric: metricId, trigger, amountDirectionDots: 'tier-v2' };
     return this.enqueueNotification(text, 'amount', { record, commit: data => {
       if (!account.id) return; // Standalone message formatting/test calls have no monitored account.
       const current = data.accounts.find(item => item.id === account.id);
