@@ -8,9 +8,10 @@ const { accountSystemId, crownLoginEntry, metricForAccount, CROWN_URLS } = requi
 const { PairingClient } = require('./pairing');
 const { CommandReplies } = require('./command-replies');
 const { sessionReason, telegramFault, finishDrawRead } = require('./status-detail');
+const { loadLoginPage } = require('./login-page-load');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
-const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay } = require('./continuous-monitor');
+const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay, networkRecoveryDelay } = require('./continuous-monitor');
 const { DirectReportReader, clearDirectSession } = require('./direct-report');
 const { failureCategory, failedBranch, readSummary } = require('./runtime-health');
 const { DRAW_POLL_MS, DRAW_READ_DELAY_MS, DRAW_STALE_MS, parseSettledDraw, parseReportSettlementDraw, parseDrawStateResponse, drawStateFailure, compareDrawId, observeSettledDraw } = require('./draw-trigger');
@@ -482,7 +483,7 @@ class SiteClient {
     }
     this.status.stage = '正在打开代理登录页';
     this.onProgress?.();
-    await load(this.window, agentUrl);
+    await this.loadLoginPage(agentUrl);
     if (await this.isLoggedIn()) {
       this.status.stage = '登录状态有效';
       return;
@@ -675,11 +676,31 @@ class SiteClient {
     return draw.drawId;
   }
 
+  async loadLoginPage(url) {
+    if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
+    if (accountSystemId(this.account) === 'crown' || String(url).startsWith('file:')) return load(this.window, url);
+    return loadLoginPage(this.window, url);
+  }
+
   async readThisWeekSettlement() {
+    let reloadAfterRebuild = false;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         return await boundedOperation(
-          () => this.readThisWeekSettlementAttempt(),
+          async () => {
+            if (reloadAfterRebuild && this.status.agentUrl) {
+              reloadAfterRebuild = false;
+              this.status.stage = '正在重新加载代理登录页';
+              this.onProgress?.();
+              try { await this.loadLoginPage(this.status.agentUrl); }
+              catch (error) {
+                if (this.cancelled || failureKind(error) !== '网络或加载超时') throw error;
+                this.status.recoveryAction = '重建页加载失败，重新检查允许的登录线路';
+                this.status.agentUrl = await this.discoverAgentUrl();
+              }
+            }
+            return this.readThisWeekSettlementAttempt();
+          },
           this.reportReadTimeoutMs,
           () => {
             this.disposeDirectReader();
@@ -710,11 +731,7 @@ class SiteClient {
         if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
         await this.open();
         if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
-        if (this.status.agentUrl) {
-          this.status.stage = '正在重新加载代理登录页';
-          this.onProgress?.();
-          await load(this.window, this.status.agentUrl);
-        }
+        reloadAfterRebuild = true;
       }
     }
   }
@@ -2644,12 +2661,14 @@ class MonitorService {
         const current = this.store.state.accounts.find((item) => item.id === accountId);
         if (current?.enabled) setImmediate(() => void this.check(accountId));
       } else {
+        const networkRecovery = status.status === 'error' && status.failureKind === '网络或加载超时';
         status.nextCheckAt = status.status === 'market-closed' ? marketSchedule().nextReadAt : status.status === 'manual' ? null : status.status === 'market-waiting' || status.openingRecovery
           ? new Date(Date.now() + 30000).toISOString()
+          : networkRecovery ? new Date(Date.now() + networkRecoveryDelay(status.consecutiveFailures)).toISOString()
           : new Date(Math.max(Date.now() + 1000, checkStarted + retryDelay(this.store.state.accounts.find(item => item.id === accountId) || account, status.status === 'partial' ? 0 : status.consecutiveFailures))).toISOString();
         if (status.branchRetryRound && ['ok', 'triggered', 'partial'].includes(status.status) && status.normalNextCheckAt) status.nextCheckAt = status.normalNextCheckAt;
         else status.normalNextCheckAt = status.nextCheckAt;
-        status.nextCheckReason = '';
+        status.nextCheckReason = networkRecovery ? 'network-recovery' : '';
         const branchDates = Object.values(status.branchFailures || {}).map(item => item.nextAt).filter(Number.isFinite);
         if (status.status === 'partial' && branchDates.length && Math.min(...branchDates) < Date.parse(status.nextCheckAt)) {
           status.nextCheckAt = new Date(Math.max(Date.now() + 1000, Math.min(...branchDates))).toISOString();

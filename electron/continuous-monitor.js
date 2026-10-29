@@ -28,6 +28,10 @@ function retryDelay(account, failures = 0) {
   return Math.min(Math.max(base, 30 * 60000), base * 2 ** Math.min(Math.max(0, failures - 1), 5));
 }
 
+function networkRecoveryDelay(failures = 1) {
+  return Math.min(180000, 30000 * 2 ** Math.min(3, Math.max(0, (Number(failures) || 1) - 1)));
+}
+
 function startupCheck(accounts, runtime, startedAt, loadStatus, running, upgraded = false) {
   if (loadStatus === 'failed') return { status: 'error', message: '配置加载失败，请恢复备份，监控尚未恢复' };
   if (loadStatus === 'recovered') return { status: 'warning', message: '已恢复加密备份，请核对账号、提醒设置和通知记录' };
@@ -40,4 +44,4 @@ function startupCheck(accounts, runtime, startedAt, loadStatus, running, upgrade
   return { status: failed.length ? 'warning' : 'checking', message: `${failed.length ? '首次读取未完成，请查看账号详情' : '等待首次成功读取'}：${pending.map(item => item.name).join('、')}` };
 }
 
-module.exports = { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay, startupCheck };
+module.exports = { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay, networkRecoveryDelay, startupCheck };

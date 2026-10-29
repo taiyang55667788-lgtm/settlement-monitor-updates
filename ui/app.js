@@ -15,6 +15,7 @@ function nextReadDescription(account) {
   const at = draw?.nextReadAt || account.nextCheckAt;
   const reason = account.status === 'market-closed' ? '开盘恢复'
     : account.status === 'market-waiting' ? '盘口数据复查'
+      : account.nextCheckReason === 'network-recovery' ? '网络加载恢复重试'
       : account.status === 'error' ? '失败退避重试'
       : account.nextCheckReason === 'branch-retry' ? '到期分支补读'
       : draw?.nextReadAt ? '新开奖触发'

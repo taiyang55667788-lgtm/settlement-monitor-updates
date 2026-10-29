@@ -1,6 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { scanState, branchHasTarget, priorityPaths, retryDelay, startupCheck, CACHE_MS } = require('../electron/continuous-monitor');
+const { scanState, branchHasTarget, priorityPaths, retryDelay, networkRecoveryDelay, startupCheck, CACHE_MS } = require('../electron/continuous-monitor');
+
+test('network recovery has a separate bounded 30s to 3min backoff', () => {
+  assert.deepEqual([1, 2, 3, 4, 99].map(networkRecoveryDelay), [30000, 60000, 120000, 180000, 180000]);
+  assert.equal(retryDelay({ intervalMinutes: 5 }, 4), 1800000);
+});
 
 test('checkpoint scope expires and is isolated by metric and settlement week', () => {
   const saved = scanState(null, 'a', 'week', 100);

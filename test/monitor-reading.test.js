@@ -61,6 +61,7 @@ test('cancelled reads cannot rebuild a page after their outer watchdog fires', a
 test('recovery loads the known site before the second session probe', async () => {
   const client = new SiteClient({}, { agentUrl: 'https://example.com/report' });
   let url = ''; let calls = 0;
+  client.loadLoginPage = async target => { url = target; };
   client.window = { isDestroyed: () => false, destroy() {} };
   client.open = async () => {
     client.window = { async loadURL(target) { url = target; }, webContents: { getURL: () => url } };
@@ -72,6 +73,22 @@ test('recovery loads the known site before the second session probe', async () =
   };
   await client.readThisWeekSettlement();
   assert.equal(calls, 2);
+});
+
+test('rebuilt login load timeout rediscovers a route inside the one bounded recovery', async () => {
+  const client = new SiteClient({}, { agentUrl: 'https://old.example' });
+  let reads = 0, discovers = 0;
+  client.window = { isDestroyed: () => false, destroy() {} };
+  client.open = async () => { client.window = { isDestroyed: () => false, destroy() {} }; };
+  client.loadLoginPage = async () => { throw Object.assign(new Error('登录页加载超时'), { code: 'LOGIN_PAGE_TIMEOUT' }); };
+  client.discoverAgentUrl = async () => { discovers++; return 'https://new.example'; };
+  client.readThisWeekSettlementAttempt = async () => {
+    if (++reads === 1) throw Object.assign(new Error('session timeout'), { code: 'SESSION_CHECK_TIMEOUT' });
+    assert.equal(client.status.agentUrl, 'https://new.example');
+    return { agents: [] };
+  };
+  await client.readThisWeekSettlement();
+  assert.equal(reads, 2); assert.equal(discovers, 1);
 });
 
 test('report wait fails promptly on a visible login form rather than waiting thirty seconds', async () => {

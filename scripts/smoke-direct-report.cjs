@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { app, BrowserWindow, session } = require('electron');
 const { SiteClient, settlementWeekRange } = require('../electron/monitor');
+const { loadLoginPage } = require('../electron/login-page-load');
 let phase = 'startup';
 const deadline = setTimeout(() => { console.error(`Direct report smoke timed out: ${phase}`); app.exit(1); }, 45000);
 
@@ -13,6 +14,14 @@ app.whenReady().then(async () => {
   };
   const server = http.createServer(async (req,res) => {
     res.setHeader('Content-Type','text/html; charset=utf-8');
+    if (req.url === '/slow-login') {
+      res.setHeader('Set-Cookie', 'loginReadyCookie=yes; HttpOnly; SameSite=Lax; Path=/');
+      res.end('<input><input type="password"><input><img width="80" height="30" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"><iframe src="/slow-child"></iframe>'); return;
+    }
+    if (req.url === '/slow-child') {
+      const timer = setTimeout(() => res.end('late resource'), 5000);
+      res.on('close', () => clearTimeout(timer)); return;
+    }
     if (req.url === '/IntimeSheet/GetCurrentInstall') {
       if (req.method !== 'POST' || !req.headers.cookie?.includes('fixtureSession=yes')) { res.statusCode = 403; res.end('login'); return; }
       let body = ''; for await (const chunk of req) body += chunk;
@@ -94,7 +103,16 @@ app.whenReady().then(async () => {
     phase='reading the verified draw response through Electron session.fetch';
     assert.equal(await client.readSettledDrawQuery({ url: origin + '/IntimeSheet/GetCurrentInstall', referrer: origin + '/IntimeSheet/Index', body: 'lotteryType=JND282&temaType=0&organizationId=' }), '3494517');
     assert.equal(client.status.drawSuggestedPollMs, 60000);
-    console.log('Direct report Electron smoke passed: UI learning, four-level session.fetch, cookie isolation, safe fallback, PC28 draw response');
+    phase='accepting a validated login form without waiting for a slow iframe';
+    const loginWin = new BrowserWindow({ show: false, webPreferences: { partition: 'login-readiness-smoke', nodeIntegration: false, contextIsolation: true } });
+    try {
+      const started = Date.now();
+      await loadLoginPage(loginWin, origin + '/slow-login', { timeoutMs: 3000 });
+      assert.ok(Date.now() - started < 3000);
+      assert.equal(await loginWin.webContents.executeJavaScript('Boolean(document.querySelector("input[type=password]"))'), true);
+      assert.ok((await loginWin.webContents.session.cookies.get({ name: 'loginReadyCookie' })).some(cookie => cookie.value === 'yes'));
+    } finally { loginWin.destroy(); }
+    console.log('Direct report Electron smoke passed: UI learning, four-level session.fetch, cookie isolation, safe fallback, PC28 draw response, content-ready login');
   } catch(error) {console.error(`${phase}: ${error.stack}`); process.exitCode=1;}
   finally {await client?.close();win.destroy();server.close();clearTimeout(deadline);app.exit(process.exitCode||0);}
 }).catch(error=>{console.error(error);clearTimeout(deadline);app.exit(1);});
