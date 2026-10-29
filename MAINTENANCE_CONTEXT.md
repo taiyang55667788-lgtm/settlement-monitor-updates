@@ -2,9 +2,9 @@
 
 更新日期：2026-10-30。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
-## v1.0.48 发布中：验证码加载与跳转前提示
+## v1.0.48 已发布：验证码加载与跳转前提示
 
-用户授权最近建议前两项，不做恢复汇总和重复故障折叠。166登录识别前刷新，验证新图片已加载且像素指纹变化；最多3轮、每轮8次350ms等待。图片加载超时单独按网络故障退避，不直接转人工，也不因此重复登录/改线；识别拒绝仍按原有限次数处理。程序导航前和重建前记录脱敏场景，明确网站提示优先确定原因，成功恢复也保存每轮最多3份跳转摘要，合并10份/7天上限。原生阻塞弹窗和已消失的网站提示不保证取得。不保存图像/识别值或原始正文。设计见 `ai-artifacts/plans/2026-10-30-captcha-transition-design.md`。2026-10-30用户已明确授权联合发布现场摘要；本批仅更新客户端，不部署云端，构建与发布证据待完成后记录。
+用户授权最近建议前两项，不做恢复汇总和重复故障折叠。166登录识别前刷新，验证新图片已加载且像素指纹变化；最多3轮、每轮8次350ms等待。图片加载超时单独按网络故障退避，不直接转人工，也不因此重复登录/改线；识别拒绝仍按原有限次数处理。程序导航前和重建前记录脱敏场景，明确网站提示优先确定原因，成功恢复也保存每轮最多3份跳转摘要，合并10份/7天上限。原生阻塞弹窗和已消失的网站提示不保证取得。不保存图像/识别值或原始正文。设计见 `ai-artifacts/plans/2026-10-30-captcha-transition-design.md`。2026-10-30用户已明确授权联合发布现场摘要；本批仅更新客户端，不部署云端。256项Node测试、6项桌面流程、Windows验证及正式发布通过；GitHub Release、R2清单与独立完整安装包大小/SHA-512一致，证据见下表。未验证真实验证码成功率、服务器现场恢复或手机实收。
 
 ## 同批发布：脱敏失败现场摘要
 
@@ -56,19 +56,19 @@ v1.0.45后续改动：Telegram金额消息增加第二方向圆点，比较同�
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.47，2026-10-29 发布 |
-| 发布源码/标签 | `a6d01a20179f7b361e7ac0cb1215c5e200904c3e` / `v1.0.47` |
-| Windows 验证任务 | `40903879743`，成功 |
-| 正式发布任务 | `40904434266`，成功 |
-| 测试证据 | 245项 Node 测试、6项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117488144 |
-| SHA-512 | `uDvIs/3Vak9SdYKEHH1QFQXqUZJOQG2BV3wcaqTb679DsDBOSaxiyP4+W0SXqP+GRJcKSbjFrFrXy9EpqqHSjQ==` |
+| 正式客户端 | v1.0.48，2026-10-30 发布 |
+| 发布源码/标签 | `ca57d50397ad413af491bb62601445cdee4b2bf6` / `v1.0.48` |
+| Windows 验证任务 | `40909737609`，成功 |
+| 正式发布任务 | `40910250634`，成功 |
+| 测试证据 | 256项 Node 测试、6项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117490616 |
+| SHA-512 | `VadXJ5hvBFqNARwJAbQWcc9+CeFgp8EW3F+06HcNifrovNgsrd2TdO16ehJvT7MP3ej21wpRNgiPchnzzGcPhQ==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。v1.0.47仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
+发布证据是上述时间点的记录，不代表持续线上健康。v1.0.48仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
-- 正式发布：[v1.0.47](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.47)
-- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.47-x64.exe)
+- 正式发布：[v1.0.48](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.48)
+- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.48-x64.exe)
 - 更新源：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev`
 - 官方通知主入口：`https://settlement-connectivity-test.pages.dev`
 - 备用入口：`https://settlement-monitor-pairing.taiyang55667788.workers.dev`
@@ -140,7 +140,7 @@ git diff --check
 
 ## 待验证与后续重点
 
-- Windows服务器升级v1.0.47后的z518登录页超时恢复、新期号→15秒→报表读取、指令确认恢复、实际结算延迟、维护清理、档位方向圆点实收及长期稳定性，尚未完成实机验收。
+- Windows服务器升级v1.0.48后的验证码加载恢复、跳转前现场摘要、z518登录页超时恢复、新期号→15秒→报表读取、指令确认恢复、实际结算延迟、维护清理、档位方向圆点实收及长期稳定性，尚未完成实机验收。
 - 浏览器/API来源验证不能证明Windows长跑；源码测试和Telegram回执不能证明手机实收。
 - 反馈“没提醒”时先核对路径、设置、最后非零档位、50%降档线、连续确认、数据更新时间、队列/回执，再区分读取与通知故障。
 - 网站变化先只读核对真实菜单、分页、表头、日期和金额，不猜URL、末列或结算期号。改动后补定向测试并跑全套验证。
