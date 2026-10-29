@@ -1,3 +1,5 @@
+const { retainedScenes } = require('./failure-scene');
+
 function readSummary(samples = [], now = Date.now()) {
   const rows = samples.filter(x => now - Date.parse(x.at) >= 0 && now - Date.parse(x.at) < 86400000
     && ['ok', 'triggered', 'partial', 'error', 'manual', 'recovering'].includes(x.status));
@@ -46,6 +48,7 @@ function operationalDiagnostic(accounts, runtime, version, platform, now = Date.
           fallbacks: x.direct.fallbacks, totalMs: x.direct.totalMs, learned: x.direct.learned } : null,
       }));
       return { account: index + 1, enabled: Boolean(account.enabled), status: live.status || 'waiting',
+        failureScenes: retainedScenes(account.failureScenes, now),
         intervalMinutes: account.intervalMinutes, lastSuccessAt: live.lastSuccessAt || '',
         summary: readSummary(samples, now), readSamples: samples };
     }) };

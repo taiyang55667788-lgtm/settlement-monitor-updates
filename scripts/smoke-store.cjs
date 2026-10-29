@@ -13,6 +13,10 @@ app.whenReady().then(() => {
     const oldStore = new SecureStore(directory);
     oldStore.state.accounts.push({
       id: 'fixture', name: '测试账号', username: 'fixture',
+      failureScenes: [
+        { at: new Date().toISOString(), location: 'https://site.example/Member/Login?secret=removed', title: 'login', document: 'login-form', hints: ['captcha-rejected'], capture: 'ok' },
+        { at: new Date(Date.now() - 8 * 86400000).toISOString(), location: 'https://old.example', capture: 'ok' },
+      ],
       subagentThresholds: [{ name: 'parent-01', alertStep: 100 }, { name: 'removed-fifth', path: ['a', 'b', 'c', 'd', 'removed-fifth'], alertStep: 50 }],
     });
     oldStore.save();
@@ -22,6 +26,9 @@ app.whenReady().then(() => {
     const persisted = new SecureStore(directory);
     persisted.load();
     assert.equal(persisted.state.accounts[0].subagentThresholds.length, 1);
+    assert.equal(persisted.state.accounts[0].failureScenes.length, 1);
+    assert.equal(persisted.publicState().accounts[0].failureScenes[0].location, 'https://site.example/Member/Login');
+    assert.equal(fs.readFileSync(persisted.filePath, 'utf8').includes('captcha-rejected'), false);
     assert.deepEqual(migrated.state.accounts[0].subagentThresholds[0].path, ['parent-01']);
     migrated.update((data) => {
       data.appearance.theme = 'light';

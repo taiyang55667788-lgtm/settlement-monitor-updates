@@ -7,6 +7,13 @@ const statusNames = { waiting: '等待首次检查', checking: '读取中', ok: 
 statusNames['market-closed'] = '停盘中，07:00 恢复';
 statusNames['market-waiting'] = '等待盘口数据就绪';
 
+function formatFailureScene(scene) {
+  const documents = { blank: '空白页', 'login-form': '登录表单', 'report-menu': '报表菜单', other: '其他页面' };
+  const titles = { login: '登录', report: '报表', error: '错误', empty: '无标题', other: '其他（原文不保存）' };
+  const hints = { 'other-login': '页面提示异地登录', 'session-expired': '登录状态失效', 'credentials-rejected': '账号或密码被拒绝', 'captcha-rejected': '验证码被拒绝', 'access-denied': '访问被拒绝', 'service-error': '网站服务异常', 'network-error': '页面提示网络错误' };
+  return `最近失败现场：${new Date(scene.at).toLocaleString('zh-CN')}；${scene.location}；${scene.loading === true ? '仍在加载' : scene.loading === false ? '未在加载' : '加载状态未知'}；标题类别：${titles[scene.title] || '其他'}；${scene.capture === 'ok' ? documents[scene.document] || '其他页面' : scene.capture === 'timeout' ? '页面无响应，未取得内容' : '页面已关闭或无法读取'}；${(scene.hints || []).map(hint => hints[hint]).filter(Boolean).join('、') || '未取得已识别的错误提示'}${scene.phase === 'before-rebuild' ? '（重建前现场）' : scene.phase === 'before-navigation' ? '（跳转前现场）' : ''}`;
+}
+
 function nextReadDescription(account) {
   if (!account.enabled) return '监控已暂停';
   if (account.status === 'manual') return '等待手动处理';
@@ -76,6 +83,7 @@ function refreshReadingDetails() {
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     ...(account.recoveryAction ? [`自动恢复：${account.recoveryAction}`] : []),
     ...(account.sessionRecoveryReason ? [`恢复原因：${account.sessionRecoveryReason}`] : []),
+    ...(account.failureScenes?.[0] ? [formatFailureScene(account.failureScenes[0])] : []),
     ...(account.maintenanceNote ? [`页面维护：${account.maintenanceNote}`] : []),
     ...(account.settlementCheck ? [`结算核对：${account.settlementCheck.supported ? account.settlementCheck.state : `报表未提供结算期号；${account.drawTrigger?.fallback || account.drawTriggerEnabled === false ? '按固定间隔读取' : '按已开奖期号触发，确认后延迟15秒读取'}`}${account.settlementCheck.drawId ? '；报表期号 ' + account.settlementCheck.drawId : ''}`] : []),
     ...(account.failureScope ? [`失败来源：${account.failureScope}`] : []),

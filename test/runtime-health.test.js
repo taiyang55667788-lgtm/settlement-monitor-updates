@@ -59,6 +59,14 @@ test('automatic update diagnostic excludes account, URL, messages and secrets', 
   assert.equal(result.accounts[0].summary.directSuccesses,1);
 });
 
+test('diagnostic scene summaries retain only safe fields and recognized categories', () => {
+  const at = new Date().toISOString();
+  const result = operationalDiagnostic([{ failureScenes: [{ at, location: 'https://site.example/private-secret?token=private-secret', title: 'private-secret', body: 'private-secret', hints: ['private-secret', 'service-error'], capture: 'ok' }] }], new Map(), 'test', 'test');
+  assert.equal(result.accounts[0].failureScenes[0].location, 'https://site.example/[path-hidden]');
+  assert.deepEqual(result.accounts[0].failureScenes[0].hints, ['service-error']);
+  assert.ok(!JSON.stringify(result).includes('private-secret'));
+});
+
 function updater(save) {
   const engine=new EventEmitter();engine.quitAndInstall=()=>{engine.installed=true;};
   const u=new UpdateService({state:{}},()=>{},save,{engine,app:{getVersion:()=> 'test',isPackaged:true}});

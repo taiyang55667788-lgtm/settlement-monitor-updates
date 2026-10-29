@@ -1,6 +1,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { SiteClient } = require('../electron/monitor');
+const { SiteClient, MonitorService } = require('../electron/monitor');
+
+test('image-load exhaustion schedules network recovery instead of manual verification', async () => {
+  const store = { state: { accounts: [{ id: 'image-test', enabled: true, intervalMinutes: 5, name: 'fixture' }], telegram: {} },
+    update(change) { change(this.state); }, addEvent() {}, addAlertRecord() {} };
+  const service = new MonitorService(store, () => {}, { createSiteClient: () => ({
+    async open() {}, async close() {}, async readThisWeekSettlement() {
+      throw Object.assign(new Error('验证码图片刷新加载超时'), { code: 'CAPTCHA_IMAGE_LOAD_TIMEOUT' });
+    },
+  }) });
+  await service.check('image-test');
+  const status = service.status('image-test');
+  assert.equal(status.status, 'error'); assert.equal(status.failureKind, '网络或加载超时');
+  assert.equal(status.nextCheckReason, 'network-recovery');
+  assert.ok(Date.parse(status.nextCheckAt) > Date.now() + 29000);
+});
 
 test('blank windows skip JavaScript login probing entirely', async () => {
   for (const url of ['', 'about:blank']) {
@@ -181,4 +196,26 @@ test('captcha or credential errors do not trigger route discovery and another lo
     await assert.rejects(client.readThisWeekSettlement(), { message });
     assert.equal(discoveries, 0);
   }
+});
+
+test('captcha image load failures do not resubmit login or rediscover account routes', async () => {
+  const client = new SiteClient({}, { agentUrl: 'https://example.com' });
+  let logins = 0;
+  client.login = async () => { logins++; throw Object.assign(new Error('验证码图片刷新加载超时'), { code: 'CAPTCHA_IMAGE_LOAD_TIMEOUT' }); };
+  client.discoverAgentUrl = async () => { throw new Error('must not rediscover'); };
+  await assert.rejects(client.readThisWeekSettlement(), { code: 'CAPTCHA_IMAGE_LOAD_TIMEOUT' });
+  assert.equal(logins, 1);
+});
+
+test('explicit login-loss scene is read before navigating and gives a concrete reason', async () => {
+  const client = new SiteClient({}, {});
+  const order = [];
+  client.window = { isDestroyed: () => false, webContents: {
+    getURL: () => 'https://example.com/Home/Index', isLoading: () => false,
+    mainFrame: { executeJavaScript: async () => { order.push('capture'); return { title: 'report', document: 'report-menu', hints: ['other-login'] }; } },
+  } };
+  await client.rememberLoginScene(); order.push('navigate');
+  assert.deepEqual(order, ['capture', 'navigate']);
+  assert.match(client.status.sessionRecoveryReason, /明确提示其他地方/);
+  assert.equal(client.status.loginTransitionScenes[0].phase, 'before-navigation');
 });

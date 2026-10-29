@@ -6,6 +6,7 @@ const { recipientKey } = require('./reliability');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
 const { alertStepFromLegacy, agentPath } = require('./report-parser');
 const { alertLedgerKey, bufferedAlertLevel } = require('./alert-ledger');
+const { retainedScenes } = require('./failure-scene');
 const { accountSystemId, accountBaseUrl, crownLoginEntryId, crownUrl, metricForAccount } = require('./monitor-systems');
 
 const EMPTY_STATE = {
@@ -60,11 +61,14 @@ class SecureStore {
       this.state.alertRecords = Array.isArray(this.state.alertRecords) ? this.state.alertRecords.slice(0, 500) : [];
       let depthPruned = false;
       this.state.accounts = this.state.accounts.map((account) => {
+        const scenes = retainedScenes(account.failureScenes);
+        depthPruned ||= JSON.stringify(account.failureScenes || []) !== JSON.stringify(scenes);
         const systemType = accountSystemId(account);
         const crownLoginEntry = crownLoginEntryId(account.crownLoginEntry, account.monitorMetric);
         const crownDomain = crownUrl(account.crownDomain || account.navUrl);
         const normalized = {
           ...account,
+          failureScenes: scenes,
           systemType,
           navUrl: systemType === 'crown' ? crownDomain : account.navUrl || accountBaseUrl({ systemType }),
           crownDomain: systemType === 'crown' ? crownDomain : '',
@@ -171,7 +175,7 @@ class SecureStore {
       accounts: this.state.accounts.map((account) => {
         const metric = metricForAccount(account);
         // Long-running samples belong to on-demand diagnostics, not every UI tick.
-        const { readSamples, branchFailures, branchFailurePeriod, settlementChecks, ...live } = runtime.get(account.id) || {};
+        const { readSamples, branchFailures, branchFailurePeriod, settlementChecks, lastFailureScene, loginTransitionScenes, ...live } = runtime.get(account.id) || {};
         const snapshotMatchesMetric = account.agentSnapshot?.metric === metric.id
           || (!account.agentSnapshot?.metric && metric.id === 'receivable-downline');
         const period = live.reportPeriod || (snapshotMatchesMetric ? account.agentSnapshot?.period : null);
@@ -221,6 +225,7 @@ class SecureStore {
           hasPassword: Boolean(account.password),
           tierTransitions: account.tierTransitions || [],
           alertSettingChanges: account.alertSettingChanges || [],
+          failureScenes: retainedScenes(account.failureScenes),
           ...live,
           trend: Array.isArray(account.agentTrend) ? account.agentTrend.filter((point) => !point.metric || point.metric === metric.id) : [],
           subagents,

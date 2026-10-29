@@ -9,6 +9,8 @@ const { PairingClient } = require('./pairing');
 const { CommandReplies } = require('./command-replies');
 const { sessionReason, telegramFault, finishDrawRead } = require('./status-detail');
 const { loadLoginPage } = require('./login-page-load');
+const { captureFailureScene, retainedScenes, sceneLoginReason } = require('./failure-scene');
+const { captchaImageScript, refreshLoadedCaptcha } = require('./captcha-refresh');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay, networkRecoveryDelay } = require('./continuous-monitor');
@@ -35,6 +37,7 @@ function loginProbeFallback(error) {
   return false;
 }
 function failureKind(error) {
+  if (['CAPTCHA_IMAGE_LOAD_TIMEOUT', 'CAPTCHA_IMAGE_NOT_READY'].includes(error?.code)) return '网络或加载超时';
   if (isCredentialFailure(String(error?.message || error))) return '账号凭据';
   return failureCategory(error);
 }
@@ -281,6 +284,8 @@ class SiteClient {
 
   async discoverAgentUrl() {
     if (accountSystemId(this.account) === 'crown') return this.account.navUrl;
+    await this.rememberLoginScene();
+    if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
     this.status.stage = '正在打开导航网址';
     await load(this.window, this.account.navUrl);
     this.status.stage = '正在填写安全码';
@@ -358,9 +363,11 @@ class SiteClient {
         rect: { x: Math.max(0, Math.floor(r.x)), y: Math.max(0, Math.floor(r.y)), width: Math.ceil(r.width), height: Math.ceil(r.height) },
         expectedLength: expectedLength >= 4 && expectedLength <= 6 ? expectedLength : 0,
         source: image.currentSrc || image.src || '',
+        ready: image.complete && image.naturalWidth > 0 && image.naturalHeight > 0,
       };
     })()`, true);
-    if (!info?.rect) throw new Error('找不到验证码图片');
+    if (!info?.rect) throw Object.assign(new Error('找不到已加载的验证码图片'), { code: 'CAPTCHA_IMAGE_NOT_READY' });
+    if (!info.ready) throw Object.assign(new Error('验证码图片未加载完成'), { code: 'CAPTCHA_IMAGE_NOT_READY' });
     const image = await this.window.webContents.capturePage(info.rect);
     if (!this.ocr) {
       const langPath = path.dirname(require.resolve('@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz'));
@@ -377,26 +384,17 @@ class SiteClient {
   }
 
   async refreshCaptcha() {
-    await executePageAction(this.window, `(() => {
-      const images = [...document.images];
-      const sized = img => {
-        const r = img.getBoundingClientRect();
-        return r.width >= 45 && r.width <= 220 && r.height >= 18 && r.height <= 80;
-      };
-      const image = images.find(img => sized(img) && /captcha|verify|checkcode|validcode/i.test([img.src, img.id, img.className, img.alt].join(' ')))
-        || images.find(img => sized(img) && /验证码/.test(img.closest('li, tr, div')?.innerText || ''))
-        || images.find(sized);
-      image?.click();
-    })()`);
-    const ready = await waitUntil(this.window, `(() => {
-      const image = [...document.images].find(img => {
-        const r = img.getBoundingClientRect();
-        return r.width >= 45 && r.width <= 220 && r.height >= 18 && r.height <= 80;
-      });
-      return Boolean(image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0);
-    })()`, 3000);
-    if (!ready) throw new Error('验证码刷新后图片未完成加载');
-    await sleep(350);
+    this.status.stage = '正在刷新并等待新验证码图片';
+    return refreshLoadedCaptcha({
+      snapshot: async () => {
+        const info = await this.window.webContents.executeJavaScript(captchaImageScript(), true);
+        if (!info?.ready) return { ready: false };
+        const image = await this.window.webContents.capturePage(info.rect);
+        return { ready: true, fingerprint: captchaFingerprint(image) };
+      },
+      click: () => executePageAction(this.window, captchaImageScript(true)),
+      wait: sleep, cancelled: () => this.cancelled,
+    });
   }
 
   async crownHumanVerificationRequired() {
@@ -496,9 +494,16 @@ class SiteClient {
     }
     let lastFailure = '';
     let previousCaptchaFingerprint = '';
+    await this.refreshCaptcha();
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       this.status.stage = `正在识别验证码（第 ${attempt}/3 次）`;
-      const recognition = await this.readCaptcha();
+      let recognition;
+      try { recognition = await this.readCaptcha(); }
+      catch (error) {
+        if (error.code !== 'CAPTCHA_IMAGE_NOT_READY') throw error;
+        await this.refreshCaptcha();
+        recognition = await this.readCaptcha();
+      }
       if (recognition.fingerprint === previousCaptchaFingerprint) {
         lastFailure = '验证码图片未刷新，已停止重复提交';
         await this.refreshCaptcha();
@@ -676,7 +681,21 @@ class SiteClient {
     return draw.drawId;
   }
 
+  async rememberLoginScene() {
+    if (this.window?.isDestroyed?.()) return;
+    let url;
+    try { url = this.window?.webContents?.getURL?.(); } catch { return; }
+    if (!url || url === 'about:blank' || this.cancelled) return;
+    if ((this.status.loginTransitionScenes || []).length >= 3) return;
+    const scene = await captureFailureScene(this.window, { phase: 'before-navigation' });
+    this.status.loginTransitionScenes = [...(this.status.loginTransitionScenes || []), scene];
+    const reason = sceneLoginReason(scene);
+    if (reason) this.status.sessionRecoveryReason = reason;
+  }
+
   async loadLoginPage(url) {
+    if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
+    await this.rememberLoginScene();
     if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
     if (accountSystemId(this.account) === 'crown' || String(url).startsWith('file:')) return load(this.window, url);
     return loadLoginPage(this.window, url);
@@ -714,6 +733,9 @@ class SiteClient {
       }
       catch (error) {
         const stalledReport = error.code === 'READ_WATCHDOG';
+        this.status.lastFailureScene = await captureFailureScene(this.window, { phase: 'before-rebuild' });
+        const reason = sceneLoginReason(this.status.lastFailureScene);
+        if (reason) this.status.sessionRecoveryReason = reason;
         if ((!stalledReport && error.code !== 'SESSION_CHECK_TIMEOUT') || attempt === 1 || this.cancelled) {
           if (stalledReport) error.code = 'REPORT_PAGE_TIMEOUT';
           throw error;
@@ -747,7 +769,7 @@ class SiteClient {
     try {
       await this.login(agentUrl);
     } catch (error) {
-      if (error.code === 'SESSION_CHECK_TIMEOUT' || error.code === 'READ_INTERRUPTED') throw error;
+      if (['SESSION_CHECK_TIMEOUT', 'READ_INTERRUPTED', 'CAPTCHA_IMAGE_LOAD_TIMEOUT', 'CAPTCHA_IMAGE_NOT_READY'].includes(error.code)) throw error;
       if (failureKind(error) !== '网络或加载超时') throw error;
       // Retry the current route before rediscovering routes or submitting again.
       await sleep(400);
@@ -791,12 +813,12 @@ class SiteClient {
           && kind !== '网络或加载超时') || attempt === 3) throw error;
         if (error.code === 'SESSION_EXPIRED' || /登录状态已失效|登陆状态已失效|会话.*失效|登录已过期/.test(error.message || '')) {
           this.status.recoveryAction = '已确认登录失效，重新登录';
-          this.status.sessionRecoveryReason = sessionReason(error);
+          this.status.sessionRecoveryReason ||= sessionReason(error);
           this.status.sessionLostThisRound = true;
           await this.login(agentUrl);
         } else {
           this.status.recoveryAction = '重新查询报表，保留登录会话';
-          this.status.sessionRecoveryReason = sessionReason(error);
+          this.status.sessionRecoveryReason ||= sessionReason(error);
           this.currentReportPath = null;
           this.reportRefreshNeeded = true;
         }
@@ -2235,6 +2257,8 @@ class MonitorService {
     status.readProgress = null;
     status.lastQueryMs = null;
     status.directRead = null;
+    status.lastFailureScene = null;
+    status.loginTransitionScenes = [];
     status.stage = '准备检查';
     this.onChange();
     const client = this.createSiteClient(account, status);
@@ -2585,6 +2609,15 @@ class MonitorService {
         return;
       }
       if (this.pauseForMarket(account, status)) return;
+      const scene = client.window && !client.window.isDestroyed?.()
+        ? await captureFailureScene(client.window)
+        : status.lastFailureScene || await captureFailureScene(null);
+      try {
+        this.store.update(data => {
+          const current = data.accounts.find(item => item.id === accountId);
+          if (current) current.failureScenes = retainedScenes([scene, ...(current.failureScenes || [])]);
+        });
+      } catch { this.store.addEvent('error', '失败现场摘要保存失败，未影响原恢复流程', accountId); }
       manualCrownVerification = error?.code === 'CROWN_HUMAN_VERIFICATION_REQUIRED';
       const manualRequired = manualCrownVerification || ['验证码', '账号凭据'].includes(failureKind(error));
       status.status = manualRequired ? 'manual' : 'error';
@@ -2616,6 +2649,14 @@ class MonitorService {
       await this.updateHealth(account, status, true);
     } finally {
       finishDrawRead(status);
+      if (status.loginTransitionScenes?.length) {
+        try {
+          this.store.update(data => {
+            const current = data.accounts.find(item => item.id === accountId);
+            if (current) current.failureScenes = retainedScenes([...status.loginTransitionScenes, ...(current.failureScenes || [])]);
+          });
+        } catch { this.store.addEvent('error', '登录跳转现场摘要保存失败，未影响原恢复流程', accountId); }
+      }
       status.durationMs = Date.now() - checkStarted;
       status.readSamples = [...(status.readSamples || []).filter(item => Date.now() - Date.parse(item.at) < 86400000), {
         at: new Date().toISOString(), durationMs: status.durationMs, status: status.status,

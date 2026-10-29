@@ -3,6 +3,7 @@ const http = require('node:http');
 const { app, BrowserWindow, session } = require('electron');
 const { SiteClient, settlementWeekRange } = require('../electron/monitor');
 const { loadLoginPage } = require('../electron/login-page-load');
+const { captureFailureScene } = require('../electron/failure-scene');
 let phase = 'startup';
 const deadline = setTimeout(() => { console.error(`Direct report smoke timed out: ${phase}`); app.exit(1); }, 45000);
 
@@ -111,6 +112,23 @@ app.whenReady().then(async () => {
       assert.ok(Date.now() - started < 3000);
       assert.equal(await loginWin.webContents.executeJavaScript('Boolean(document.querySelector("input[type=password]"))'), true);
       assert.ok((await loginWin.webContents.session.cookies.get({ name: 'loginReadyCookie' })).some(cookie => cookie.value === 'yes'));
+      await loginWin.webContents.executeJavaScript('document.body.append("验证码错误 fixture-private-value"); document.title="管理员登录 fixture-private-value"');
+      const scene = await captureFailureScene(loginWin);
+      assert.equal(scene.document, 'login-form'); assert.equal(scene.title, 'login');
+      assert.ok(scene.hints.includes('captcha-rejected'));
+      assert.ok(!JSON.stringify(scene).includes('fixture-private-value'));
+      phase='refreshing a synthetic captcha only after changed pixels are loaded';
+      const freshImage = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="80" height="30"><rect width="80" height="30" fill="red"/></svg>');
+      await loginWin.webContents.executeJavaScript(`(() => { const img=document.querySelector('img'); img.id='captcha'; window.refreshClicks=0; img.onclick=()=>{window.refreshClicks++;img.src=${JSON.stringify(freshImage)}}; })()`);
+      const captchaClient = new SiteClient({}, {}); captchaClient.window = loginWin;
+      const refreshed = await captchaClient.refreshCaptcha();
+      assert.ok(refreshed.ready && refreshed.fingerprint);
+      assert.equal(await loginWin.webContents.executeJavaScript('window.refreshClicks'), 1);
+      await loginWin.webContents.executeJavaScript('document.body.append("其他地方登录")');
+      await captchaClient.rememberLoginScene();
+      assert.match(captchaClient.status.sessionRecoveryReason, /明确提示其他地方/);
+      await loginWin.loadURL('about:blank');
+      assert.equal((await captureFailureScene(loginWin)).document, 'blank');
     } finally { loginWin.destroy(); }
     console.log('Direct report Electron smoke passed: UI learning, four-level session.fetch, cookie isolation, safe fallback, PC28 draw response, content-ready login');
   } catch(error) {console.error(`${phase}: ${error.stack}`); process.exitCode=1;}
