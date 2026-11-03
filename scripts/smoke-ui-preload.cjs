@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 let stateListener = () => {};
 const state = {
+  desktopHealth: { readyToken: 'smoke-ready-token' },
   accounts: [{
     id: 'fixture-account', name: '测试账号', username: 'fixture', enabled: true,
     status: 'ok', subagentCount: 1, reportPeriod: { start: '2026-09-14', end: '2026-09-20' }, expandedAgentPaths: [['parent-01'], ['parent-01', 'child-01'], ['parent-01', 'child-01', 'third-01']],
@@ -16,6 +17,7 @@ const state = {
 };
 
 contextBridge.exposeInMainWorld('monitorApi', {
+  confirmDesktopReady: async token => { ipcRenderer.send('smoke:desktop-ready', token); return true; },
   getState: async () => state,
   diagnoseTelegram: async () => ({ message: '中转直连：可用；系统代理线路：失败（ERR_PROXY_CONNECTION_FAILED）。已选择独立直连。' }),
   manageNotification: async (id, action) => { ipcRenderer.send('smoke:queue-action', { id, action }); },

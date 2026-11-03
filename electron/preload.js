@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('monitorApi', {
   getState: () => ipcRenderer.invoke('state:get'),
+  confirmDesktopReady: token => ipcRenderer.invoke('desktop:ready', token),
   resumeAfterRecovery: () => ipcRenderer.invoke('startup:resume'),
   manageNotification: (id, action) => ipcRenderer.invoke('notification:manage', { id, action }),
   manageCommandReply: (action) => ipcRenderer.invoke('telegram:command:manage', action),

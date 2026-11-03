@@ -29,3 +29,15 @@ test('explicit app quit performs the same shutdown without a main window close',
   const s = fixture(); let prevented = false;
   s.app.emit('before-quit', { preventDefault() { prevented = true; } }); assert.equal(prevented, false); assert.equal(s.stats().destroyed, 1); assert.equal(s.stats().saved, 1);
 });
+
+test('native save-and-exit destroys the main renderer only after a successful save', () => {
+  const s = fixture(); let mainDestroyed = false;
+  s.win.isDestroyed = () => mainDestroyed;
+  s.win.destroy = () => { assert.ok(s.stats().saved > 0); mainDestroyed = true; };
+  assert.equal(s.exit.requestExit({ destroyMain: true }), true);
+  assert.equal(mainDestroyed, true); assert.equal(s.stats().quits, 1);
+  const failed = fixture(); failed.store.save = () => { throw Error('disk'); };
+  failed.win.destroy = () => { throw Error('must not destroy UI on save failure'); };
+  assert.equal(failed.exit.requestExit({ destroyMain: true }), false);
+  assert.equal(failed.stats().quits, 0);
+});

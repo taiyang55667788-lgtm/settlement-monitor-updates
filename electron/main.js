@@ -1,6 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, powerMonitor, net, session } = require('electron');
+const { pathToFileURL } = require('node:url');
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog, clipboard, powerMonitor, net, session } = require('electron');
+const { DesktopHealth } = require('./desktop-health');
 const { AppExit } = require('./app-exit');
 const { SafeMaintenance, pruneDiagnostics } = require('./safe-maintenance');
 const { partitionForAccount } = require('./navigation');
@@ -18,6 +20,7 @@ let store;
 let monitor;
 let updater;
 let exitCoordinator;
+let desktopHealth;
 const startupAt = Date.now();
 let upgraded = false;
 const hasInstanceLock = app.requestSingleInstanceLock();
@@ -39,13 +42,16 @@ function state() {
   current.telegram.commands.confirmationRequired = Boolean(monitor.commandReplies.current()?.confirmationRequired);
   current.telegram.commands.pendingReply = Boolean(monitor.commandReplies.current());
   current.telegram.network = monitor.pairingClient.network?.lastDiagnosis || null;
-  return { ...current, updater: updater?.runtime,
+  return { ...current, updater: updater?.runtime, desktopHealth: desktopHealth?.summary(),
     startupCheck: { ...startupCheck(store.state.accounts, monitor.runtime, startupAt, store.state.recoveryReviewRequired ? 'recovered' : store.loadStatus, Boolean(monitor.timer) && !monitor.stopped, upgraded),
       reviewRequired: Boolean(store.state.recoveryReviewRequired) } };
 }
 
 function publish() {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('state:changed', state());
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    try { mainWindow.webContents.send('state:changed', state()); }
+    catch { /* A crashed/rebuilding UI must not abort the monitor's progress. */ }
+  }
 }
 
 function saveUpdateDiagnostic() {
@@ -53,6 +59,7 @@ function saveUpdateDiagnostic() {
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   const destination = path.join(folder, `before-update-${app.getVersion()}-${Date.now()}.json`);
   const data = operationalDiagnostic(store.state.accounts, monitor.runtime, app.getVersion(), process.platform);
+  data.desktop = desktopHealth?.snapshot();
   fs.writeFileSync(destination, JSON.stringify(data, null, 2), { mode: 0o600, flag: 'wx' });
   try { pruneDiagnostics(app.getPath('userData')); } catch { /* Retention failure must not discard the new diagnostic. */ }
   return destination;
@@ -71,10 +78,19 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The two-frame readiness acknowledgement must also run when minimized.
+      backgroundThrottling: false,
     },
   });
   exitCoordinator.attach(mainWindow);
-  mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
+  desktopHealth?.attach(mainWindow);
+  mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html')).catch(() => desktopHealth?.record('ui-load-failed'));
+}
+
+function trustedDesktop(event) {
+  return mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame
+    && event.senderFrame.url === pathToFileURL(path.join(__dirname, '..', 'ui', 'index.html')).href;
 }
 
 if (hasInstanceLock) app.whenReady().then(() => {
@@ -89,7 +105,29 @@ if (hasInstanceLock) app.whenReady().then(() => {
     confirm: win => dialog.showMessageBoxSync(win, { type: 'question', title: '退出交收监控', message: '退出后将停止读取和推送。', detail: '如需继续后台监控，请取消并使用最小化。未发送通知、提醒档位和待确认回复会保留；未点击保存的界面修改不会保存。', buttons: ['退出应用', '取消'], defaultId: 1, cancelId: 1, checkboxLabel: '以后关闭主窗口直接退出，不再提示', checkboxChecked: false }),
     error: message => dialog.showErrorBox('退出未完成', message),
     beforeExit: () => { if (updater.runtime.status === 'ready') { try { updater.prepareInstall(); } catch { updater.disableAutomaticInstall(); } } },
+    onExitPrepared: () => desktopHealth?.end(),
   });
+  desktopHealth = new DesktopHealth({ store, metrics: () => app.getAppMetrics(), quitting: () => exitCoordinator.quitting,
+    verified: publish,
+    verificationFailed: () => {
+      publish();
+      void dialog.showMessageBox({ type: 'warning', title: '主界面恢复未确认', message: '主界面未通过加载和状态显示校验，已暂停自动重建。', detail: '监控可能仍在后台运行。请使用“界面→重建主界面”手动恢复，或“文件→保存并退出监控”。不要重复启动另一份监控。', buttons: ['知道了'] }).catch(() => {});
+    },
+    rebuild: previous => {
+      if (exitCoordinator.quitting) return;
+      // Create the replacement first: no window-all-closed event and no monitor.start().
+      createWindow();
+      if (previous && !previous.isDestroyed()) previous.destroy();
+    },
+  });
+  desktopHealth.start();
+  app.on('child-process-gone', (_event, details) => desktopHealth.childGone(details));
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { label: '文件', submenu: [{ label: '保存并退出监控', accelerator: 'CmdOrCtrl+Shift+Q', click: () => exitCoordinator.requestExit({ destroyMain: true }) }] },
+    { role: 'editMenu' },
+    { label: '界面', submenu: [{ label: '重建主界面（不重启监控）', click: () => desktopHealth.recover(true) }, { role: 'togglefullscreen' }] },
+  ]));
   monitor.maintenance = new SafeMaintenance({ userData: app.getPath('userData'), store,
     sessions: () => store.state.accounts.map(account => session.fromPartition(partitionForAccount(account.id))),
     idle: () => !monitor.stopped && !monitor.suspended && new Date().getHours() === 6 && !monitor.inFlight.size && !monitor.openingViews.size && !monitor.drawPollRunning && ![...monitor.viewWindows.values()].some(win => !win.isDestroyed() && win.isVisible()),
@@ -101,6 +139,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
   powerMonitor.on('resume', () => monitor.resume());
   let online = net.isOnline();
   const networkTimer = setInterval(() => {
+    desktopHealth.sample();
     const next = net.isOnline();
     if (next && !online) monitor.resume();
     online = next;
@@ -108,7 +147,11 @@ if (hasInstanceLock) app.whenReady().then(() => {
   networkTimer.unref();
   updater.start();
 
-  ipcMain.handle('state:get', () => state());
+  ipcMain.handle('state:get', event => {
+    if (trustedDesktop(event)) desktopHealth.stateServed(event.sender);
+    return state();
+  });
+  ipcMain.handle('desktop:ready', (event, token) => trustedDesktop(event) && desktopHealth.acknowledge(event.sender, token));
   ipcMain.handle('telegram:command:manage', (_event, action) => {
     if (monitor.commandPollRunning) throw new Error('指令处理中，请稍后重试');
     monitor.commandReplies.manage(action);
@@ -147,6 +190,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
     const diagnostic = {
       format: 'settlement-monitor-diagnostics-v1', exportedAt: new Date().toISOString(),
       app: { version: app.getVersion(), platform: process.platform }, alertPolicy: snapshot.alertPolicy,
+      desktop: desktopHealth.snapshot(),
       telegram: { mode: snapshot.telegram.mode, paired: Boolean(snapshot.telegram.pairing?.paired), hasBotToken: snapshot.telegram.hasBotToken,
         network: monitor.pairingClient.network?.lastDiagnosis || null,
         delivery: { ...monitor.outbox.health }, commands: snapshot.telegram.commands, lastNetworkFailure: monitor.pairingClient.network?.lastFailure || null },

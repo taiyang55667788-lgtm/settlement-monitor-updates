@@ -494,8 +494,8 @@ function render(state) {
   $('#startup-check').className = ['error', 'warning'].includes(state.startupCheck?.status) ? 'child-error' : '';
   $('#persistence-error').textContent = state.persistenceError || '';
   $('#persistence-error').hidden = !state.persistenceError;
-  $('#startup-warning').hidden = !state.persistenceError && !['error', 'warning'].includes(state.startupCheck?.status);
-  $('#startup-warning-text').textContent = state.persistenceError || state.startupCheck?.message || '';
+  $('#startup-warning').hidden = !state.persistenceError && !state.desktopHealth?.warning && !['error', 'warning'].includes(state.startupCheck?.status);
+  $('#startup-warning-text').textContent = state.persistenceError || state.desktopHealth?.warning || state.startupCheck?.message || '';
   $('#resume-after-recovery').hidden = !state.startupCheck?.reviewRequired;
   restoreThresholdDraft(thresholdDraft, state);
   $('#events').innerHTML = (state.events || []).map((event) => `<div class="event ${event.type}"><i></i><time>${new Date(event.time).toLocaleString('zh-CN')}</time><span>${escapeHtml(event.message)}</span></div>`).join('') || '<div class="empty show"><p>暂无运行记录</p></div>';
@@ -843,5 +843,15 @@ $('#notification-items').addEventListener('click', event => {
   action(() => window.monitorApi.manageNotification(button.dataset.queueId, operation), operation === 'cancel' ? '通知已取消' : '已安排重试（静默时间仍有效）');
 });
 
-window.monitorApi.onState(render);
-window.monitorApi.getState().then(render).catch((error) => toast(error.message));
+let desktopReadyToken = '';
+function renderAndConfirm(state) {
+  render(state);
+  const token = state.desktopHealth?.readyToken;
+  if (!token || token === desktopReadyToken || typeof window.monitorApi.confirmDesktopReady !== 'function') return;
+  desktopReadyToken = token;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.monitorApi.confirmDesktopReady(token).then(accepted => { if (!accepted) desktopReadyToken = ''; }).catch(() => { desktopReadyToken = ''; });
+  }));
+}
+window.monitorApi.onState(renderAndConfirm);
+window.monitorApi.getState().then(renderAndConfirm).catch((error) => toast(error.message));

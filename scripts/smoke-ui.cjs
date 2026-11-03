@@ -4,14 +4,20 @@ const path = require('node:path');
 const { app, BrowserWindow, ipcMain } = require('electron');
 
 app.whenReady().then(async () => {
+  let readyResolve;
+  const desktopReady = new Promise(resolve => { readyResolve = resolve; });
+  ipcMain.on('smoke:desktop-ready', (_event, token) => { assert.equal(token, 'smoke-ready-token'); readyResolve(); });
   const win = new BrowserWindow({
     show: false,
     width: 1240,
     height: 820,
-    webPreferences: { preload: path.join(__dirname, 'smoke-ui-preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false },
+    webPreferences: { preload: path.join(__dirname, 'smoke-ui-preload.cjs'), backgroundThrottling: false, sandbox: true, contextIsolation: true, nodeIntegration: false },
   });
   try {
     await win.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
+    let readyTimer;
+    try { await Promise.race([desktopReady, new Promise((_, reject) => { readyTimer = setTimeout(() => reject(Error('UI did not acknowledge rendered state')), 5000); })]); }
+    finally { clearTimeout(readyTimer); }
     await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const deadline = Date.now() + 3000;
       const poll = () => document.querySelectorAll('.subagent-row').length === 1 ? resolve() : Date.now() > deadline ? reject(new Error('默认折叠的代理列表未显示')) : setTimeout(poll, 25);
