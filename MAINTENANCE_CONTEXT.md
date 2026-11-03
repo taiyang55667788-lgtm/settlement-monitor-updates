@@ -2,7 +2,9 @@
 
 更新日期：2026-11-03。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
-## v1.0.49 发布准备：黑屏诊断、有限恢复与恢复确认
+## v1.0.49 已发布：黑屏诊断、有限恢复与恢复确认
+
+发布验证：265项Node测试、7项Electron桌面流程、Windows验证构建及正式工作流通过；GitHub Release、R2 latest.yml与独立完整安装包大小及SHA-512一致，证据见下表。真实服务器黑屏根因、GPU像素最终显示、长期稳定性和手机实收未验收。
 
 用户已授权完善恢复校验并测试后直接发布。新增20秒单次校验：主文件加载成功、状态已取得、实际render后两帧回执全部满足；仅当前主窗口顶层本地文件和匹配随机nonce可确认，旧窗口/迟到回执不算成功。失败原生提示并暂停自动重建，保留手动恢复和保存退出；手动校验成功可重新允许自动恢复。无新网络请求，不认定像素/GPU绝对正常或主进程全死可自救。本批只更新客户端，不部署云端。
 
@@ -62,19 +64,19 @@ v1.0.45后续改动：Telegram金额消息增加第二方向圆点，比较同�
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.48，2026-10-30 发布 |
-| 发布源码/标签 | `ca57d50397ad413af491bb62601445cdee4b2bf6` / `v1.0.48` |
-| Windows 验证任务 | `40909737609`，成功 |
-| 正式发布任务 | `40910250634`，成功 |
-| 测试证据 | 256项 Node 测试、6项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117490616 |
-| SHA-512 | `VadXJ5hvBFqNARwJAbQWcc9+CeFgp8EW3F+06HcNifrovNgsrd2TdO16ehJvT7MP3ej21wpRNgiPchnzzGcPhQ==` |
+| 正式客户端 | v1.0.49，2026-11-03 发布 |
+| 发布源码/标签 | `cd19c9e53dcf385822953b8c463d81931a80620e` / `v1.0.49` |
+| Windows 验证任务 | `41583432589`，成功 |
+| 正式发布任务 | `41583753713`，成功 |
+| 测试证据 | 265项 Node 测试、7项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117493165 |
+| SHA-512 | `Gbw/+CZRFv0r0UKRWBu6zh4wX1MrbjNTYe7TQk86FDMPGf9PkJKlOCEbAP/ixlVk4R3Z6NI2wJ8WCteyjFsCvQ==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。v1.0.48仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
+发布证据是上述时间点的记录，不代表持续线上健康。v1.0.49仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
-- 正式发布：[v1.0.48](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.48)
-- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.48-x64.exe)
+- 正式发布：[v1.0.49](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.49)
+- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.49-x64.exe)
 - 更新源：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev`
 - 官方通知主入口：`https://settlement-connectivity-test.pages.dev`
 - 备用入口：`https://settlement-monitor-pairing.taiyang55667788.workers.dev`
@@ -146,7 +148,7 @@ git diff --check
 
 ## 待验证与后续重点
 
-- Windows服务器升级v1.0.48后的验证码加载恢复、跳转前现场摘要、z518登录页超时恢复、新期号→15秒→报表读取、指令确认恢复、实际结算延迟、维护清理、档位方向圆点实收及长期稳定性，尚未完成实机验收。
+- Windows服务器升级v1.0.49后的黑屏留证/界面恢复确认/原生退出、验证码加载恢复、跳转前现场摘要、z518登录页超时恢复、新期号→15秒→报表读取、指令确认恢复、实际结算延迟、维护清理、档位方向圆点实收及长期稳定性，尚未完成实机验收。
 - 浏览器/API来源验证不能证明Windows长跑；源码测试和Telegram回执不能证明手机实收。
 - 反馈“没提醒”时先核对路径、设置、最后非零档位、50%降档线、连续确认、数据更新时间、队列/回执，再区分读取与通知故障。
 - 网站变化先只读核对真实菜单、分页、表头、日期和金额，不猜URL、末列或结算期号。改动后补定向测试并跑全套验证。
