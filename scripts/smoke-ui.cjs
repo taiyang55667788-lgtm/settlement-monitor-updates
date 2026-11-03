@@ -146,10 +146,10 @@ app.whenReady().then(async () => {
     assert.match(stableStatus.details, /完整读取成功率 90.0%/);
     assert.match(stableStatus.details, /确认登录失效 1 轮；读取恢复成功 1 轮/);
     const retainedTierText = await win.webContents.executeJavaScript(`[
-      alertReason({ value: 200000, alertStep: 300000, lastObservedLevel: 1 }),
-      alertReason({ value: -200000, alertStep: 300000, lastObservedLevel: -1 })
+      alertReason({ value: 200000, alertStep: 300000, lastObservedLevel: 1, effectiveAlertLevel: 1 }),
+      alertReason({ value: -200000, alertStep: 300000, lastObservedLevel: -1, effectiveAlertLevel: -1 })
     ]`);
-    assert.deepEqual(retainedTierText, ['未达首档；保留 300,000 档记录', '未达首档；保留 -300,000 档记录']);
+    assert.deepEqual(retainedTierText, ['回落缓冲中；降档线 150,000', '回落缓冲中；降档线 -150,000']);
     const queue = await win.webContents.executeJavaScript(`(async () => {
       const original = structuredClone(await window.monitorApi.getState());
       const next = structuredClone(original);

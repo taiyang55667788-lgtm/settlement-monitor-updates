@@ -2806,7 +2806,7 @@ class MonitorService {
           break;
         }
       }
-      if (level !== 0 && confirmed && !quiet && !notificationFailed && (this.store.state.accounts.find(item => item.id === accountId)?.alertHistory?.agents?.[alertKey]?.currentLevel ?? 0) !== level) {
+      if (confirmed && !quiet && !notificationFailed && (this.store.state.accounts.find(item => item.id === accountId)?.alertHistory?.agents?.[alertKey]?.currentLevel ?? 0) !== level) {
         this.store.update((data) => {
           const current = data.accounts.find((item) => item.id === accountId);
           if (current?.alertHistory?.period === periodKey) {
@@ -2844,8 +2844,10 @@ class MonitorService {
     const previousMilestone = previousLevel * alertStep;
     const crossedCount = Math.abs(level - previousLevel);
     const firstNewMilestone = (previousLevel + Math.sign(level - previousLevel || level)) * alertStep;
+    const returnedFromZero = previousLevel === 0 && this.store.state.accounts.find(item => item.id === account.id)
+      ?.alertHistory?.agents?.[alertLedgerKey(path, alertStep)]?.zeroConfirmed === true;
     const direction = (value < 0 ? '🔴' : '🔵')
-      + (previousLevel !== 0 && level !== previousLevel ? level > previousLevel ? '🔵' : '🔴' : '');
+      + ((previousLevel !== 0 || returnedFromZero) && level !== previousLevel ? level > previousLevel ? '🔵' : '🔴' : '');
     const signedValue = `${value > 0 ? '+' : ''}${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const displayPath = (remark ? `（${remark}）` : '') + path.join(' / ');
     const text = [
@@ -2854,7 +2856,8 @@ class MonitorService {
       metric.usesSubagents ? `${metric.agentLabel || '代理层级'}：${displayPath}` : `监控项：${remark ? `（${remark}）` : ''}${metric.label}`,
       `${direction} ${metric.valueLabel}：${signedValue}`,
       `提醒间隔：每 ${alertStep.toLocaleString('zh-CN')} 一档`,
-      previousLevel ? `上一次档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上一次档位：无（首次提醒）',
+      previousLevel || returnedFromZero ? `上一次档位：${previousMilestone > 0 ? '+' : ''}${previousMilestone.toLocaleString('zh-CN')}` : '上一次档位：无（首次提醒）',
+      ...(level === 0 ? ['本次回到零档（首档以内）'] : []),
       ...(crossedCount > 1 ? [`本次跨越：${firstNewMilestone > 0 ? '+' : ''}${firstNewMilestone.toLocaleString('zh-CN')} 至 ${milestone > 0 ? '+' : ''}${milestone.toLocaleString('zh-CN')}，共 ${crossedCount} 档（已合并为一条消息）`] : []),
       `时间：${new Date().toLocaleString('zh-CN')}`,
     ].filter(Boolean).join('\n');
@@ -2866,8 +2869,8 @@ class MonitorService {
     const settingChange = (persisted?.alertSettingChanges || []).findLast(item => agentPathKey(item.path) === agentPathKey(path));
     const settingsReset = previousLevel === 0 && settingChange?.nextStep === alertStep && !settingChange.activatedAt;
     const trigger = {
-      reason: settingsReset ? '修改间隔后按新档位提醒' : previousLevel === 0 ? '本周首次进入非零档位'
-        : Math.sign(level) !== Math.sign(previousLevel) ? '正负方向切换'
+      reason: settingsReset ? '修改间隔后按新档位提醒' : returnedFromZero ? '从零档重新进入非零档位' : previousLevel === 0 ? '本周首次进入非零档位'
+        : level === 0 ? '回到零档' : Math.sign(level) !== Math.sign(previousLevel) ? '正负方向切换'
           : Math.abs(level) > Math.abs(previousLevel) ? '进入更高档位' : '回落到较低档位',
       previousLevel, level, value,
       previousTransitionValue: !settingsReset && priorTransition ? priorTransition.value : null,

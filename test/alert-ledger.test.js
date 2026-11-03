@@ -9,8 +9,8 @@ test('half-step falling buffer preserves exact upward boundaries and mirrors neg
       [120000, 0, 1], [200000, 1, 2], [199999, 2, 2], [150001, 2, 2],
       [150000, 2, 1], [120000, 2, 1], [199999, 1, 1], [200000, 1, 2],
       [294868, 3, 3], [301103.33, 3, 3], [282139.86, 3, 3], [250000, 3, 2],
-      [249999, 6, 2], [250001, 6, 3], [100000, 6, 1], [99999, 3, 0],
-    ]) assert.equal(bufferedAlertLevel(sign * value, 100000, { currentLevel: sign * previous }), sign * expected);
+      [249999, 6, 2], [250001, 6, 3], [100000, 6, 1], [99999, 3, 1], [50001, 1, 1], [50000, 1, 0],
+    ]) assert.equal(bufferedAlertLevel(sign * value, 100000, { currentLevel: sign * previous }), expected ? sign * expected : 0);
   }
   assert.equal(bufferedAlertLevel(-200000, 100000, { currentLevel: 3 }), -2);
   assert.equal(bufferedAlertLevel(NaN, 100000, { currentLevel: 3 }), 0);
@@ -41,26 +41,33 @@ test('each successful entry into a positive or negative tier is offered, includi
   assert.deepEqual(pendingAlertNotifications(1, delivered).map((item) => item.level), [2, 1]);
   for (const item of pendingAlertNotifications(1, delivered)) delivered = recordAlertLevel(delivered, item.level);
   assert.equal(delivered.currentLevel, 1);
-  assert.deepEqual(pendingAlertNotifications(0, delivered), []);
+  assert.deepEqual(pendingAlertNotifications(0, delivered).map(item => item.level), [0]);
   delivered = recordAlertLevel(delivered, 0);
-  assert.equal(delivered.currentLevel, 1);
-  assert.deepEqual(pendingAlertNotifications(1, delivered), []);
+  assert.equal(delivered.currentLevel, 0);
+  assert.deepEqual(pendingAlertNotifications(1, delivered).map(item => item.level), [1]);
   delivered = recordAlertLevel(delivered, 1);
   const negative = pendingAlertNotifications(-2, delivered);
   assert.deepEqual(negative.map((item) => item.level), [-1, -2]);
   for (const item of negative) delivered = recordAlertLevel(delivered, item.level);
   assert.deepEqual(pendingAlertNotifications(-1, delivered).map((item) => item.level), [-1]);
-  assert.deepEqual(delivered, { currentLevel: -2, positiveLastAlertLevel: 1, negativeLastAlertLevel: -2 });
+  assert.deepEqual(delivered, { currentLevel: -2, positiveLastAlertLevel: 1, negativeLastAlertLevel: -2, zeroConfirmed: true });
 });
 
-test('zero keeps the last nonzero tier for both signs and never sends intermediate return alerts', () => {
+test('confirmed zero survives serialization and migration, deduplicates, and rearms fixed first tiers', () => {
+  const { bufferedAlertLevel } = require('../electron/alert-ledger');
   for (const sign of [1, -1]) {
-    const retained = recordAlertLevel(recordAlertLevel(undefined, 3 * sign), 0);
-    assert.equal(retained.currentLevel, 3 * sign);
+    const prior = recordAlertLevel(undefined, 2 * sign);
+    assert.equal(bufferedAlertLevel(sign * 50001, 100000, prior), sign);
+    assert.equal(bufferedAlertLevel(sign * 50000, 100000, prior), 0);
+    assert.deepEqual(pendingAlertNotifications(0, prior).map(n => n.level), [sign, 0]);
+    const retained = JSON.parse(JSON.stringify(recordAlertLevel(prior, 0)));
+    assert.equal(retained.currentLevel, 0);
     assert.deepEqual(pendingAlertNotifications(0, retained), []);
-    assert.deepEqual(pendingAlertNotifications(3 * sign, retained), []);
-    assert.deepEqual(pendingAlertNotifications(sign, retained).map(item => item.level), [2 * sign, sign]);
+    assert.deepEqual(pendingAlertNotifications(sign, retained).map(n => n.level), [sign]);
+    assert.equal(migrateZeroTierHistory({ agents: { a: retained } }).agents.a.currentLevel, 0);
+    assert.ok(bufferedAlertLevel(sign * 99999, 100000, retained) === 0);
   }
+  assert.deepEqual(pendingAlertNotifications(0, undefined), []);
 });
 
 test('migration restores old zero entries from matching transitions without guessing ambiguous direction', () => {

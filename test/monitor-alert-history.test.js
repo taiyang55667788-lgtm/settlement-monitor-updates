@@ -182,7 +182,7 @@ test('unchanged tiers do not rewrite the encrypted ledger for every agent', asyn
   assert.equal(writes, 0, '200 unchanged tiers require no persistent state update');
 });
 
-test('neither an unconfirmed nor a confirmed zero-tier reading rearms the same tier', async () => {
+test('readings below the first boundary but above half-step do not rearm the same tier', async () => {
   const { store, context, alerts, makeService } = fixture();
   store.state.alertPolicy = { confirmationReads: 2 };
   store.state.accounts[0].subagentThresholds = [{ name: 'parent', path: ['parent'], alertStep: 300000 }];
@@ -193,20 +193,20 @@ test('neither an unconfirmed nor a confirmed zero-tier reading rearms the same t
   assert.deepEqual(alerts, [['parent', 1]]);
 });
 
-test('300k to 200k to 300k stays silent across restart; 600k and return to 300k notify for both signs', async () => {
+test('zero return rearms fixed tiers and persists across restart for both signs', async () => {
   for (const sign of [1, -1]) {
     const { store, context, makeService } = fixture();
     store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
     store.state.accounts[0].subagentThresholds = [{ path: ['parent'], alertStep: 300000 }];
     let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
     for (const value of [300000, 200000, 0, -200000]) { context.parentValue = value * sign; await service.check('account-1'); }
-    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign]);
+    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign, 0]);
     service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
     for (const value of [300000, 450000, 600000, 650000, 300000, 350000]) { context.parentValue = value * sign; await service.check('account-1'); }
-    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign, 2 * sign, sign]);
+    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign, 0, sign, 2 * sign, sign]);
     context.period = { start: '2026-09-21', end: '2026-09-27' };
     await service.check('account-1');
-    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign, 2 * sign, sign, sign]);
+    assert.deepEqual(store.state.notificationOutbox.map(item => item.record.level), [sign, 0, sign, 2 * sign, sign, sign]);
   }
 });
 
@@ -569,7 +569,7 @@ test('monitor repeats alerts when values return to an earlier tier, while retain
   context.parentValue = 250;
   context.childValue = -350;
   await service.check('account-1');
-  assert.equal(alerts.length, 5);
+  assert.equal(alerts.length, 15);
 
   const afterRestart = fixture(structuredClone(store.state));
   await afterRestart.makeService().check('account-1');
@@ -766,4 +766,28 @@ test('Crown general-agent details alert each general agent by result without rea
   assert.equal(context.descendantReads, 0);
   assert.equal(store.state.accounts[0].agentSnapshot.metric, 'general-agent-result');
   assert.equal(store.state.accounts[0].agentSnapshot.agents[0].turnover, 99999);
+});
+
+
+test('ch112233 direct jump to zero confirms, queues crossed tiers once, and stays deduplicated after restart', async () => {
+  const { store, context, makeService } = fixture();
+  store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
+  store.state.alertPolicy = { confirmationReads: 2 };
+  store.state.accounts[0].subagentThresholds = [{ path: ['parent'], alertStep: 100000 }];
+  let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  const read = async value => { context.parentValue = value; await service.check('account-1'); };
+  await read(-213184.58); await read(-213184.58);
+  const initial = store.state.notificationOutbox.length;
+  await read(4930.39);
+  assert.equal(store.state.notificationOutbox.length, initial);
+  await read(4930.39);
+  assert.deepEqual(store.state.notificationOutbox.slice(initial).map(n => [n.record.previousLevel, n.record.level]), [[-2, -1], [-1, 0]]);
+  assert.match(store.state.notificationOutbox.at(-1).text, /零档/);
+  const count = store.state.notificationOutbox.length;
+  service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  for (const v of [-4930, 49999, -49999, 99000, 99000]) await read(v);
+  assert.equal(store.state.notificationOutbox.length, count);
+  await read(100000); await read(100000);
+  assert.equal(store.state.notificationOutbox.at(-1).record.level, 1);
+  assert.match(store.state.notificationOutbox.at(-1).text, /上一次档位：0/);
 });

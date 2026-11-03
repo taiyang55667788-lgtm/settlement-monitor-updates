@@ -179,12 +179,10 @@ function alertReason(subagent) {
   if (!Number.isFinite(subagent.alertStep) || subagent.alertStep <= 0) return '未设置提醒间隔';
   if (subagent.alertError) return `通知失败：${subagent.alertError}`;
   const level = Math.trunc(subagent.value / subagent.alertStep);
-  if (!level) return subagent.lastObservedLevel
-    ? `未达首档；保留 ${compactMoney.format(subagent.lastObservedLevel * subagent.alertStep)} 档记录`
-    : '尚未达到首档';
   if (level !== subagent.lastObservedLevel && subagent.effectiveAlertLevel === subagent.lastObservedLevel) {
-    return `回落缓冲中；降档线 ${compactMoney.format(Math.sign(level) * (Math.abs(subagent.lastObservedLevel) - 0.5) * subagent.alertStep)}`;
+    return `回落缓冲中；降档线 ${compactMoney.format(Math.sign(subagent.lastObservedLevel) * (Math.abs(subagent.lastObservedLevel) - 0.5) * subagent.alertStep)}`;
   }
+  if (!level) return subagent.lastObservedLevel ? '回到零档待确认或通知' : subagent.lastAlertAt ? '当前零档；未达首档' : '尚未达到首档';
   return level === subagent.lastObservedLevel ? '当前档位已通知' : '新档位待通知';
 }
 

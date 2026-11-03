@@ -29,17 +29,18 @@ function bufferedAlertLevel(value, step, entry) {
   if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0) return 0;
   const raw = Math.trunc(value / step);
   const previous = currentLevel(entry);
-  if (!raw || Math.sign(raw) !== Math.sign(previous) || Math.abs(raw) >= Math.abs(previous)) return raw;
+  if (!previous || (raw && Math.sign(raw) !== Math.sign(previous)) || Math.abs(raw) >= Math.abs(previous)) return raw;
+  if (Math.sign(value) !== Math.sign(previous)) return raw;
   // Falling tiers use half-step boundaries, including equality; upward tiers stay fixed.
   const magnitude = Math.min(Math.abs(previous), Math.ceil(Math.abs(value) / step + 0.5) - 1);
-  return Math.sign(raw) * Math.max(1, magnitude);
+  return magnitude > 0 ? Math.sign(previous) * magnitude : 0;
 }
 
 function migrateZeroTierHistory(history, transitions = []) {
   if (!history || history.nonzeroRetention === 1) return history;
   const migrated = structuredClone(history);
   for (const [key, entry] of Object.entries(migrated.agents || {})) {
-    if (entry?.currentLevel !== 0) continue;
+    if (entry?.currentLevel !== 0 || entry.zeroConfirmed === true) continue;
     const last = [...transitions].reverse().find(item => item.key === key && item.period === history.period && item.metric === history.metric);
     const prior = last?.to === 0 ? last.from : last?.to;
     const positive = Number.isSafeInteger(entry.positiveLastAlertLevel) && entry.positiveLastAlertLevel > 0 ? entry.positiveLastAlertLevel : 0;
@@ -53,8 +54,7 @@ function migrateZeroTierHistory(history, transitions = []) {
 }
 
 function pendingAlertNotifications(level, entry, maxIndividual = MAX_INDIVIDUAL_ALERTS, options = {}) {
-  // Below the first tier is not a new notification tier and must not rearm it.
-  if (!Number.isSafeInteger(level) || level === 0) return [];
+  if (!Number.isSafeInteger(level)) return [];
   const previousLevel = currentLevel(entry);
   if (level === previousLevel) return [];
   if (options.initialSummary && !entry && level !== 0) {
@@ -64,7 +64,7 @@ function pendingAlertNotifications(level, entry, maxIndividual = MAX_INDIVIDUAL_
   const crossed = Array.from({ length: Math.abs(change) }, (_, index) => {
     const nextLevel = previousLevel + Math.sign(change) * (index + 1);
     return { level: nextLevel, previousLevel: nextLevel - Math.sign(change) };
-  }).filter((item) => item.level !== 0);
+  }).filter((item) => item.level !== 0 || level === 0);
   if (crossed.length > maxIndividual) {
     return [{ level, previousLevel, combined: true, count: crossed.length }];
   }
@@ -77,7 +77,8 @@ function recordAlertLevel(entry, level, sentAt = '') {
     positiveLastAlertLevel: Number.isSafeInteger(entry?.positiveLastAlertLevel) ? entry.positiveLastAlertLevel : 0,
     negativeLastAlertLevel: Number.isSafeInteger(entry?.negativeLastAlertLevel) ? entry.negativeLastAlertLevel : 0,
   };
-  result.currentLevel = Number.isSafeInteger(level) && level !== 0 ? level : result.currentLevel;
+  result.currentLevel = Number.isSafeInteger(level) ? level : result.currentLevel;
+  if (level === 0 || entry?.zeroConfirmed === true) result.zeroConfirmed = true;
   if (level > 0) result.positiveLastAlertLevel = level;
   if (level < 0) result.negativeLastAlertLevel = level;
   if (sentAt || entry?.lastSentAt) result.lastSentAt = sentAt || entry.lastSentAt;
