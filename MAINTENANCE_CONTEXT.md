@@ -2,9 +2,9 @@
 
 更新日期：2026-11-04。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
-## 待发布：回到零档提醒
+## v1.0.50 已发布：回到零档提醒
 
-用户授权实施，发布需另行确认。ch112233诊断已记录-20万档成功回执及后续+4930.39新鲜读取；旧代码忽略零档，未生成恢复通知。修复允许确认后的零档目标参与原有逐档队列，首档回落也采用50%缓冲；零档内不重复，重达首档正常提醒。zeroConfirmed随现有账本持久化，旧迁移不复原已确认零档；不清队列、不伪造过去轨迹。正文说明回到零档，重新进入非零档显示上一次档位0，UI区分缓冲和回零待确认。设计见 `ai-artifacts/plans/2026-11-04-zero-tier-alert-design.md`。266项Node测试、7项Electron桌面流程及git diff --check通过。当前正式版仍v1.0.49，本批尚未推送或发布，未进行服务器实机或手机实收验收。
+用户已明确授权实施及发布。ch112233诊断已记录-20万档成功回执及后续+4930.39新鲜读取；旧代码忽略零档，未生成恢复通知。修复允许确认后的零档目标参与原有逐档队列，首档回落也采用50%缓冲；零档内不重复，重达首档正常提醒。zeroConfirmed随现有账本持久化，旧迁移不复原已确认零档；不清队列、不伪造过去轨迹。正文说明回到零档，重新进入非零档显示上一次档位0，UI区分缓冲和回零待确认。设计见 `ai-artifacts/plans/2026-11-04-zero-tier-alert-design.md`。266项Node测试、7项Electron桌面流程及git diff --check通过。Windows验证构建41673700202及正式发布41674238350成功；GitHub Release、R2清单及独立完整安装包大小/SHA-512一致。本批仅更新客户端，未进行服务器实机或手机实收验收。
 
 ## v1.0.49 已发布：黑屏诊断、有限恢复与恢复确认
 
@@ -68,19 +68,19 @@ v1.0.45后续改动：Telegram金额消息增加第二方向圆点，比较同�
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.49，2026-11-03 发布 |
-| 发布源码/标签 | `cd19c9e53dcf385822953b8c463d81931a80620e` / `v1.0.49` |
-| Windows 验证任务 | `41583432589`，成功 |
-| 正式发布任务 | `41583753713`，成功 |
-| 测试证据 | 265项 Node 测试、7项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117493165 |
-| SHA-512 | `Gbw/+CZRFv0r0UKRWBu6zh4wX1MrbjNTYe7TQk86FDMPGf9PkJKlOCEbAP/ixlVk4R3Z6NI2wJ8WCteyjFsCvQ==` |
+| 正式客户端 | v1.0.50，2026-11-04 发布 |
+| 发布源码/标签 | `536546a96a434ce3457ab02669181859385e89a5` / `v1.0.50` |
+| Windows 验证任务 | `41673700202`，成功 |
+| 正式发布任务 | `41674238350`，成功 |
+| 测试证据 | 266项 Node 测试、7项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117493435 |
+| SHA-512 | `Je7l6YCXJJnk5uvCMOTzX4XDHb1pqW21mQcB7k2lGpNAtCcCsvwVn59ScTSfaUXGayCapxxune8uaInA1jupbg==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。v1.0.49仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
+发布证据是上述时间点的记录，不代表持续线上健康。v1.0.50仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.49](docs/history/RELEASE-1.0.49.md)、[v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
-- 正式发布：[v1.0.49](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.49)
-- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.49-x64.exe)
+- 正式发布：[v1.0.50](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.50)
+- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.50-x64.exe)
 - 更新源：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev`
 - 官方通知主入口：`https://settlement-connectivity-test.pages.dev`
 - 备用入口：`https://settlement-monitor-pairing.taiyang55667788.workers.dev`

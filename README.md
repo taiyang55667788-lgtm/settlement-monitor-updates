@@ -2,11 +2,11 @@
 
 Electron 桌面监控应用：独立登录多个盘口账号，读取本周交收报表，按代理设置发送 Telegram 提醒。只读报表，不下注、不修改盘口数据。
 
-当前正式版：**v1.0.49**（2026-11-03）。本文只描述当前规则；旧版本记录见 [历史归档](docs/history/README-2026-10-16.md)。维护、验证及发布证据见 [MAINTENANCE_CONTEXT.md](MAINTENANCE_CONTEXT.md)。
+当前正式版：**v1.0.50**（2026-11-04）。本文只描述当前规则；旧版本记录见 [历史归档](docs/history/README-2026-10-16.md)。维护、验证及发布证据见 [MAINTENANCE_CONTEXT.md](MAINTENANCE_CONTEXT.md)。
 
 ## 安装与开始使用
 
-1. 下载 [Windows 安装包 v1.0.49](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.49-x64.exe)，安装并打开。
+1. 下载 [Windows 安装包 v1.0.50](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.50-x64.exe)，安装并打开。
 2. 添加盘口账号，填写对应登录资料，核对首次读取结果；需要人工验证时通过“盘内查看”完成。
 3. 在 Telegram 页生成配对码，发送给官方机器人完成配对，再发送测试消息。
 4. 给需要监控的代理设置金额档位、可选变化阈值和备注，保存后检查读取状态。
