@@ -31,3 +31,16 @@ test('one guard per page closes known alerts, interrupts reads, never accepts un
   assert.equal(JSON.stringify(guard).includes('secret'), false);
   assert.equal(guard.waiters.size, 0);
 });
+
+test('market window destruction detaches the dialog channel before destroying native contents', async () => {
+  const { destroyMarketWindow } = require('../electron/settlement-dialog');
+  const order = [], wc = new EventEmitter(), debug = new EventEmitter(); let attached = true;
+  debug.isAttached = () => attached;
+  debug.detach = () => { order.push('detach'); attached = false; debug.emit('detach'); };
+  debug.sendCommand = async () => {};
+  wc.debugger = debug;
+  const win = { webContents: wc, isDestroyed: () => false, destroy() { order.push('destroy'); } };
+  await guardSettlementDialogs(win);
+  destroyMarketWindow(win);
+  assert.deepEqual(order, ['detach', 'destroy']);
+});

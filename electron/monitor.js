@@ -11,7 +11,7 @@ const { sessionReason, telegramFault, finishDrawRead } = require('./status-detai
 const { loadLoginPage } = require('./login-page-load');
 const { captureFailureScene, retainedScenes, sceneLoginReason } = require('./failure-scene');
 const { captchaImageScript, refreshLoadedCaptcha } = require('./captcha-refresh');
-const { guardSettlementDialogs, settlementDelay } = require('./settlement-dialog');
+const { guardSettlementDialogs, destroyMarketWindow, settlementDelay } = require('./settlement-dialog');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay, networkRecoveryDelay } = require('./continuous-monitor');
@@ -295,7 +295,7 @@ class SiteClient {
         this.cancelled = true;
         this.disposeDirectReader();
         this.currentReportPath = null;
-        if (this.window && !this.window.isDestroyed()) this.window.destroy();
+        if (this.window && !this.window.isDestroyed()) destroyMarketWindow(this.window);
       }
       throw error;
     }
@@ -746,7 +746,7 @@ class SiteClient {
             this.reportRefreshNeeded = true;
             const stalledWindow = this.window;
             this.window = null;
-            if (stalledWindow && !stalledWindow.isDestroyed()) stalledWindow.destroy();
+            if (stalledWindow && !stalledWindow.isDestroyed()) destroyMarketWindow(stalledWindow);
           },
         );
       }
@@ -766,7 +766,7 @@ class SiteClient {
         this.onProgress?.();
         const previous = this.window;
         this.disposeDirectReader();
-        if (previous && !previous.isDestroyed()) previous.destroy();
+        if (previous && !previous.isDestroyed()) destroyMarketWindow(previous);
         this.currentReportPath = null;
         this.reportRefreshNeeded = true;
         this.ownsWindow = true;
@@ -1394,7 +1394,7 @@ class SiteClient {
         this.window = null;
         this.currentReportPath = null;
         this.branchPageLost = true;
-        if (previous && !previous.isDestroyed()) previous.destroy();
+        if (previous && !previous.isDestroyed()) destroyMarketWindow(previous);
       });
     } catch (error) {
       if (error.code === 'READ_WATCHDOG') error.code = 'BRANCH_TIMEOUT';
@@ -1413,7 +1413,7 @@ class SiteClient {
   async close() {
     this.disposeDirectReader();
     if (this.ocr) await this.ocr.terminate().catch(() => {});
-    if (this.ownsWindow && this.window && !this.window.isDestroyed()) this.window.destroy();
+    if (this.ownsWindow && this.window && !this.window.isDestroyed()) destroyMarketWindow(this.window);
   }
 }
 
@@ -1580,7 +1580,7 @@ class MonitorService {
     this.viewWindows.clear();
     this.openingViews.clear();
     for (const win of windows) {
-      if (!win.isDestroyed()) win.destroy();
+      if (!win.isDestroyed()) destroyMarketWindow(win);
     }
   }
 
@@ -1776,7 +1776,7 @@ class MonitorService {
         this.onChange();
       } catch (error) {
         this.viewWindows.delete(accountId);
-        if (!win.isDestroyed()) win.destroy();
+        if (!win.isDestroyed()) destroyMarketWindow(win);
         throw error;
       }
     } finally {
@@ -1893,7 +1893,7 @@ class MonitorService {
     this.closeDrawWindow(accountId);
     this.viewWindows.delete(accountId);
     this.openingViews.delete(accountId);
-    if (view && !view.isDestroyed()) view.destroy();
+    if (view && !view.isDestroyed()) destroyMarketWindow(view);
     this.revisions.set(accountId, (this.revisions.get(accountId) || 0) + 1);
     if (this.inFlight.has(accountId)) {
       this.resetRequested.add(accountId);
@@ -1962,7 +1962,7 @@ class MonitorService {
       const win = this.viewWindows.get(account.id);
       if (win && !win.isDestroyed() && !win.isVisible()) {
         clearDirectSession(win.webContents?.session);
-        win.destroy();
+        destroyMarketWindow(win);
         this.viewWindows.delete(account.id);
         status.pageMaintenanceDay = day;
         status.maintenanceNote = '停盘期间已重建后台页面，登录会话和提醒档位保留';
@@ -1976,7 +1976,7 @@ class MonitorService {
   closeDrawWindow(accountId) {
     const win = this.drawWindows.get(accountId);
     this.drawWindows.delete(accountId);
-    if (win && !win.isDestroyed()) win.destroy();
+    if (win && !win.isDestroyed()) destroyMarketWindow(win);
   }
 
   async tryDrawQuery(client, account, win) {
@@ -2321,7 +2321,7 @@ class MonitorService {
     const read = operation => boundedOperation(() => guarded(operation), this.operationTimeoutMs, () => {
       client.cancelled = true;
       client.directReader?.cancel();
-      if (client.window && !client.window.isDestroyed()) client.window.destroy();
+      if (client.window && !client.window.isDestroyed()) destroyMarketWindow(client.window);
       client.currentReportPath = null;
     }, controller.signal);
     const activeView = this.viewWindows.get(accountId);
@@ -2343,7 +2343,7 @@ class MonitorService {
         client.disposeDirectReader?.();
         client.currentReportPath = null;
         client.reportRefreshNeeded = true;
-        if (client.window && !client.window.isDestroyed()) client.window.destroy();
+        if (client.window && !client.window.isDestroyed()) destroyMarketWindow(client.window);
       }, controller.signal);
       if (!this.isCurrentCheck(accountId, revision)) return;
       if (this.pauseForMarket(account, status)) return;
@@ -2733,7 +2733,7 @@ class MonitorService {
       this.store.addEvent('info', `${account.name}：本轮耗时 ${(status.durationMs / 1000).toFixed(1)} 秒${timings ? `；登录及首层 ${(timings.loginAndRootMs / 1000).toFixed(1)} 秒；分支 ${timings.branches.length} 个` : ''}${slowest ? `；最慢分支 ${slowest.path.join(' / ')} ${(slowest.durationMs / 1000).toFixed(1)} 秒` : ''}${status.failureKind ? `；故障类型：${status.failureKind}` : ''}`, accountId);
       this.activeReads.delete(accountId);
       await boundedOperation(() => client.close(), 10000, () => {
-        if (client.window && !client.window.isDestroyed()) client.window.destroy();
+        if (client.window && !client.window.isDestroyed()) destroyMarketWindow(client.window);
       }).catch(() => {});
       const shouldReset = this.resetRequested.has(accountId);
       if (shouldReset) {

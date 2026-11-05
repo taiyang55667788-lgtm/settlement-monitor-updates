@@ -1,7 +1,8 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const { app, BrowserWindow } = require('electron');
-const { guardSettlementDialogs } = require('../electron/settlement-dialog');
+const { guardSettlementDialogs, destroyMarketWindow } = require('../electron/settlement-dialog');
+app.on('window-all-closed', () => {});
 const timeout = setTimeout(() => { console.error('Settlement dialog smoke timed out'); app.exit(1); }, 15000);
 app.whenReady().then(async () => {
   let closed = 0;
@@ -22,7 +23,10 @@ app.whenReady().then(async () => {
   win.webContents.debugger.on('message', listener);
   assert.equal(await win.webContents.executeJavaScript(`confirm('是否删除数据？')`), false);
   assert.equal(closed, 3);
-  win.destroy(); server.close(); clearTimeout(timeout);
+  destroyMarketWindow(win);
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => server.close(resolve));
+  clearTimeout(timeout);
   console.log('Settlement dialog smoke passed: three native alerts acknowledged, page resumed, unknown confirmation not accepted');
-  app.exit(0);
+  app.quit();
 }).catch(error => { console.error(error); app.exit(1); });

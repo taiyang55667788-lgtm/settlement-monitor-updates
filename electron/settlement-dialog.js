@@ -13,6 +13,10 @@ async function guardSettlementDialogs(win, onSettlement = () => {}) {
   if (existing) { existing.onSettlement = onSettlement; return existing; }
   const debug = wc.debugger;
   const guard = { onSettlement, pending: false, waiters: new Set(),
+    dispose() {
+      guard.unavailable = true;
+      try { if (debug.isAttached()) debug.detach(); } catch {}
+    },
     async run(operation) {
       if (guard.unavailable) throw new Error('结算弹框保护连接中断');
       if (guard.pending) throw settlementError();
@@ -23,6 +27,7 @@ async function guardSettlementDialogs(win, onSettlement = () => {}) {
     },
   };
   guards.set(wc, guard);
+  win.once?.('close', () => guard.dispose());
   try {
     if (!debug.isAttached()) debug.attach('1.3');
     debug.on('message', (_event, method, params) => {
@@ -47,4 +52,9 @@ async function guardSettlementDialogs(win, onSettlement = () => {}) {
   } catch (error) { guards.delete(wc); throw new Error('结算弹框保护初始化失败'); }
   return guard;
 }
-module.exports = { guardSettlementDialogs, isSettlementDialog, settlementDelay, settlementError };
+function destroyMarketWindow(win) {
+  if (!win || win.isDestroyed()) return;
+  guards.get(win.webContents)?.dispose();
+  win.destroy();
+}
+module.exports = { guardSettlementDialogs, destroyMarketWindow, isSettlementDialog, settlementDelay, settlementError };

@@ -1,3 +1,4 @@
+const { destroyMarketWindow } = require('./settlement-dialog');
 class AppExit {
   constructor({ app, monitor, updater, store, windows, confirm, error, beforeExit = () => {}, onExitPrepared = () => {} }) {
     Object.assign(this, { app, monitor, updater, store, windows, confirm, error, beforeExit, onExitPrepared });
@@ -42,7 +43,7 @@ class AppExit {
     this.quitting = true;
     this.onExitPrepared();
     // Hidden market pages must not keep Electron alive or veto exit via beforeunload.
-    for (const win of this.windows()) if (win !== this.mainWindow && !win.isDestroyed()) win.destroy();
+    for (const win of this.windows()) if (win !== this.mainWindow && !win.isDestroyed()) destroyMarketWindow(win);
     return true;
   }
 }
