@@ -720,7 +720,7 @@ class SiteClient {
     return loadLoginPage(this.window, url);
   }
 
-  async readThisWeekSettlement() {
+  async readThisWeekSettlement({ rebuild = true } = {}) {
     let reloadAfterRebuild = false;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -751,7 +751,7 @@ class SiteClient {
         );
       }
       catch (error) {
-        if (error.code === 'SETTLEMENT_DIALOG_PENDING') throw error;
+        if (!rebuild || error.code === 'SETTLEMENT_DIALOG_PENDING') throw error;
         const stalledReport = error.code === 'READ_WATCHDOG';
         this.status.lastFailureScene = await captureFailureScene(this.window, { phase: 'before-rebuild' });
         const reason = sceneLoginReason(this.status.lastFailureScene);
@@ -1383,7 +1383,7 @@ class SiteClient {
           await this.open();
           await this.withDialogGuard(async () => {
             if (this.status.agentUrl) await load(this.window, this.status.agentUrl);
-            await this.readThisWeekSettlement();
+            await this.readThisWeekSettlement({ rebuild: false });
           });
           this.branchPageLost = false;
         }

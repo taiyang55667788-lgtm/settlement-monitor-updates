@@ -234,3 +234,19 @@ test('branch page reconstruction shares one bounded timeout and never resets ano
   assert.equal(opened, 1); assert.equal(destroyed, 1);
   assert.equal(other.window, untouched);
 });
+
+test('branch reconstruction does not start a nested root page rebuild after the outer timeout', async () => {
+  const client = new SiteClient({}, {}); client.branchPageLost = true; client.branchTimeoutMs = 5;
+  let rebuilds = 0;
+  client.open = async () => {
+    rebuilds++;
+    client.window = { isDestroyed: () => false, destroy() {} };
+  };
+  client.readThisWeekSettlementAttempt = async () => {
+    await new Promise(resolve => setTimeout(resolve, 15));
+    throw Object.assign(new Error('old session closed'), { code: 'SESSION_CHECK_TIMEOUT' });
+  };
+  await assert.rejects(client.readBranchWithRecovery(['a']), { code: 'BRANCH_TIMEOUT' });
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(rebuilds, 1);
+});
