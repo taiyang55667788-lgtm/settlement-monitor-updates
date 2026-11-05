@@ -2,11 +2,11 @@
 
 更新日期：2026-11-05。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
-## v1.0.51 待发布：结算弹框自动处理
+## v1.0.51 已发布：结算弹框自动处理
 
 用户明确授权实施并测试后直接发布。通过Electron debugger的Page域在每个盘口文档及iframe初始化时单例安装已知结算alert拦截，仅固定结算信息alert跳过原生显示并发送无内容的固定信号；未知alert及confirm/prompt不自动接受。覆盖报表、盘内查看、独立开奖页。按账号合并结算恢复，等待30/60/120/180秒，手动刷新/开奖轮询不得绕过，不触发结算故障及等待期间新鲜度通知，成功后记录恢复。固定类别日志沿用原有限记录，不保存原始文本/URL/页面，不增加轮询。复用现有inFlight、账号级登录恢复及分支退避，分支重建加载也纳入35秒看门狗，并禁止超时旧任务启动嵌套整页重建，只销毁受影响窗口、保留会话Cookie。设计见 `ai-artifacts/plans/2026-11-05-settlement-dialog-design.md`。
 
-本地274项Node测试、8项Electron桌面流程及git diff --check通过；真实Electron iframe中三次连续结算alert在原生显示前拦截且页面恢复；单元测试验证未知alert转交原实现、confirm/prompt不变。尚待Windows构建和正式发布，未实测用户服务器现场或手机实收。当前正式版仍v1.0.50，本批不部署云端。Windows首次验证在全部功能断言通过后退出时触发原生异常，已改为文档初始化拦截已知alert、不调用原生dialog确认API，并补充先断开调试通道再销毁窗口及正常退出的收尾顺序，须以最终源码重新验证通过后发布。
+本地274项Node测试、8项Electron桌面流程及git diff --check通过；真实Electron iframe中三次连续结算alert在原生显示前拦截且页面恢复；单元测试验证未知alert转交原实现、confirm/prompt不变。Windows验证构建42046847326及正式工作流42048263403成功；GitHub Release、R2清单及独立完整下载安装包大小/SHA-512一致。未实测用户服务器现场或手机实收。本批仅更新客户端，不部署云端。Windows首次验证在全部功能断言通过后退出时触发原生异常，已改为文档初始化拦截已知alert、不调用原生dialog确认API，并补充先断开调试通道再销毁窗口及正常退出的收尾顺序，最终方案已重新通过Windows验证、正式构建和完整安装包校验。
 
 ## v1.0.50 已发布：回到零档提醒
 
@@ -74,19 +74,19 @@ v1.0.45后续改动：Telegram金额消息增加第二方向圆点，比较同�
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.50，2026-11-04 发布 |
-| 发布源码/标签 | `536546a96a434ce3457ab02669181859385e89a5` / `v1.0.50` |
-| Windows 验证任务 | `41673700202`，成功 |
-| 正式发布任务 | `41674238350`，成功 |
-| 测试证据 | 266项 Node 测试、7项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117493435 |
-| SHA-512 | `Je7l6YCXJJnk5uvCMOTzX4XDHb1pqW21mQcB7k2lGpNAtCcCsvwVn59ScTSfaUXGayCapxxune8uaInA1jupbg==` |
+| 正式客户端 | v1.0.51，2026-11-05 发布 |
+| 发布源码/标签 | `3713148d77c0399baf44164723605ca8fd81fefa` / `v1.0.51` |
+| Windows 验证任务 | `42046847326`，成功 |
+| 正式发布任务 | `42048263403`，成功 |
+| 测试证据 | 274项 Node 测试、8项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117494904 |
+| SHA-512 | `7Ih+U/oEvOo/FQqrIeZrv/aKB26x53cy3n/vG1bzcUg5PmDX291SUcUYUGojHp4NWqgVnvDZeGROG1n0x8xg4Q==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。v1.0.50仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.49](docs/history/RELEASE-1.0.49.md)、[v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
+发布证据是上述时间点的记录，不代表持续线上健康。v1.0.51仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.50](docs/history/RELEASE-1.0.50.md)、[v1.0.49](docs/history/RELEASE-1.0.49.md)、[v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
-- 正式发布：[v1.0.50](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.50)
-- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.50-x64.exe)
+- 正式发布：[v1.0.51](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.51)
+- 安装包：[Windows x64](https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev/Settlement-Monitor-Setup-1.0.51-x64.exe)
 - 更新源：`https://pub-649c460a80df4ab1a6c668e4e67e2b6d.r2.dev`
 - 官方通知主入口：`https://settlement-connectivity-test.pages.dev`
 - 备用入口：`https://settlement-monitor-pairing.taiyang55667788.workers.dev`
@@ -150,7 +150,7 @@ pnpm test:desktop
 git diff --check
 ```
 
-七项桌面流程：四级报表DOM、层级UI、配置迁移持久化、直接查询/会话隔离/开奖响应、通知网络、真实Electron退出与缓存安全、隔离renderer崩溃重建及原生退出。测试使用模拟环境，真实盘口结构需另行只读核对。
+八项桌面流程：四级报表DOM、层级UI、配置迁移持久化、直接查询/会话隔离/开奖响应、通知网络、真实Electron退出与缓存安全、隔离renderer崩溃重建及原生退出、iframe结算提示在原生显示前拦截。测试使用模拟环境，真实盘口结构需另行只读核对。
 
 发布需要用户明确授权；“做完”不等于发布授权。改版本号并完成本地验证后，提交源码；先 `workflow_dispatch`验证Windows安装包，不上传更新。成功后推送对应`v*`标签，正式工作流重新测试、构建并上传R2/GitHub Release。最后独立读取latest.yml并完整下载安装包，比较版本、大小、SHA-512，记录源码/标签/工作流。不能只凭标签推送或CI成功宣布完整发布。
 
