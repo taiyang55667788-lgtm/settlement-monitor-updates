@@ -1,6 +1,12 @@
 # 交收监控维护上下文
 
-更新日期：2026-11-04。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+更新日期：2026-11-05。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+
+## v1.0.51 待发布：结算弹框自动处理
+
+用户明确授权实施并测试后直接发布。通过Electron debugger的Page域在每个盘口页面单例监听原生dialog事件，仅固定结算信息alert自动确认；未知alert及confirm/prompt不自动接受。覆盖报表、盘内查看、独立开奖页。按账号合并结算恢复，等待30/60/120/180秒，手动刷新/开奖轮询不得绕过，不触发结算故障及等待期间新鲜度通知，成功后记录恢复。固定类别日志沿用原有限记录，不保存原始文本/URL/页面，不增加轮询。复用现有inFlight、账号级登录恢复及分支退避，分支重建加载也纳入35秒看门狗，只销毁受影响窗口、保留会话Cookie。设计见 `ai-artifacts/plans/2026-11-05-settlement-dialog-design.md`。
+
+本地271项Node测试、8项Electron桌面流程及git diff --check通过；真实Electron iframe中三次连续原生alert自动确认且页面恢复，未知confirm不被接受。尚待Windows构建和正式发布，未实测用户服务器现场或手机实收。当前正式版仍v1.0.50，本批不部署云端。
 
 ## v1.0.50 已发布：回到零档提醒
 

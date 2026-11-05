@@ -791,3 +791,51 @@ test('ch112233 direct jump to zero confirms, queues crossed tiers once, and stay
   assert.equal(store.state.notificationOutbox.at(-1).record.level, 1);
   assert.match(store.state.notificationOutbox.at(-1).text, /上一次档位：0/);
 });
+
+test('settlement dialogs coalesce by account, pause manual refresh and retry with backoff without Telegram errors', async () => {
+  const { context, store, deltaAlerts, makeService } = fixture();
+  const service = makeService();
+  let fail = true;
+  context.beforeDescendant = async () => {
+    if (!fail) return;
+    for (let i = 0; i < 3; i++) service.noteSettlementDialog('account-1');
+    service.rerunRequested.add('account-1');
+    throw Object.assign(new Error('等待盘口结算'), { code: 'SETTLEMENT_DIALOG_PENDING' });
+  };
+  await service.check('account-1');
+  const status = service.status('account-1');
+  assert.equal(status.status, 'market-waiting');
+  assert.equal(status.settlementWaitAttempt, 1);
+  assert.equal(status.settlementDialogCount, 3);
+  assert.ok(Date.parse(status.nextCheckAt) > Date.now());
+  assert.equal(status.consecutiveFailures || 0, 0);
+  const firstReads = context.descendantReads;
+  await Promise.all([service.check('account-1'), service.check('account-1', { manual: true })]);
+  assert.equal(context.descendantReads, firstReads);
+  status.settlementWaitUntil = Date.now() - 1;
+  await service.check('account-1');
+  assert.equal(status.settlementWaitAttempt, 2);
+  assert.ok(status.settlementWaitUntil - Date.now() > 59000);
+  assert.deepEqual(deltaAlerts, []);
+  status.settlementWaitUntil = Date.now() - 1;
+  fail = false;
+  await service.check('account-1');
+  assert.ok(['ok', 'triggered'].includes(status.status));
+  assert.equal(status.settlementWaitAttempt, 0);
+  assert.equal(status.settlementWaiting, false);
+});
+
+test('concurrent checks do not start additional account sessions', async () => {
+  const { context, makeService } = fixture();
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const blocked = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  context.beforeDescendant = async () => { calls++; entered(); await blocked; };
+  const service = makeService();
+  const running = service.check('account-1');
+  await started;
+  await Promise.all([service.check('account-1'), service.check('account-1', { manual: true })]);
+  assert.equal(calls, 1);
+  release(); await running;
+});

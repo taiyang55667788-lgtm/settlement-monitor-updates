@@ -11,6 +11,7 @@ const { sessionReason, telegramFault, finishDrawRead } = require('./status-detai
 const { loadLoginPage } = require('./login-page-load');
 const { captureFailureScene, retainedScenes, sceneLoginReason } = require('./failure-scene');
 const { captchaImageScript, refreshLoadedCaptcha } = require('./captcha-refresh');
+const { guardSettlementDialogs, settlementDelay } = require('./settlement-dialog');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay, networkRecoveryDelay } = require('./continuous-monitor');
@@ -273,6 +274,7 @@ class SiteClient {
         nodeIntegration: false,
       },
     });
+    await this.armSettlementDialogs();
     // All account partitions connect directly, independently of notification routing.
     // This changes only this app session, never the operating-system proxy or TUN.
     await this.window.webContents.session.setProxy({ mode: 'direct' });
@@ -280,6 +282,23 @@ class SiteClient {
       this.window.webContents.setUserAgent(CROWN_BROWSER_USER_AGENT);
     }
     this.window.webContents.setWindowOpenHandler(({ url }) => ({ action: 'deny' }));
+  }
+
+  async armSettlementDialogs() {
+    this.dialogGuard = await guardSettlementDialogs(this.window, () => this.onSettlement?.());
+  }
+
+  async withDialogGuard(operation) {
+    try { return await (this.dialogGuard ? this.dialogGuard.run(operation) : operation()); }
+    catch (error) {
+      if (error.code === 'SETTLEMENT_DIALOG_PENDING') {
+        this.cancelled = true;
+        this.disposeDirectReader();
+        this.currentReportPath = null;
+        if (this.window && !this.window.isDestroyed()) this.window.destroy();
+      }
+      throw error;
+    }
   }
 
   async discoverAgentUrl() {
@@ -718,7 +737,7 @@ class SiteClient {
                 this.status.agentUrl = await this.discoverAgentUrl();
               }
             }
-            return this.readThisWeekSettlementAttempt();
+            return this.withDialogGuard(() => this.readThisWeekSettlementAttempt());
           },
           this.reportReadTimeoutMs,
           () => {
@@ -732,6 +751,7 @@ class SiteClient {
         );
       }
       catch (error) {
+        if (error.code === 'SETTLEMENT_DIALOG_PENDING') throw error;
         const stalledReport = error.code === 'READ_WATCHDOG';
         this.status.lastFailureScene = await captureFailureScene(this.window, { phase: 'before-rebuild' });
         const reason = sceneLoginReason(this.status.lastFailureScene);
@@ -1356,15 +1376,19 @@ class SiteClient {
 
   async readBranchWithRecovery(path) {
     if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
-    if (this.branchPageLost) {
-      this.status.recoveryAction = '分支超时后重建报表页，复用登录会话';
-      await this.open();
-      if (this.status.agentUrl) await load(this.window, this.status.agentUrl);
-      await this.readThisWeekSettlement();
-      this.branchPageLost = false;
-    }
     try {
-      return await boundedOperation(() => this.readDescendantSettlement(path), this.branchTimeoutMs || 35000, () => {
+      return await boundedOperation(async () => {
+        if (this.branchPageLost) {
+          this.status.recoveryAction = '分支超时后重建报表页，复用登录会话';
+          await this.open();
+          await this.withDialogGuard(async () => {
+            if (this.status.agentUrl) await load(this.window, this.status.agentUrl);
+            await this.readThisWeekSettlement();
+          });
+          this.branchPageLost = false;
+        }
+        return this.withDialogGuard(() => this.readDescendantSettlement(path));
+      }, this.branchTimeoutMs || 35000, () => {
         this.disposeDirectReader();
         const previous = this.window;
         this.window = null;
@@ -1704,6 +1728,7 @@ class MonitorService {
         },
       });
       await win.webContents.session.setProxy({ mode: 'direct' });
+      await guardSettlementDialogs(win, () => this.noteSettlementDialog(accountId));
       if (accountSystemId(account) === 'crown') {
         win.webContents.setUserAgent(CROWN_BROWSER_USER_AGENT);
       }
@@ -1996,6 +2021,7 @@ class MonitorService {
       sandbox: true, contextIsolation: true, nodeIntegration: false,
     } });
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    await guardSettlementDialogs(win, () => this.noteSettlementDialog(account.id));
     this.drawWindows.set(account.id, win);
     client.window = win;
     return boundedOperation(async () => {
@@ -2038,7 +2064,7 @@ class MonitorService {
         const status = this.status(account.id);
         if (this.pauseForMarket(account, status) || status.status === 'market-waiting' || status.openingRecovery) continue;
         if (status.drawNextProbeAt > now) continue;
-        if (status.status === 'manual' || this.openingViews.has(account.id) || this.inFlight.has(account.id)) continue;
+        if (status.status === 'manual' || status.settlementWaiting || this.openingViews.has(account.id) || this.inFlight.has(account.id)) continue;
         const win = this.viewWindows.get(account.id);
         if (!win || win.isDestroyed()) {
           status.waitingForDraw = false;
@@ -2102,6 +2128,11 @@ class MonitorService {
         const status = this.status(accountId);
         if (!account?.enabled || !this.usesDrawTrigger(account) || status.status === 'manual' || this.openingViews.has(accountId)) {
           this.drawPending.delete(accountId);
+          continue;
+        }
+        if (status.settlementWaitUntil > Date.now()) {
+          this.drawPending.set(accountId, status.settlementWaitUntil);
+          status.nextCheckAt = new Date(status.settlementWaitUntil).toISOString();
           continue;
         }
         if (status.status === 'error' && Date.parse(status.nextCheckAt) > Date.now()) {
@@ -2183,6 +2214,7 @@ class MonitorService {
 
   async checkFreshness(account) {
     const status = this.status(account.id);
+    if (status.settlementWaiting) return;
     if (marketSchedule().closed || status.openingRecovery || status.status === 'market-waiting') return;
     const targets = staleTargets(account, status.subagents || [], status.freshnessSince);
     status.targetHealth = (account.subagentThresholds || []).filter(item => Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0).map(item => {
@@ -2227,6 +2259,22 @@ class MonitorService {
     this.onChange();
   }
 
+  noteSettlementDialog(accountId) {
+    const status = this.status(accountId);
+    status.settlementDialogCount = Math.min(1000000, (status.settlementDialogCount || 0) + 1);
+    if (status.settlementWaitUntil > Date.now()) return;
+    status.settlementWaitAttempt = Math.min(4, (status.settlementWaitAttempt || 0) + 1);
+    status.settlementWaitUntil = Date.now() + settlementDelay(status.settlementWaitAttempt);
+    status.settlementWaiting = true;
+    status.nextCheckAt = new Date(status.settlementWaitUntil).toISOString();
+    if (!status.running) {
+      status.status = 'market-waiting';
+      status.stage = '等待盘口结算，提示已自动处理';
+    }
+    this.store.addEvent('info', `已自动关闭盘口结算提示；${settlementDelay(status.settlementWaitAttempt) / 1000}秒后重试`, accountId);
+    this.onChange();
+  }
+
   async check(accountId, { manual = false, branchRetryOnly = false } = {}) {
     if (this.suspended || this.stopped || this.maintenance?.running || this.store.state.recoveryReviewRequired) return;
     const storedAccount = this.store.state.accounts.find((item) => item.id === accountId);
@@ -2235,6 +2283,7 @@ class MonitorService {
     if (this.pauseForMarket(storedAccount, this.status(accountId))) { this.onChange(); return; }
     if (this.openingViews.has(accountId)) return;
     if (this.inFlight.has(accountId)) return;
+    if (this.status(accountId).settlementWaitUntil > Date.now()) return;
     this.inFlight.add(accountId);
     const checkStarted = Date.now();
     const revision = this.revisions.get(accountId) || 0;
@@ -2263,11 +2312,13 @@ class MonitorService {
     this.onChange();
     const client = this.createSiteClient(account, status);
     client.onProgress = this.onChange;
+    client.onSettlement = () => this.noteSettlementDialog(accountId);
     client.reportReadTimeoutMs = this.rootReportTimeoutMs;
     const branchRead = path => read(() => client.readBranchWithRecovery ? client.readBranchWithRecovery(path) : client.readDescendantSettlement(path));
     const controller = new AbortController();
     this.activeReads.set(accountId, controller);
-    const read = operation => boundedOperation(operation, this.operationTimeoutMs, () => {
+    const guarded = operation => client.withDialogGuard ? client.withDialogGuard(operation) : operation();
+    const read = operation => boundedOperation(() => guarded(operation), this.operationTimeoutMs, () => {
       client.cancelled = true;
       client.directReader?.cancel();
       if (client.window && !client.window.isDestroyed()) client.window.destroy();
@@ -2281,10 +2332,14 @@ class MonitorService {
     let manualCrownVerification = false;
     try {
       if (!client.window) await read(() => client.open());
+      else if (client.armSettlementDialogs) {
+        await client.armSettlementDialogs();
+        if (client.dialogGuard) client.dialogGuard.pending = false;
+      }
       // SiteClient owns the first 45-second recovery/rebuild.  Permit its one
       // rebuilt retry, but still cap this whole path well below the historical
       // 150-second account watchdog.
-      const report = await boundedOperation(() => client.readThisWeekSettlement(), this.rootReportTimeoutMs * 2 + 5000, () => {
+      const report = await boundedOperation(() => guarded(() => client.readThisWeekSettlement()), this.rootReportTimeoutMs * 2 + 5000, () => {
         client.disposeDirectReader?.();
         client.currentReportPath = null;
         client.reportRefreshNeeded = true;
@@ -2424,7 +2479,7 @@ class MonitorService {
         if (fullScan && Date.now() - lastPriorityAt >= Math.max(1, Number(account.intervalMinutes) || 5) * 60000) {
           try { await refreshPriority(); }
           catch (error) {
-            if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG' || /结算周已切换/.test(error.message)
+            if (['READ_INTERRUPTED', 'READ_WATCHDOG', 'SETTLEMENT_DIALOG_PENDING'].includes(error.code) || /结算周已切换/.test(error.message)
               || ['登录状态','验证码','账号凭据'].includes(failureKind(error))) throw error;
             client.currentReportPath = null;
             this.store.addEvent('error', `${account.name}：重点插读失败，保留原扫描任务：${error.message}`, accountId);
@@ -2475,7 +2530,7 @@ class MonitorService {
           for (const child of fresh) if (child.path.length < MAX_DESCENDANT_DEPTH && needsBranch(child.path)) branches.push(child.path);
           await publishBatch(fresh);
         } catch (error) {
-          if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG') throw error;
+          if (['READ_INTERRUPTED', 'READ_WATCHDOG', 'SETTLEMENT_DIALOG_PENDING'].includes(error.code)) throw error;
           branchError = error.message || String(error);
           const kind = failureKind(error);
           if (['登录状态', '验证码', '账号凭据'].includes(kind)) {
@@ -2593,9 +2648,10 @@ class MonitorService {
       }
     } catch (error) {
       if (this.pauseForMarket(account, status)) return;
-      if (error.code === 'SETTLEMENT_PENDING' || /当前.*报表日期应为|盘口本周日期应为/.test(error.message || '')) {
+      if (error.code === 'SETTLEMENT_DIALOG_PENDING' || error.code === 'SETTLEMENT_PENDING' || /当前.*报表日期应为|盘口本周日期应为/.test(error.message || '')) {
+        if (error.code === 'SETTLEMENT_DIALOG_PENDING' && !status.settlementWaiting) this.noteSettlementDialog(accountId);
         status.status = 'market-waiting';
-        status.stage = error.code === 'SETTLEMENT_PENDING' ? '等待盘口账目结算，30 秒后复查' : '等待盘口切换本周报表，30 秒后复查';
+        status.stage = error.code === 'SETTLEMENT_DIALOG_PENDING' ? '等待盘口结算，已自动关闭提示，稍后重试' : error.code === 'SETTLEMENT_PENDING' ? '等待盘口账目结算，30 秒后复查' : '等待盘口切换本周报表，30 秒后复查';
         status.error = '';
         status.failureKind = '';
         status.failureScope = '';
@@ -2648,6 +2704,12 @@ class MonitorService {
       this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
       await this.updateHealth(account, status, true);
     } finally {
+      if (status.settlementWaiting && ['ok', 'triggered', 'partial'].includes(status.status)) {
+        status.settlementWaiting = false;
+        status.settlementWaitUntil = 0;
+        status.settlementWaitAttempt = 0;
+        this.store.addEvent('info', '盘口结算等待结束，已恢复读取', accountId);
+      }
       finishDrawRead(status);
       if (status.loginTransitionScenes?.length) {
         try {
@@ -2696,7 +2758,7 @@ class MonitorService {
           this.store.addEvent('error', `${account.name}：${status.error}`, account.id);
           this.onChange();
         }));
-      } else if (this.rerunRequested.delete(accountId)) {
+      } else if (this.rerunRequested.delete(accountId) && !status.settlementWaiting) {
         status.nextCheckAt = null;
         this.onChange();
         const current = this.store.state.accounts.find((item) => item.id === accountId);
@@ -2704,7 +2766,7 @@ class MonitorService {
       } else {
         const networkRecovery = status.status === 'error' && status.failureKind === '网络或加载超时';
         status.nextCheckAt = status.status === 'market-closed' ? marketSchedule().nextReadAt : status.status === 'manual' ? null : status.status === 'market-waiting' || status.openingRecovery
-          ? new Date(Date.now() + 30000).toISOString()
+          ? new Date(Math.max(Date.now() + 30000, status.settlementWaitUntil || 0)).toISOString()
           : networkRecovery ? new Date(Date.now() + networkRecoveryDelay(status.consecutiveFailures)).toISOString()
           : new Date(Math.max(Date.now() + 1000, checkStarted + retryDelay(this.store.state.accounts.find(item => item.id === accountId) || account, status.status === 'partial' ? 0 : status.consecutiveFailures))).toISOString();
         if (status.branchRetryRound && ['ok', 'triggered', 'partial'].includes(status.status) && status.normalNextCheckAt) status.nextCheckAt = status.normalNextCheckAt;

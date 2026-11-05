@@ -219,3 +219,18 @@ test('explicit login-loss scene is read before navigating and gives a concrete r
   assert.match(client.status.sessionRecoveryReason, /明确提示其他地方/);
   assert.equal(client.status.loginTransitionScenes[0].phase, 'before-navigation');
 });
+
+test('branch page reconstruction shares one bounded timeout and never resets another client', async () => {
+  const client = new SiteClient({}, { agentUrl: 'https://example.invalid' });
+  const other = new SiteClient({}, {});
+  const untouched = {}; other.window = untouched;
+  client.branchPageLost = true; client.branchTimeoutMs = 10;
+  let destroyed = 0, opened = 0;
+  client.open = async () => {
+    opened++; client.window = { isDestroyed: () => false, destroy() { destroyed++; } };
+    await new Promise(() => {});
+  };
+  await assert.rejects(client.readBranchWithRecovery(['a']), { code: 'BRANCH_TIMEOUT' });
+  assert.equal(opened, 1); assert.equal(destroyed, 1);
+  assert.equal(other.window, untouched);
+});
