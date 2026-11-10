@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { PROFIT_METRIC } = require('./agent-profit');
+const { PROFIT_METRIC, specialProfitOwner, displayProfitPath } = require('./agent-profit');
 const { app, BrowserWindow, Menu, ipcMain, shell, dialog, clipboard, powerMonitor, net, session } = require('electron');
 const { DesktopHealth } = require('./desktop-health');
 const { AppExit } = require('./app-exit');
@@ -342,15 +342,17 @@ if (hasInstanceLock) app.whenReady().then(() => {
     return { securityCode: account.securityCode || '' };
   });
   ipcMain.handle('subagent-threshold:save', (_event, input) => {
-    const alertStep = optionalAmount(input.alertStep);
-    const deltaAlertStep = optionalAmount(input.deltaAlertStep);
+    let alertStep = optionalAmount(input.alertStep);
+    let deltaAlertStep = optionalAmount(input.deltaAlertStep);
     const profitAlertStep = optionalAmount(input.profitAlertStep);
     if (Number.isNaN(alertStep) || (alertStep !== null && alertStep <= 0)) throw new Error('提醒间隔必须是大于 0 的金额，留空表示关闭');
     if (Number.isNaN(deltaAlertStep) || (deltaAlertStep !== null && deltaAlertStep <= 0)) throw new Error('单次变动提醒必须是大于 0 的金额，留空表示关闭');
     if (Number.isNaN(profitAlertStep) || (profitAlertStep !== null && profitAlertStep <= 0)) throw new Error('盈亏档位必须是大于0的金额，留空关闭');
     const path = Array.isArray(input.path) ? input.path.map((part) => String(part).trim()) : [String(input.name || '').trim()];
     if (!path.length || path.some((part) => !part) || path.length > MAX_DESCENDANT_DEPTH) throw new Error(`只支持前 ${MAX_DESCENDANT_DEPTH} 级代理`);
-    const name = path.at(-1);
+    if (path.some(part => part.startsWith('@profit:')) && specialProfitOwner(path) === null) throw new Error('无效的盈亏项目');
+    if (specialProfitOwner(path) !== null) { alertStep = null; deltaAlertStep = null; }
+    const name = displayProfitPath(path).at(-1);
     const remark = String(input.remark || '').trim();
     if (remark.length > 100) throw new Error('备注最多 100 个字');
     const accountId = String(input.accountId || '');
@@ -373,7 +375,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
       else account.subagentThresholds.push(values);
     });
     monitor.updateSubagentAlertStep(accountId, path, alertStep, remark, deltaAlertStep, store.state.accounts.find(item => item.id === accountId)?.subagentThresholds.find(item => agentPathKey(item.path) === agentPathKey(path))?.profitAlertStep);
-    store.addEvent('success', `${path.join(' / ')}：备注和提醒设置已保存`, accountId);
+    store.addEvent('success', `${displayProfitPath(path).join(' / ')}：备注和提醒设置已保存`, accountId);
     publish();
     return { ok: true };
   });

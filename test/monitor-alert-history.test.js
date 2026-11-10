@@ -12,6 +12,7 @@ function fixture(state) {
     childValue: -350,
     childFailure: false,
     descendantReads: 0,
+    rootProfitRequirements: [],
     descendants: null,
   };
   const store = {
@@ -37,7 +38,7 @@ function fixture(state) {
       createSiteClient: () => ({
         get reportPeriod() { return context.period; },
         async open() {},
-        async readThisWeekSettlement() { return { value: context.parentValue, ...(context.profitSupported ? { profitSupported: true, profitValue: -9999 } : {}), agents: [{ name: 'parent', value: context.parentValue, turnover: context.parentTurnover }] }; },
+        async readThisWeekSettlement() { context.rootProfitRequirements.push(this.requireProfitForRead); return { value: context.parentValue, ...(context.profitSupported && !context.omitRootProfit ? { profitSupported: true, profitValue: context.rootProfit ?? -9999, replenishments: context.rootReplenishments || [] } : {}), agents: [{ name: 'parent', value: context.parentValue, turnover: context.parentTurnover }] }; },
         async readDescendantSettlement(path) {
           await context.beforeDescendant?.(path, service);
           context.descendantReads += 1;
@@ -893,7 +894,7 @@ test('profit-only fourth-level settings schedule the own total without displayin
   const alerts = [];
   const service = makeService(); service.sendTelegram = async (...args) => { alerts.push({ level: args[2], metric: args[9].metric }); };
   await service.check('account-1');
-  assert.equal(service.status('account-1').subagents.length, 4);
+  assert.equal(service.status('account-1').subagents.filter(row => !row.profitOnly).length, 4);
   assert.equal(service.status('account-1').subagents.at(-1).profitValue, -211448.76);
   assert.ok(alerts.length && alerts.every(a => a.metric === 'weekly-agent-profit-v1'));
   const reads = context.descendantReads;
@@ -922,7 +923,7 @@ test('profit respects quiet hours and resets its own week without touching recei
   assert.deepEqual(account.alertHistory, primaryHistory);
 });
 
-test('unconfigured own profit adds queries only when due, while shared reports and manual refresh remain fresh', async () => {
+test('unconfigured profit never adds daily queries, while shared reads, enabled reminders and manual scans stay fresh', async () => {
   const { store, context, makeService } = fixture(); context.profitSupported = true;
   store.state.accounts[0].subagentThresholds = [];
   context.descendants = new Map([
@@ -944,10 +945,18 @@ test('unconfigured own profit adds queries only when due, while shared reports a
   for (const row of store.state.accounts[0].agentSnapshot.agents) row.profitCheckedAt = new Date(Date.now() - 600001).toISOString();
   await service.check('account-1');
   stats = service.status('account-1').phaseTimings.profit;
-  assert.deepEqual([stats.queries, stats.sharedQueries, stats.extraQueries], [4,1,3]);
-  assert.equal(service.status('account-1').subagents.length, 4);
+  assert.deepEqual([stats.queries, stats.sharedQueries, stats.extraQueries], [1,1,0], 'old cached timestamps do not cause dedicated reads');
+  assert.equal(service.status('account-1').subagents.filter(row => !row.profitOnly).length, 4);
   await service.check('account-1', { manual: true });
   assert.equal(service.status('account-1').phaseTimings.profit.queries, 4);
+  store.state.accounts[0].subagentThresholds=[{path:['parent','child','third','fourth'],profitAlertStep:100}];
+  const reads=context.descendantReads;
+  await service.check('account-1');
+  assert.equal(context.descendantReads-reads,4,'newly configured profit target reads immediately without waiting for cache age');
+  store.state.accounts[0].subagentThresholds=[];
+  const before=context.descendantReads;
+  await service.check('account-1');
+  assert.equal(context.descendantReads-before,1,'disabling profit reminder stops dedicated reads immediately');
 });
 
 test('profit cost counts missing totals and failed attempts and retains specific field reasons', async () => {
@@ -956,13 +965,89 @@ test('profit cost counts missing totals and failed attempts and retains specific
   context.descendants=new Map([['parent',{value:0,profitValue:null,profitIssue:'invalid-value',agents:[]}]]);
   const service=makeService(); await service.check('account-1');
   let status=service.status('account-1');
-  assert.equal(status.subagents[0].profitIssue,'invalid-value');
+  assert.equal(status.subagents.find(row => row.name === 'parent').profitIssue,'invalid-value');
   assert.equal(status.phaseTimings.profit.missing,1);
   assert.equal(status.phaseTimings.profit.failures,0);
   assert.deepEqual(status.phaseTimings.profit.slowest.path,['parent']);
   context.childFailure=true; await service.check('account-1',{manual:true});
   status=service.status('account-1');
   assert.equal(status.phaseTimings.profit.failures,2);
-  assert.equal(status.subagents[0].profitIssue,'read-failed');
-  assert.equal(status.subagents[0].profitValue,null);
+  assert.equal(status.subagents.find(row => row.name === 'parent').profitIssue,'read-failed');
+  assert.equal(status.subagents.find(row => row.name === 'parent').profitValue,null);
+});
+
+test('root total and standalone replenishment profit have independent reminders, persist, and never create receivable alerts', async () => {
+  const { specialProfitPath, PROFIT_METRIC } = require('../electron/agent-profit');
+  const { store, context, makeService } = fixture(); context.profitSupported = true;
+  context.rootProfit = -250; context.rootReplenishments = [{name:'SELF(补货)',profitValue:130}];
+  const own = specialProfitPath('own'), rep = specialProfitPath('replenishment');
+  store.state.accounts[0].subagentThresholds = [{path:own, profitAlertStep:100, alertStep:1, deltaAlertStep:1}, {path:rep, profitAlertStep:100, alertStep:1}];
+  store.state.telegram = {mode:'legacy',botToken:'test',chatId:'test'};
+  let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  await service.check('account-1');
+  let rows = service.status('account-1').subagents.filter(r=>r.profitOnly);
+  assert.equal(rows.length,2); assert.deepEqual(rows.map(r=>r.profitValue),[-250,130]);
+  assert.ok(rows.every(r=>r.value===null && r.alertStep===null && !r.deltaAlertStep));
+  assert.equal(store.state.notificationOutbox.length,2);
+  assert.ok(store.state.notificationOutbox.every(n=>n.record.metric===PROFIT_METRIC && !n.text.includes('@profit:')));
+  assert.ok(store.state.notificationOutbox.some(n=>n.text.includes('本级合计')));
+  assert.ok(store.state.notificationOutbox.some(n=>n.text.includes('本级补货')));
+  service=makeService(); service.sendTelegram=MonitorService.prototype.sendTelegram;
+  await service.check('account-1'); assert.equal(store.state.notificationOutbox.length,2);
+  context.rootReplenishments=[]; await service.check('account-1');
+  const gone=service.status('account-1').subagents.find(r=>r.kind==='replenishment');
+  assert.equal(gone.profitValue,null); assert.equal(gone.noData,true);
+  assert.equal(store.state.notificationOutbox.length,2,'absent replenishment must not send zero-profit alert');
+  context.rootReplenishments=[{name:'SELF(补货)',profitValue:0}]; await service.check('account-1');
+  assert.equal(store.state.notificationOutbox.length,3,'a real zero remains valid');
+});
+
+test('fourth-level replenishment reminder schedules its owner report without navigating a fifth level', async () => {
+  const { specialProfitPath }=require('../electron/agent-profit');
+  const { store,context,makeService }=fixture(); context.profitSupported=true;
+  const owner=['parent','child','third','fourth'];
+  context.descendants=new Map([
+    ['parent',{value:0,profitValue:1,replenishments:[],agents:[{name:'child',value:2}]}],
+    ['parent/child',{value:0,profitValue:3,replenishments:[],agents:[{name:'third',value:4}]}],
+    ['parent/child/third',{value:0,profitValue:5,replenishments:[],agents:[{name:'fourth',value:6}]}],
+    [owner.join('/'),{value:0,profitValue:10,replenishments:[{name:'fourth(补货)',profitValue:-120}],agents:[{name:'fifth',value:999}]}],
+  ]);
+  store.state.accounts[0].subagentThresholds=[{path:specialProfitPath('replenishment',owner),profitAlertStep:100}];
+  const service=makeService(); await service.check('account-1'); const reads=context.descendantReads;
+  await service.check('account-1'); assert.equal(context.descendantReads-reads,4);
+  const rep=service.status('account-1').subagents.find(r=>r.kind==='replenishment');
+  assert.equal(rep.profitValue,-120); assert.equal(rep.profitStale,false);
+  assert.ok(service.status('account-1').subagents.every(r=>r.name!=='fifth'));
+  assert.deepEqual(store.state.accounts[0].agentSnapshot.agents.find(r=>r.kind==='replenishment').path,specialProfitPath('replenishment',owner));
+});
+
+
+test('root profit only forces verified profit fields when root or root replenishment reminders are enabled', async () => {
+  const { specialProfitPath }=require('../electron/agent-profit');
+  const { store,context,makeService }=fixture(); context.profitSupported=true;
+  store.state.accounts[0].subagentThresholds=[];
+  const service=makeService(); await service.check('account-1');
+  assert.equal(context.rootProfitRequirements.at(-1),false);
+  store.state.accounts[0].subagentThresholds=[{path:specialProfitPath('own'),profitAlertStep:100}];
+  await service.check('account-1'); assert.equal(context.rootProfitRequirements.at(-1),true);
+  store.state.accounts[0].subagentThresholds=[{path:specialProfitPath('replenishment'),profitAlertStep:100}];
+  await service.check('account-1'); assert.equal(context.rootProfitRequirements.at(-1),true);
+  store.state.accounts[0].subagentThresholds=[{path:['parent'],alertStep:100}];
+  await service.check('account-1'); assert.equal(context.rootProfitRequirements.at(-1),false);
+  await service.check('account-1',{manual:true}); assert.equal(context.rootProfitRequirements.at(-1),true);
+});
+
+
+test('opportunistic root profit omitted by a primary direct read preserves cached own and replenishment rows as stale', async () => {
+  const { store,context,makeService }=fixture(); context.profitSupported=true;
+  context.rootProfit=250; context.rootReplenishments=[{name:'SELF(补货)',profitValue:120}];
+  store.state.accounts[0].subagentThresholds=[];
+  const service=makeService(); await service.check('account-1');
+  context.omitRootProfit=true;
+  await service.check('account-1');
+  const rows=service.status('account-1').subagents.filter(r=>r.profitOnly);
+  assert.equal(rows.length,2);
+  assert.deepEqual(rows.map(r=>r.profitValue),[250,120]);
+  assert.ok(rows.every(r=>r.profitStale && r.notRefreshed));
+  assert.equal(context.rootProfitRequirements.at(-1),false);
 });

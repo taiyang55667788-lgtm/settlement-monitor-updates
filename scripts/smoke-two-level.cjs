@@ -81,6 +81,7 @@ app.whenReady().then(async () => {
     phase = 'reading root report';
     const root = await client.readCurrentSettlement();
     assert.deepEqual(root.agents.map(({ name, value }) => ({ name, value })), [{ name: 'parent-01', value: 540 }, { name: 'parent-02', value: 620 }]);
+    assert.deepEqual(root.replenishments, [{name:'SELF(补货)',profitValue:3}]);
     phase = 'reading first child report';
     const childrenA = await client.readDescendantSettlement(['parent-01']);
     assert.deepEqual(client.reportPeriod, week);

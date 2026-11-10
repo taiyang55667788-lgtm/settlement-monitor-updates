@@ -20,14 +20,11 @@ function splitReportRows(rows, minColumns = 9) {
     headerRows: source.slice(0, Math.max(1, firstData)),
     dataRows: source.slice(firstData)
       .filter((row) => row.length >= minColumns)
-      // This own-account summary contributes to the total, but is not a child.
-      .filter(row => !(row[0]?.section === 'Info_buhuo'
-        || (Number(row[0]?.colspan) > 1 && /[（(]补货[）)]$/.test(normalize(row[0]?.text)))))
-      .map((row) => row.flatMap((cell) => {
+      .map((row) => Object.assign(row.flatMap((cell) => {
         const values = [String(cell.text || '').trim()];
         const colspan = Math.max(1, Number(cell.colspan || 1));
         return values.concat(Array.from({ length: colspan - 1 }, () => ''));
-      })),
+      }), { replenishment: row[0]?.section === 'Info_buhuo' || (Number(row[0]?.colspan) > 1 && /[（(]补货[）)]$/.test(normalize(row[0]?.text))) })),
   };
 }
 
@@ -89,7 +86,7 @@ function parseSettlementTable({ headerRows, dataRows }, metric) {
   };
   if (column >= totalRow.length) throw new Error(`“${label}”列与报表数据不对齐，已停止提醒`);
   const agents = dataRows
-    .filter((row) => !normalize(row[0]).includes('合计'))
+    .filter((row) => !row.replenishment && !normalize(row[0]).includes('合计'))
     .map((row) => {
       const name = String(row[0] || '').trim();
       if (!name || column >= row.length) throw new Error('代理账号或金额列不完整，无法确认本周数据');
@@ -102,6 +99,7 @@ function parseSettlementTable({ headerRows, dataRows }, metric) {
     column,
     header: headers[column],
     raw: totalRow[column],
+    replenishments: dataRows.filter(row => row.replenishment).map(row => ({ name: String(row[0]).trim(), profitValue: readProfit(row) })),
     profitValue: readProfit(totalRow),
     profitSupported: profitColumn >= 0,
     profitIssue: profitColumns.length === 0 ? 'missing-column' : profitColumns.length > 1 ? 'ambiguous-column'
@@ -197,9 +195,10 @@ function applySubagentAlertSteps(agents, configurations) {
       ...agent,
       path,
       remark: String(custom?.remark || '').trim(),
-      alertStep: alertStepFromLegacy(custom),
+      alertStep: agent.profitOnly ? null : alertStepFromLegacy(custom),
+      ...(agent.profitOnly ? { deltaAlertStep: null } : {}),
       profitAlertStep: Number.isFinite(custom?.profitAlertStep) && custom.profitAlertStep > 0 ? custom.profitAlertStep : null,
-      ...(Number.isFinite(custom?.deltaAlertStep) && custom.deltaAlertStep > 0 ? { deltaAlertStep: custom.deltaAlertStep } : {}),
+      ...(!agent.profitOnly && Number.isFinite(custom?.deltaAlertStep) && custom.deltaAlertStep > 0 ? { deltaAlertStep: custom.deltaAlertStep } : {}),
       customized: Boolean(custom),
     };
   });

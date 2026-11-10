@@ -411,7 +411,7 @@ app.whenReady().then(async () => {
       if (!row.textContent.includes('-211,448.76') || !row.textContent.includes('本级报表合计')) throw Error('盈亏合计未正确显示');
       if (getComputedStyle(row.querySelector('.agent-profit strong')).color === getComputedStyle(row.querySelector('.subagent-value')).color) throw Error('盈亏颜色错误继承应收下线颜色');
       if (row.textContent.includes('上级交收')) throw Error('误增加上级交收');
-      if (!profitReadReason({profitIssue:'invalid-value'}).includes('格式异常') || !profitReadReason({profitIssue:'missing-column'}).includes('没有代理盈亏') || !profitReadReason({profitIssue:'not-refreshed'}).includes('10分钟')) throw Error('缺少明确的盈亏读取原因');
+      if (!profitReadReason({profitIssue:'invalid-value'}).includes('格式异常') || !profitReadReason({profitIssue:'missing-column'}).includes('没有代理盈亏') || !profitReadReason({profitIssue:'not-refreshed'}).includes('仅随已有报表更新')) throw Error('缺少明确的盈亏读取原因');
       readingDetailsAccountId = next.accounts[0].id; document.querySelector('#reading-dialog').showModal(); refreshReadingDetails();
       const details = document.querySelector('#reading-details-content').textContent;
       if (!details.includes('专门补读 3 次') || !details.includes('最慢合计查询：parent-01 / child-01') || !details.includes('不代表纯新增耗时')) throw Error('合计查询开销说明不完整');
@@ -429,6 +429,30 @@ app.whenReady().then(async () => {
     const profitSaved = new Promise(resolve => ipcMain.once('smoke:save', (_event, settings) => resolve(settings)));
     await win.webContents.executeJavaScript(`document.querySelector('.subagent-row [data-action="save-subagent"]').click()`);
     assert.equal((await profitSaved).profitAlertStep, '200000');
+    await win.webContents.executeJavaScript(`(() => {
+      thresholdDrafts.clear();
+      const next = structuredClone(appState);
+      next.accounts[0].subagents.unshift(
+        {name:'本级合计',path:['@profit:own'],kind:'own-profit',profitOnly:true,value:null,profitValue:-250,profitAlertStep:100,readAt:new Date().toISOString(),profitReadAt:new Date().toISOString()},
+        {name:'SELF(补货)',path:['@profit:replenishment:[]'],kind:'replenishment',profitOnly:true,value:null,profitValue:130,profitAlertStep:100,readAt:new Date().toISOString(),profitReadAt:new Date().toISOString()});
+      render(next);
+      for (const row of [...document.querySelectorAll('.subagent-row')].slice(0,2)) {
+        if (row.querySelector('.subagent-value').textContent.includes('应收下线')) throw Error('仅盈亏项目显示了应收下线');
+        if (row.querySelector('[data-field="alertStep"]').type !== 'hidden' || row.querySelector('[data-field="deltaAlertStep"]').type !== 'hidden') throw Error('仅盈亏项目暴露了应收设置');
+        if (row.querySelector('.tree-toggle')) throw Error('仅盈亏项目可以下钻');
+        if (row.textContent.includes('NaN')) throw Error('未建立档位状态时显示了无效数值');
+        if (!row.querySelector('[data-field="profitAlertStep"]')) throw Error('缺少独立盈亏档位');
+      }
+      document.querySelector('.subagent-row').scrollIntoView({block:'start'});
+      const rep=document.querySelectorAll('.subagent-row')[1];
+      rep.querySelector('details').open=true;
+      const input=rep.querySelector('[data-field="profitAlertStep"]'); input.value='200'; input.dispatchEvent(new Event('input',{bubbles:true}));
+    })()`);
+    await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    if (process.env.OWN_PROFIT_SCREENSHOT) fs.writeFileSync(process.env.OWN_PROFIT_SCREENSHOT,(await win.webContents.capturePage()).toPNG());
+    const repSaved = new Promise(resolve => ipcMain.once('smoke:save', (_event, settings) => resolve(settings)));
+    await win.webContents.executeJavaScript(`document.querySelectorAll('.subagent-row')[1].querySelector('[data-action="save-subagent"]').click()`);
+    const repSettings=await repSaved; assert.equal(repSettings.profitAlertStep,'200'); assert.equal(repSettings.alertStep,''); assert.equal(repSettings.deltaAlertStep,'');
     process.stdout.write('Four-level UI smoke test passed including independent profit settings and drafts\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

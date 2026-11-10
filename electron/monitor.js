@@ -12,7 +12,7 @@ const { loadLoginPage } = require('./login-page-load');
 const { captureFailureScene, retainedScenes, sceneLoginReason } = require('./failure-scene');
 const { captchaImageScript, refreshLoadedCaptcha } = require('./captcha-refresh');
 const { guardSettlementDialogs, destroyMarketWindow, settlementDelay } = require('./settlement-dialog');
-const { PROFIT_METRIC, profitMetric, historyFields, hasReminder, profitReadDue } = require('./agent-profit');
+const { PROFIT_METRIC, profitMetric, historyFields, hasReminder, profitRequiredForPath, specialProfitPath, specialProfitOwner, reminderOwnerPath, displayProfitPath } = require('./agent-profit');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay, networkRecoveryDelay } = require('./continuous-monitor');
@@ -1645,7 +1645,7 @@ class MonitorService {
       }
       if (['report', 'top', 'check'].includes(request.type)) await Promise.allSettled(requested.map((account) => this.check(account.id)));
       if (request.type === 'alerts') {
-        const rows = (this.store.state.alertRecords || []).slice(0, 10).map((item) => `${item.status === 'sent' ? '✅' : '❌'} ${item.accountName} / ${(item.agentPath || []).join(' / ')} · ${item.alertType === 'delta' ? `变化 ${item.change > 0 ? '+' : ''}${item.change}` : `金额 ${item.value > 0 ? '+' : ''}${item.value}`} · ${new Date(item.time).toLocaleString('zh-CN')}`);
+        const rows = (this.store.state.alertRecords || []).slice(0, 10).map((item) => `${item.status === 'sent' ? '✅' : '❌'} ${item.accountName} / ${displayProfitPath(item.agentPath || []).join(' / ')} · ${item.alertType === 'delta' ? `变化 ${item.change > 0 ? '+' : ''}${item.change}` : `金额 ${item.value > 0 ? '+' : ''}${item.value}`} · ${new Date(item.time).toLocaleString('zh-CN')}`);
         await respond(`🧾 最近提醒记录\n${rows.join('\n') || '暂无记录'}`, { replyMarkup: panel }); return;
       }
       if (request.type === 'top') {
@@ -1661,9 +1661,9 @@ class MonitorService {
         const status = this.status(account.id);
         const period = status.reportPeriod ? `${status.reportPeriod.start}—${status.reportPeriod.end}` : '未读取';
         const agents = status.subagents || [];
-        const fresh = agents.filter((agent) => !agent.stale);
-        const stale = agents.filter((agent) => agent.stale);
-        const values = (fresh.length ? fresh : stale).map((agent) => `${agent.path.join(' / ')} ${agent.noData ? '本周暂无数据' : `${agent.value > 0 ? '+' : ''}${agent.value}`}${agent.stale ? '（上次成功读取，已过期）' : ''}`).slice(0, 12);
+        const fresh = agents.filter(agent => agent.profitOnly ? !agent.profitStale : !agent.stale);
+        const stale = agents.filter(agent => agent.profitOnly ? agent.profitStale : agent.stale);
+        const values = (fresh.length ? fresh : stale).map((agent) => `${displayProfitPath(agent.path).join(' / ')} ${agent.noData ? '本周暂无数据' : agent.profitOnly ? `盈亏结果：${Number.isFinite(agent.profitValue) ? `${agent.profitValue > 0 ? '+' : ''}${agent.profitValue}` : '未取得'}` : `${agent.value > 0 ? '+' : ''}${agent.value}`}${(agent.profitOnly ? agent.profitStale : agent.stale) ? '（上次成功读取，已过期）' : ''}`).slice(0, 12);
         const refreshState = !fresh.length && (status.status === 'error' || status.status === 'manual' || stale.length)
           ? `本次刷新失败：${status.error || '读取失败'}；以下为上次成功读取的过期数据`
           : stale.length
@@ -1796,7 +1796,7 @@ class MonitorService {
       const cached = snapshotMatchesMetric && Array.isArray(snapshot?.agents) ? snapshot.agents : [];
       this.runtime.set(accountId, {
         status: 'waiting',
-        subagents: applySubagentAlertSteps(cached.map((agent) => ({ ...agent, stale: true, staleReason: 'waiting' })), account?.subagentThresholds),
+        subagents: applySubagentAlertSteps(cached.map((agent) => ({ ...agent, stale: true, profitStale: true, staleReason: 'waiting' })), account?.subagentThresholds),
         subagentCount: snapshotMatchesMetric ? cached.filter((agent) => agent.path?.length === 1).length : null,
         reportPeriod: snapshotMatchesMetric ? snapshot?.period || null : null,
         consecutiveFailures: account?.monitorHealth?.consecutiveFailures || 0,
@@ -2319,7 +2319,7 @@ class MonitorService {
     client.onProgress = this.onChange;
     client.onSettlement = () => this.noteSettlementDialog(accountId);
     client.reportReadTimeoutMs = this.rootReportTimeoutMs;
-    client.requireProfitForRead = false;
+    client.requireProfitForRead = manual || this.fullScanRequested.has(accountId) || profitRequiredForPath([], account.subagentThresholds || []);
     const branchRead = async (path, { extra = false, forceProfit = status.profitSupported === true } = {}) => {
       client.requireProfitForRead = forceProfit;
       const stats = status.phaseTimings?.profit;
@@ -2393,7 +2393,7 @@ class MonitorService {
         && cachedSnapshot?.period?.start === client.reportPeriod.start && cachedSnapshot?.period?.end === client.reportPeriod.end;
       status.branchRetryRound = retryOnly;
       const checkpoint = scanState(storedAccount.scanCheckpoint, metric.id, periodKey);
-      const fullScan = !retryOnly && (this.fullScanRequested.has(accountId) || Boolean(storedAccount.scanCheckpoint) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1 || (profitEnabled && cachedSnapshot?.profitScopeVersion !== 1));
+      const fullScan = !retryOnly && (this.fullScanRequested.has(accountId) || Boolean(storedAccount.scanCheckpoint) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1 || (profitEnabled && cachedSnapshot?.profitScopeVersion !== 2));
       const leafCache = storedAccount.leafCache?.period === periodKey && storedAccount.leafCache.metric === metric.id
         ? structuredClone(storedAccount.leafCache) : { period: periodKey, metric: metric.id, paths: {} };
       status.scanMode = retryOnly ? '到期分支补读' : fullScan ? '全量扫描' : '按提醒读取';
@@ -2444,27 +2444,52 @@ class MonitorService {
       const retryBranches = [];
       const retriedBranches = new Set();
       const publishProfit = async (path, ownReport) => {
-        if (!profitEnabled) return;
-        const parent = agents.find(item => agentPathKey(item.path) === agentPathKey(path));
-        if (!parent || !Object.hasOwn(ownReport, 'profitValue')) return;
-        parent.profitCheckedAt = new Date().toISOString();
-        parent.profitIssue = ownReport.profitIssue || (Number.isFinite(ownReport.profitValue) ? '' : 'missing-column');
-        parent.profitValue = Number.isFinite(ownReport.profitValue) ? ownReport.profitValue : null;
-        parent.profitReadAt = Number.isFinite(parent.profitValue) ? new Date().toISOString() : '';
-        parent.profitStale = !Number.isFinite(parent.profitValue);
+        if (metric.id !== 'receivable-downline' || !Object.hasOwn(ownReport, 'profitValue')) return;
+        const now = new Date().toISOString();
+        let parent = path.length ? agents.find(item => agentPathKey(item.path) === agentPathKey(path)) : agents.find(item => item.kind === 'own-profit');
+        if (!parent && !path.length) {
+          parent = { name: '本级合计', path: specialProfitPath('own'), kind: 'own-profit', profitOnly: true, value: null };
+          agents.unshift(parent);
+        }
+        const fresh = [];
+        if (parent) {
+          Object.assign(parent, { profitCheckedAt: now, profitIssue: ownReport.profitIssue || (Number.isFinite(ownReport.profitValue) ? '' : 'missing-column'),
+            profitValue: Number.isFinite(ownReport.profitValue) ? ownReport.profitValue : null,
+            profitReadAt: Number.isFinite(ownReport.profitValue) ? now : '', profitStale: !Number.isFinite(ownReport.profitValue),
+            ...(parent.profitOnly ? { readAt: now, stale: false } : {}) });
+          fresh.push(parent);
+        }
+        // Supplementary rows belong to this report, not to its descendant list.
+        if (Array.isArray(ownReport.replenishments)) {
+          const repPath = specialProfitPath('replenishment', path);
+          const key = agentPathKey(repPath);
+          const rows = ownReport.replenishments;
+          let rep = agents.find(item => agentPathKey(item.path) === key);
+          if (!rep) { const old = cachedAgents.find(item => item.kind === 'replenishment' && agentPathKey(item.path) === key); if (old) { rep = { ...old }; agents.push(rep); } }
+          if (rows.length === 1) {
+            if (!rep) { rep = { name: [...path, rows[0].name].join(' / '), path: repPath, kind: 'replenishment', profitOnly: true, value: null }; agents.push(rep); }
+            Object.assign(rep, { profitValue: rows[0].profitValue, readAt: now, stale: false, profitCheckedAt: now,
+              profitReadAt: Number.isFinite(rows[0].profitValue) ? now : '', profitStale: !Number.isFinite(rows[0].profitValue),
+              profitIssue: Number.isFinite(rows[0].profitValue) ? '' : 'invalid-value', noData: false });
+            fresh.push(rep);
+          } else if (rep) {
+            // A complete report with no supplementary row is not a zero-profit sample.
+            Object.assign(rep, { profitValue: null, profitStale: true, profitIssue: rows.length ? 'ambiguous-column' : 'report-unavailable', profitCheckedAt: now, noData: !rows.length, stale: false });
+            fresh.push(rep);
+          }
+        }
         configuredSubagents = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
-        const batch = applySubagentAlertSteps([parent], configuredSubagents);
+        const batch = applySubagentAlertSteps(fresh, configuredSubagents);
         anyTriggered = await this.processProfitBatch(account, status, client.reportPeriod, revision, batch, notificationFailures) || anyTriggered;
         status.subagents = applySubagentAlertSteps(agents, configuredSubagents);
         this.onChange();
       };
+      await publishProfit([], report);
       const needsPrimaryBranch = path => path.length < MAX_DESCENDANT_DEPTH && (fullScan || path.length === 1 || configuredSubagents.some(setting => {
-        const target = setting.path || [setting.name];
+        const target = reminderOwnerPath(setting);
         return hasReminder(setting) && target.length > path.length && path.every((part, index) => target[index] === part);
       }));
-      const profitDue = path => profitEnabled && (fullScan || manual || profitReadDue(
-        agents.find(agent => agentPathKey(agent.path) === agentPathKey(path)),
-        configuredSubagents.find(setting => agentPathKey(setting.path || [setting.name]) === agentPathKey(path))));
+      const profitDue = path => profitEnabled && (fullScan || manual || profitRequiredForPath(path, configuredSubagents));
       const needsBranch = path => !retryOnly && (needsPrimaryBranch(path) || profitDue(path));
       const branches = metric.readsDescendants !== false ? retryOnly
         ? Object.entries(status.branchFailures).filter(([, failure]) => failure.nextAt <= Date.now()).map(([key]) => JSON.parse(key))
@@ -2503,17 +2528,18 @@ class MonitorService {
         const settings = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
         if (!settings.some(hasReminder)) return;
         status.stage = '全量扫描中，优先更新提醒代理'; this.onChange();
-        client.requireProfitForRead = false;
+        client.requireProfitForRead = profitRequiredForPath([], settings);
         const root = await read(() => client.readThisWeekSettlement());
         if (`${client.reportPeriod.start}/${client.reportPeriod.end}` !== periodKey) throw new Error('扫描过程中结算周已切换，等待下一轮重新读取');
         const rootFresh = root.agents.map(item => ({ ...item, path: [item.name], readAt: new Date().toISOString(), stale: false }));
         const roots = new Set(rootFresh.map(item => item.name));
-        for (let i = agents.length - 1; i >= 0; i--) if (!roots.has(agents[i].path[0])) agents.splice(i, 1);
+        for (let i = agents.length - 1; i >= 0; i--) if (!agents[i].profitOnly && !roots.has(agents[i].path[0])) agents.splice(i, 1);
         for (const item of rootFresh) {
           const old = agents.find(agent => agentPathKey(agent.path) === agentPathKey(item.path));
           if (old) Object.assign(old, item); else { agents.push(item); branches.push(item.path); }
         }
         await publishBatch(rootFresh);
+        await publishProfit([], root);
         for (const path of priorityPaths(settings)) {
           if (!this.isCurrentCheck(accountId, revision)) return;
           if (!agents.some(item => agentPathKey(item.path) === agentPathKey(path))) continue;
@@ -2631,7 +2657,7 @@ class MonitorService {
       if (metric.readsDescendants !== false) {
         const refreshed = new Set(status.phaseTimings.branches.filter(item => !item.error).map(item => agentPathKey(item.path)));
         refreshed.add(agentPathKey([]));
-        addNoDataTargets(agents, configuredSubagents, refreshed, new Date().toISOString());
+        addNoDataTargets(agents, configuredSubagents.filter(setting => specialProfitOwner(setting.path) === null), refreshed, new Date().toISOString());
         // An absent sample interrupts consecutive confirmations without resetting the ledger.
         for (const agent of agents.filter(item => item.noData)) {
           for (const key of Object.keys(status.alertCandidates || {})) {
@@ -2640,6 +2666,13 @@ class MonitorService {
           }
         }
       }
+      for (const cached of cachedAgents.filter(item => item.profitOnly)) {
+        if (agents.some(item => agentPathKey(item.path) === agentPathKey(cached.path))) continue;
+        const owner = specialProfitOwner(cached.path);
+        if (owner === null || (owner.length && !agents.some(item => agentPathKey(item.path) === agentPathKey(owner)))) continue;
+        agents.push({ ...cached, ...retainedProfit(cached.path), stale: true, notRefreshed: true, staleReason: 'on-demand' });
+      }
+      await this.processProfitBatch(account, status, client.reportPeriod, revision, applySubagentAlertSteps(agents.filter(item => item.profitOnly && item.profitStale).map(item => ({ ...item, profitValue: null })), configuredSubagents), notificationFailures);
       if (!fullScan) {
         // Keep unqueried descendants as explicitly stale structure; refreshed parent lists
         // prune agents which no longer exist, without evaluating cached amounts for alerts.
@@ -2673,8 +2706,8 @@ class MonitorService {
             period: client.reportPeriod,
             metric: metric.id,
             profitSupported: profitEnabled,
-            profitScopeVersion: profitEnabled && fullScan && !childErrors.length ? 1 : cachedSnapshot?.profitScopeVersion,
-            agents: agents.map(({ name, path, value, noData, turnover, readAt, childCount, stale, notRefreshed, staleReason, profitValue, profitReadAt, profitStale, profitIssue, profitCheckedAt }) => ({ name, path, value, profitValue, profitReadAt, profitStale, profitIssue, profitCheckedAt, noData: Boolean(noData), stale: Boolean(stale), staleReason, notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
+            profitScopeVersion: profitEnabled && fullScan && !childErrors.length ? 2 : cachedSnapshot?.profitScopeVersion,
+            agents: agents.map(({ name, path, value, kind, profitOnly, noData, turnover, readAt, childCount, stale, notRefreshed, staleReason, profitValue, profitReadAt, profitStale, profitIssue, profitCheckedAt }) => ({ name, path, value, ...(profitOnly ? { kind, profitOnly } : {}), profitValue, profitReadAt, profitStale, profitIssue, profitCheckedAt, noData: Boolean(noData), stale: Boolean(stale), staleReason, notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
           };
           if (fullScan && !childErrors.length) delete current.scanCheckpoint;
           const point = { time: status.lastCheckedAt, metric: metric.id, agents: agents.filter((item) => !item.stale && Date.parse(item.readAt) >= checkStarted && Number.isFinite(item.value)).map(({ path, value }) => ({ path, value })) };
@@ -2732,7 +2765,7 @@ class MonitorService {
       }
       if (error.code === 'READ_INTERRUPTED' || !this.isCurrentCheck(accountId, revision)) {
         status.status = 'recovering';
-        status.subagents = (status.subagents || []).map(agent => ({ ...agent, stale: true }));
+        status.subagents = (status.subagents || []).map(agent => ({ ...agent, stale: true, profitStale: true }));
         return;
       }
       if (this.pauseForMarket(account, status)) return;
@@ -2762,7 +2795,7 @@ class MonitorService {
         : `${status.stage || '检查过程'}：${detail}`;
       if (manualRequired) status.error += '；请盘内查看完成验证后关闭窗口，或更正账号后点击刷新';
       status.lastCheckedAt = new Date().toISOString();
-      status.subagents = (status.subagents || []).map((agent) => ({ ...agent, stale: true, staleReason: 'failed' }));
+      status.subagents = (status.subagents || []).map((agent) => ({ ...agent, stale: true, profitStale: true, staleReason: 'failed' }));
       status.alertCandidates = {};
       if (error.code === 'REPORT_PAGE_TIMEOUT' || error.code === 'READ_WATCHDOG') {
         status.degradedUntil = new Date(Date.now() + retryDelay(account, Math.max(1, Number(status.consecutiveFailures || 0) + 1))).toISOString();
@@ -2995,7 +3028,7 @@ class MonitorService {
     const direction = (value < 0 ? '🔴' : '🔵')
       + ((previousLevel !== 0 || returnedFromZero) && level !== previousLevel ? level > previousLevel ? '🔵' : '🔴' : '');
     const signedValue = `${value > 0 ? '+' : ''}${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    const displayPath = (remark ? `（${remark}）` : '') + path.join(' / ');
+    const displayPath = (remark ? `（${remark}）` : '') + displayProfitPath(path).join(' / ');
     const text = [
       `${direction} ${metric.valueLabel === '本周应收下线' ? '交收提醒' : `${metric.valueLabel}提醒`}${notification.initialSummary ? '（首次读取汇总）' : ''}`,
       `账号：${account.name}`,

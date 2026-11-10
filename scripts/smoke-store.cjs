@@ -99,12 +99,18 @@ app.whenReady().then(() => {
     assert.equal(fs.readFileSync(`${durable.filePath}.backup`, 'utf8').includes('fixture-token'), false);
     recovered.update(data => {
       data.accounts[0].subagentThresholds[0].profitAlertStep = 100000;
+      data.accounts[0].subagentThresholds.push({name:'本级合计',path:['@profit:own'],profitAlertStep:100,alertStep:null}, {name:'本级补货',path:['@profit:replenishment:["a","b","c","d"]'],profitAlertStep:200,alertStep:null});
+      data.accounts[0].agentSnapshot={metric:'receivable-downline',agents:[{name:'本级合计',path:['@profit:own'],kind:'own-profit',profitOnly:true,profitValue:-250},{name:'四级补货',path:['@profit:replenishment:["a","b","c","d"]'],kind:'replenishment',profitOnly:true,profitValue:120}]};
       data.accounts[0].profitAlertHistory = { period: '2026-09-14/2026-09-20', metric: 'weekly-agent-profit-v1', agents: { [alertLedgerKey(['parent-01'], 100000)]: { currentLevel: -2 } } };
     });
     const profitReopened = new SecureStore(directory); profitReopened.load();
     assert.equal(profitReopened.state.accounts[0].subagentThresholds[0].profitAlertStep, 100000);
     assert.equal(profitReopened.state.accounts[0].profitAlertHistory.agents[alertLedgerKey(['parent-01'], 100000)].currentLevel, -2);
     assert.equal(profitReopened.state.notificationOutbox.length, 1);
+    assert.equal(profitReopened.state.accounts[0].subagentThresholds.find(x=>x.path[0]==='@profit:own').profitAlertStep,100);
+    assert.equal(profitReopened.state.accounts[0].subagentThresholds.find(x=>x.name==='本级补货').profitAlertStep,200);
+    assert.equal(profitReopened.state.accounts[0].agentSnapshot.agents[1].kind,'replenishment');
+    assert.equal(profitReopened.state.accounts[0].agentSnapshot.agents[0].profitOnly,true);
     recovered.flush();
     process.stdout.write('Agent settings migration and persistence smoke test passed\n');
   } catch (error) {

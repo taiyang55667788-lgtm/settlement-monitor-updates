@@ -221,10 +221,12 @@ test('own replenishment summary stays in the total but is never discovered as a 
   const headers = [[...['代理账号', '名称', '低频余额', '高频余额', '笔数', '会员数', '下注金额', '有效金额'].map(t => cell(t,1,2)), cell('会员输赢',3), cell('代理 输赢',9), cell('上交货量',1,2), cell('上级交收',1,2)], ['输赢','退水','盈亏结果','应收下线','占成','实占金额','实占结果','实占退水','赚水','赚赔','占货比','盈亏结果'].map(t => cell(t))];
   const ordinary = Array(22).fill('0'); ordinary[0]='agent'; ordinary[11]='100'; ordinary[19]='30';
   const replenishment = [cell('SELF(补货)',4,1,'Info_buhuo'), ...Array.from({length:18},(_,i)=>cell(i===15?'-100':'0'))];
+  replenishment[8].text = ''; // No receivable amount exists on this independent row.
   const total = [cell('合计：1行',4), ...Array.from({length:18},(_,i)=>cell(i===7?'100':i===15?'-70':'0'))];
   const report = parseSettlementTable(splitReportRows([...headers, ordinary.map(t => cell(t)), replenishment, total]));
   assert.deepEqual(report.agents, [{ name:'agent', value:100, profitRowValue:30 }]);
   assert.equal(report.profitValue,-70);
+  assert.deepEqual(report.replenishments, [{name:'SELF(补货)',profitValue:-100}]);
   const nameOnly = ordinary.map(t => cell(t)); nameOnly[0].text='代理(补货)';
   assert.equal(parseSettlementTable(splitReportRows([...headers,nameOnly,total])).agents[0].name,'代理(补货)');
   const noChildren = parseSettlementTable(splitReportRows([...headers,replenishment,total]));

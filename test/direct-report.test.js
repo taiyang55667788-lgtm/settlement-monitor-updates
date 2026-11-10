@@ -112,3 +112,16 @@ test('replenishment category records count toward completeness only when proven 
     assert.throws(()=>validateData(changed, period, ['root','parent']));
   }
 });
+
+test('direct replenishment profit must match its own DOM row and is returned independently of the total', async () => {
+  const d=data(); d.sum.profitTotal=-211448.76; d.sum.SumList[0].agentProfit=-209852.65;
+  const rep={orgName:'parent(补货)',orgId:'parent-id',isBuHuo:1,agentProfit:-1596.11};
+  d.sum.SumList_buhuo=[rep]; d.sum.A_buhuo=[rep]; d.sum.B_buhuo=[rep]; d.total=4;
+  const shown={value:20,profitValue:-211448.76,agents:[{name:'child',value:20,profitRowValue:-209852.65}],replenishments:[{name:rep.orgName,profitValue:-1596.11}]};
+  const reader=new DirectReportReader({fetch:async()=>new Response(html(d))},'https://example.test',stats(),20);
+  assert.equal(reader.learn(['parent'],period,request(),d,shown,['root','parent']),true);
+  assert.deepEqual((await reader.read(['parent'],period,{requireProfit:true})).replenishments,shown.replenishments);
+  shown.replenishments[0].profitValue=999;
+  reader.learn(['parent'],period,request(),d,shown,['root','parent']);
+  assert.equal(await reader.read(['parent'],period,{requireProfit:true}),null);
+});

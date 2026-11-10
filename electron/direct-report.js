@@ -82,6 +82,9 @@ function learnProfitMapping(data, displayed) {
   const fields = Object.keys(rows[0]).filter(key => rows.every(row => Number.isFinite(row[key]) && row[key] === displayedByName.get(row.orgName)));
   // Equal zero/same-valued fields are ambiguous. Stay on the validated DOM.
   if (totals.length !== 1 || fields.length !== 1 || totals[0] === 'sumSubResult' || fields[0] === 'subResult') return null;
+  const supplementary = data.sum.SumList_buhuo || [];
+  const shown = displayed.replenishments || [];
+  if (supplementary.length !== shown.length || supplementary.some(item => !shown.some(x => x.name === item.orgName && Number.isFinite(x.profitValue) && x.profitValue === item[fields[0]]))) return null;
   return { total: totals[0], row: fields[0] };
 }
 
@@ -160,6 +163,8 @@ class DirectReportReader {
       if (template.profitMapping) {
         const { total, row } = template.profitMapping;
         if (!Number.isFinite(data.sum[total]) || data.sum.SumList.some(item => !Number.isFinite(item[row]))) throw invalid();
+        if ((data.sum.SumList_buhuo || []).some(item => !Number.isFinite(item[row]))) throw invalid();
+        result.replenishments = (data.sum.SumList_buhuo || []).map(item => ({ name: item.orgName, profitValue: item[row] }));
         result.profitValue = data.sum[total]; result.profitSupported = true; result.profitIssue = '';
         result.agents = result.agents.map((agent, index) => ({ ...agent, profitRowValue: data.sum.SumList[index][row] }));
       }

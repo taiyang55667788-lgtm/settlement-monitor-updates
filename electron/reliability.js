@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 const { alertLedgerKey, recordAlertLevel } = require('./alert-ledger');
 const { telegramFault } = require('./status-detail');
-const { historyFields, hasReminder } = require('./agent-profit');
+const { historyFields, hasReminder, reminderOwnerPath } = require('./agent-profit');
 
 function recipientKey(telegram = {}) {
   const identity = telegram.mode === 'pairing' && telegram.pairing?.paired && telegram.pairing.token
@@ -32,8 +32,8 @@ function freezeAmountDots(data, item) {
 
 function importantBranch(path, settings = []) {
   return settings.some(item => hasReminder(item)
-    && (item.path || [item.name]).length >= path.length
-    && path.every((part, i) => part === (item.path || [item.name])[i]));
+    && reminderOwnerPath(item).length >= path.length
+    && path.every((part, i) => part === reminderOwnerPath(item)[i]));
 }
 
 // Only a successfully validated, complete parent report can prove absence.

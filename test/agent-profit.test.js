@@ -41,14 +41,17 @@ test('public profit reminder state and pending/sent history never mix with recei
   assert.equal(row.profitAlert.stale, false, 'fresh own profit does not inherit stale receivable status');
 });
 
-test('unconfigured profit refresh interval includes the boundary, missing data attempts, clock rollback and enabled reminders', () => {
-  const { profitReadDue, PROFIT_REFRESH_MS } = require('../electron/agent-profit');
-  const now = Date.now();
-  const recent = { profitCheckedAt: new Date(now - PROFIT_REFRESH_MS + 1).toISOString() };
-  assert.equal(profitReadDue(recent, {}, now), false);
-  assert.equal(profitReadDue({ profitCheckedAt: new Date(now - PROFIT_REFRESH_MS).toISOString() }, {}, now), true);
-  assert.equal(profitReadDue(recent, { profitAlertStep: 100 }, now), true);
-  assert.equal(profitReadDue({ profitValue: null, ...recent }, {}, now), false);
-  assert.equal(profitReadDue({ profitCheckedAt: 'bad' }, {}, now), true);
-  assert.equal(profitReadDue({ profitCheckedAt: new Date(now + 1000).toISOString() }, {}, now), true);
+test('dedicated profit reads depend on enabled reminders, never on elapsed time or zero and missing values', () => {
+  const { profitReadDue, profitRequiredForPath, specialProfitPath } = require('../electron/agent-profit');
+  for (const agent of [{}, {profitValue:0}, {profitValue:null}, {profitCheckedAt:'bad'}, {profitReadAt:'2020-01-01T00:00:00Z'}]) {
+    assert.equal(profitReadDue(agent, {}), false);
+    assert.equal(profitReadDue(agent, {alertStep:100}), false);
+    assert.equal(profitReadDue(agent, {profitAlertStep:100}), true);
+    assert.equal(profitReadDue(agent, {profitAlertStep:null}), false);
+  }
+  assert.equal(profitRequiredForPath([], [{path:specialProfitPath('own'),profitAlertStep:100}]),true);
+  assert.equal(profitRequiredForPath([], [{path:specialProfitPath('replenishment'),profitAlertStep:100}]),true);
+  const deep=['a','b','c','d'];
+  assert.equal(profitRequiredForPath(deep,[{path:specialProfitPath('replenishment',deep),profitAlertStep:100}]),true);
+  assert.equal(profitRequiredForPath(deep,[{path:deep,alertStep:100}]),false);
 });
