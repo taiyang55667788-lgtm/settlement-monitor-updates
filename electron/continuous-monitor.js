@@ -1,4 +1,5 @@
 const CACHE_MS = 6 * 60 * 60 * 1000;
+const { hasReminder } = require('./agent-profit');
 
 function scanState(previous, metric, period, now = Date.now()) {
   if (previous?.metric === metric && previous.period === period && now - previous.startedAt < CACHE_MS) return previous;
@@ -6,17 +7,17 @@ function scanState(previous, metric, period, now = Date.now()) {
 }
 
 function branchHasTarget(path, settings) {
-  return settings.some(item => (Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0)
-    && (item.path || [item.name]).length > path.length
+  return settings.some(item => hasReminder(item)
+    && ((item.path || [item.name]).length > path.length || (Number(item.profitAlertStep) > 0 && (item.path || [item.name]).length === path.length))
     && path.every((part, i) => part === (item.path || [item.name])[i]));
 }
 
 function priorityPaths(settings) {
   const paths = new Map();
   for (const item of settings) {
-    if (!(Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0)) continue;
+    if (!hasReminder(item)) continue;
     const target = item.path || [item.name];
-    for (let depth = 1; depth < target.length && depth < 4; depth++) {
+    for (let depth = 1; depth <= (Number(item.profitAlertStep) > 0 ? target.length : target.length - 1) && depth <= 4; depth++) {
       const path = target.slice(0, depth); paths.set(JSON.stringify(path), path);
     }
   }

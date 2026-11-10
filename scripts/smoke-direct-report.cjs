@@ -60,6 +60,10 @@ app.whenReady().then(async () => {
       const name=['first','second','third','fourth'][q.path.length];
       const value=100*(q.path.length+1);
       const d={State:1,total:2,sdate:q.startDate,edate:q.endDate,orgLevel:['fixture',...q.path].map((loginId,i)=>({loginId,orgId:'id-'+loginId,level:3+i})),sum:{Lotterys:['A','B'],A:[{orgName:name}],B:[{orgName:name}],sumSubResult:value,SumList:[{orgName:name,subResult:value}]}};
+      if (!q.path.length) {
+        const own = { orgName: 'fixture(补货)', orgId: 'id-fixture', isBuHuo: 1, subResult: 0 };
+        d.sum.SumList_buhuo = [{ ...own }]; d.sum.A_buhuo = [{ ...own }]; d.sum.B_buhuo = [{ ...own }]; d.total = 4;
+      }
       res.end(table(name,value)+`<script>var respData = ${JSON.stringify(d)};</script>`); return;
     }
     res.statusCode=404;res.end();
@@ -91,7 +95,7 @@ app.whenReady().then(async () => {
     assert.equal(client.status.directRead.fallbacks,1);
     assert.equal((await client.readDescendantSettlement(['first'])).value,200);
     assert.equal(client.status.directRead.attempts,1,'failing direct transport stays disabled this round');
-    await assert.rejects(client.readDescendantSettlement(['first','second','third','fourth']),/四级/);
+    await assert.rejects(client.readDescendantSettlement(['first','second','third','fourth','fifth']),/四级/);
     await client.close(); failDirect=false;
     phase='relearning after fallback and safely recovering a failed direct child';
     client=create(); await client.readThisWeekSettlement(); await client.readDescendantSettlement(['first']); await client.close();

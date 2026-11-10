@@ -6,6 +6,7 @@ const { recipientKey } = require('./reliability');
 const { DEFAULT_UPDATE_FEED_URL, migrateUpdateFeedUrl } = require('./update-feed');
 const { alertStepFromLegacy, agentPath } = require('./report-parser');
 const { alertLedgerKey, bufferedAlertLevel } = require('./alert-ledger');
+const { PROFIT_METRIC } = require('./agent-profit');
 const { retainedScenes } = require('./failure-scene');
 const { accountSystemId, accountBaseUrl, crownLoginEntryId, crownUrl, metricForAccount } = require('./monitor-systems');
 
@@ -76,7 +77,7 @@ class SecureStore {
           monitorMetric: metricForAccount({ systemType, crownLoginEntry }).id,
           drawTriggerEnabled: systemType === 'system-166' && account.drawTriggerEnabled !== false,
         subagentThresholds: Array.isArray(account.subagentThresholds)
-          ? account.subagentThresholds.map((item) => ({ name: item.name, path: agentPath(item), remark: String(item.remark || '').trim(), alertStep: alertStepFromLegacy(item), deltaAlertStep: Number.isFinite(item.deltaAlertStep) && item.deltaAlertStep > 0 ? item.deltaAlertStep : null }))
+          ? account.subagentThresholds.map((item) => ({ name: item.name, path: agentPath(item), remark: String(item.remark || '').trim(), alertStep: alertStepFromLegacy(item), profitAlertStep: Number.isFinite(item.profitAlertStep) && item.profitAlertStep > 0 ? item.profitAlertStep : null, deltaAlertStep: Number.isFinite(item.deltaAlertStep) && item.deltaAlertStep > 0 ? item.deltaAlertStep : null }))
           : [],
         expandedAgentPaths: Array.isArray(account.expandedAgentPaths) ? account.expandedAgentPaths.filter(Array.isArray) : [],
         };
@@ -188,11 +189,24 @@ class SecureStore {
           const sentEntry = deliveredHistory?.period === periodKey && deliveredHistory?.metric === history?.metric
             ? deliveredHistory.agents?.[alertLedgerKey(agent.path, agent.alertStep)] : null;
           const pending = (this.state.notificationOutbox || []).filter(item => item.record?.accountId === account.id
-            && JSON.stringify(item.record.agentPath) === JSON.stringify(agent.path));
+            && item.record.metric === metric.alertMetric && JSON.stringify(item.record.agentPath) === JSON.stringify(agent.path));
           const delivered = this.state.alertRecords.find(item => item.status === 'sent' && item.accountId === account.id
-            && JSON.stringify(item.agentPath) === JSON.stringify(agent.path));
+            && item.metric === metric.alertMetric && JSON.stringify(item.agentPath) === JSON.stringify(agent.path));
+          const profitHistory = account.profitAlertHistory?.period === periodKey ? account.profitAlertHistory : null;
+          const profitEntry = profitHistory?.agents?.[alertLedgerKey(agent.path, agent.profitAlertStep)];
+          const profitDelivered = account.profitDeliveredAlertHistory?.period === periodKey ? account.profitDeliveredAlertHistory : null;
+          const profitSent = profitDelivered?.agents?.[alertLedgerKey(agent.path, agent.profitAlertStep)];
+          const profitRecord = this.state.alertRecords.find(item => item.status === 'sent' && item.accountId === account.id && item.metric === PROFIT_METRIC && JSON.stringify(item.agentPath) === JSON.stringify(agent.path));
           return {
             ...agent,
+            profitAlert: {
+              value: agent.profitValue, alertStep: agent.profitAlertStep, stale: Boolean(agent.profitStale),
+              lastObservedLevel: profitEntry?.currentLevel || 0,
+              effectiveAlertLevel: bufferedAlertLevel(agent.profitValue, agent.profitAlertStep, profitEntry),
+              alertedPositiveLevel: profitSent?.positiveLastAlertLevel || 0, alertedNegativeLevel: profitSent?.negativeLastAlertLevel || 0,
+              lastAlertAt: profitRecord?.time || profitSent?.lastSentAt || '',
+              pendingNotifications: (this.state.notificationOutbox || []).filter(item => item.record?.accountId === account.id && item.record.metric === PROFIT_METRIC && JSON.stringify(item.record.agentPath) === JSON.stringify(agent.path)).length,
+            },
             alertedPositiveLevel: sentEntry?.positiveLastAlertLevel || 0,
             alertedNegativeLevel: sentEntry?.negativeLastAlertLevel || 0,
             lastObservedLevel: entry?.currentLevel || 0,
@@ -214,6 +228,7 @@ class SecureStore {
             name: item.name,
             path: agentPath(item),
             remark: String(item.remark || ''),
+            profitAlertStep: Number.isFinite(item.profitAlertStep) && item.profitAlertStep > 0 ? item.profitAlertStep : null,
             alertStep: Number.isFinite(item.alertStep) && item.alertStep > 0 ? item.alertStep : null,
             ...(Number.isFinite(item.deltaAlertStep) && item.deltaAlertStep > 0 ? { deltaAlertStep: item.deltaAlertStep } : {}),
           })),

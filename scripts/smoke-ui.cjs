@@ -13,6 +13,7 @@ app.whenReady().then(async () => {
     height: 820,
     webPreferences: { preload: path.join(__dirname, 'smoke-ui-preload.cjs'), backgroundThrottling: false, sandbox: true, contextIsolation: true, nodeIntegration: false },
   });
+  win.webContents.on('console-message', event => { if (event.level === 'error' && !event.message.startsWith('Refused to apply inline style')) process.stderr.write(event.message + '\n'); });
   try {
     await win.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
     let readyTimer;
@@ -99,14 +100,14 @@ app.whenReady().then(async () => {
     assert.match(bufferHint.progress, /下一档 \+400,000/);
     assert.match(bufferHint.negative, /降档线 -250,000/);
     assert.equal(initial.tableCount, 1);
-    assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周应收下线', '提醒状态', '备注（同步通知）', '提醒设置', '操作']);
+    assert.deepEqual(initial.headings, ['代理层级 / 最后成功读取', '本周金额', '提醒状态', '备注（同步通知）', '提醒设置', '操作']);
     assert.deepEqual(initial.visible, [true, true, true, true]);
     assert.deepEqual(initial.depths, [1, 2, 3, 4]);
     assert.deepEqual(initial.remarks, ['直属备注', '二级备注', '三级备注', '四级备注']);
     assert.match(initial.tiers[0], /\+500（最近）/);
     assert.match(initial.tiers[1], /−200（最近）/);
     assert.deepEqual(initial.progress, ['下一档 +600 · 差 60', '下一档 −400 · 差 170', '下一档 +400 · 差 70', '下一档 −500 · 差 70']);
-    assert.deepEqual(initial.reminderLabels, Array.from({ length: 4 }, () => ['金额档位', '变化阈值']));
+    assert.deepEqual(initial.reminderLabels, Array.from({ length: 4 }, () => ['应收下线档位', '盈亏结果档位', '变化阈值']));
     assert.equal(initial.batchRemoved, true);
     assert.equal(initial.visibleUnsavedHints, 0);
     assert.equal(initial.recentAlerts.length, 1);
@@ -396,7 +397,39 @@ app.whenReady().then(async () => {
     assert.equal(networkResult.disabled, false);
     await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     if (process.env.SMOKE_QUEUE_SCREENSHOT) fs.writeFileSync(process.env.SMOKE_QUEUE_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
-    process.stdout.write('Four-level UI smoke test passed\n');
+    await win.webContents.executeJavaScript(`(async () => {
+      thresholdDrafts.clear(); expandedReminderSettings.clear();
+      const next = structuredClone(await window.monitorApi.getState()); next.appearance.theme = 'light';
+      next.accounts[0].systemType = 'system-166'; next.accounts[0].monitorMetric = 'receivable-downline';
+      next.accounts[0].phaseTimings = { branches: [], profit: { queries: 4, sharedQueries: 1, extraQueries: 3, durationMs: 900, failures: 0, missing: 1, slowest: { path: ['parent-01','child-01'], durationMs: 500 } } };
+      const agent = next.accounts[0].subagents[0];
+      Object.assign(agent, { profitValue: -211448.76, profitReadAt: new Date().toISOString(), profitStale: false, profitAlertStep: 100000,
+        profitAlert: { value: -211448.76, alertStep: 100000, lastObservedLevel: -2, effectiveAlertLevel: -2, alertedNegativeLevel: -2, lastAlertAt: new Date().toISOString() } });
+      render(next);
+      document.querySelector('[data-view="dashboard"]').click();
+      const row = document.querySelector('.subagent-row');
+      if (!row.textContent.includes('-211,448.76') || !row.textContent.includes('本级报表合计')) throw Error('盈亏合计未正确显示');
+      if (getComputedStyle(row.querySelector('.agent-profit strong')).color === getComputedStyle(row.querySelector('.subagent-value')).color) throw Error('盈亏颜色错误继承应收下线颜色');
+      if (row.textContent.includes('上级交收')) throw Error('误增加上级交收');
+      if (!profitReadReason({profitIssue:'invalid-value'}).includes('格式异常') || !profitReadReason({profitIssue:'missing-column'}).includes('没有代理盈亏') || !profitReadReason({profitIssue:'not-refreshed'}).includes('10分钟')) throw Error('缺少明确的盈亏读取原因');
+      readingDetailsAccountId = next.accounts[0].id; document.querySelector('#reading-dialog').showModal(); refreshReadingDetails();
+      const details = document.querySelector('#reading-details-content').textContent;
+      if (!details.includes('专门补读 3 次') || !details.includes('最慢合计查询：parent-01 / child-01') || !details.includes('不代表纯新增耗时')) throw Error('合计查询开销说明不完整');
+      document.querySelector('#reading-dialog').close();
+      if (row.querySelector('.agent-reminder-details').open) throw Error('提醒设置应默认折叠');
+      row.querySelector('.agent-reminder-details').open = true;
+      const input = row.querySelector('[data-field="profitAlertStep"]'); input.value = '200000'; input.focus(); input.dispatchEvent(new Event('input', { bubbles: true }));
+      render(next);
+      if (document.querySelector('[data-field="profitAlertStep"]').value !== '200000') throw Error('盈亏草稿被后台刷新覆盖');
+      if (document.querySelector('[data-field="alertStep"]').value !== String(agent.alertStep)) throw Error('盈亏修改污染应收设置');
+      document.querySelector('.subagents').scrollIntoView({ block: 'start' });
+    })()`);
+    await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    if (process.env.PROFIT_SCREENSHOT) fs.writeFileSync(process.env.PROFIT_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
+    const profitSaved = new Promise(resolve => ipcMain.once('smoke:save', (_event, settings) => resolve(settings)));
+    await win.webContents.executeJavaScript(`document.querySelector('.subagent-row [data-action="save-subagent"]').click()`);
+    assert.equal((await profitSaved).profitAlertStep, '200000');
+    process.stdout.write('Four-level UI smoke test passed including independent profit settings and drafts\n');
   } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);
     process.exitCode = 1;

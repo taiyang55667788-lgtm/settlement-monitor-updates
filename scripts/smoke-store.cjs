@@ -43,8 +43,8 @@ app.whenReady().then(() => {
     const reopened = new SecureStore(directory);
     reopened.load();
     assert.deepEqual(reopened.publicState().accounts[0].subagentThresholds, [
-      { name: 'parent-01', path: ['parent-01'], remark: '', alertStep: 100 },
-      { name: 'child-01', path: ['parent-01', 'child-01'], remark: '西区', alertStep: 300 },
+      { name: 'parent-01', path: ['parent-01'], remark: '', alertStep: 100, profitAlertStep: null },
+      { name: 'child-01', path: ['parent-01', 'child-01'], remark: '西区', alertStep: 300, profitAlertStep: null },
     ]);
     assert.deepEqual(reopened.state.accounts[0].alertHistory, {
       period: '2026-09-14/2026-09-20',
@@ -97,6 +97,14 @@ app.whenReady().then(() => {
     assert.equal(recovered.state.notificationOutbox.length, 1);
     assert.ok(recovered.state.events.some(item => /备份恢复/.test(item.message)));
     assert.equal(fs.readFileSync(`${durable.filePath}.backup`, 'utf8').includes('fixture-token'), false);
+    recovered.update(data => {
+      data.accounts[0].subagentThresholds[0].profitAlertStep = 100000;
+      data.accounts[0].profitAlertHistory = { period: '2026-09-14/2026-09-20', metric: 'weekly-agent-profit-v1', agents: { [alertLedgerKey(['parent-01'], 100000)]: { currentLevel: -2 } } };
+    });
+    const profitReopened = new SecureStore(directory); profitReopened.load();
+    assert.equal(profitReopened.state.accounts[0].subagentThresholds[0].profitAlertStep, 100000);
+    assert.equal(profitReopened.state.accounts[0].profitAlertHistory.agents[alertLedgerKey(['parent-01'], 100000)].currentLevel, -2);
+    assert.equal(profitReopened.state.notificationOutbox.length, 1);
     recovered.flush();
     process.stdout.write('Agent settings migration and persistence smoke test passed\n');
   } catch (error) {

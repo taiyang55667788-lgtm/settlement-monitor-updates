@@ -37,7 +37,7 @@ function fixture(state) {
       createSiteClient: () => ({
         get reportPeriod() { return context.period; },
         async open() {},
-        async readThisWeekSettlement() { return { value: context.parentValue, agents: [{ name: 'parent', value: context.parentValue, turnover: context.parentTurnover }] }; },
+        async readThisWeekSettlement() { return { value: context.parentValue, ...(context.profitSupported ? { profitSupported: true, profitValue: -9999 } : {}), agents: [{ name: 'parent', value: context.parentValue, turnover: context.parentTurnover }] }; },
         async readDescendantSettlement(path) {
           await context.beforeDescendant?.(path, service);
           context.descendantReads += 1;
@@ -838,4 +838,131 @@ test('concurrent checks do not start additional account sessions', async () => {
   await Promise.all([service.check('account-1'), service.check('account-1', { manual: true })]);
   assert.equal(calls, 1);
   release(); await running;
+});
+
+test('each agent profit is its own report total, isolated from receivable tiers, persists and returns to zero', async () => {
+  const { store, context, makeService } = fixture();
+  const { alertLedgerKey } = require('../electron/alert-ledger');
+  const { PROFIT_METRIC } = require('../electron/agent-profit');
+  context.profitSupported = true;
+  const own = { value: 999, profitValue: -211448.76, profitSupported: true, agents: [{ name: 'child', value: 111, profitRowValue: 999999 }] };
+  context.descendants = new Map([['parent', own], ['parent/child', { value: 1, profitValue: 123456.78, agents: [] }]]);
+  store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
+  store.state.alertPolicy = { confirmationReads: 2 };
+  store.state.accounts[0].subagentThresholds = [{ path: ['parent'], alertStep: 100, profitAlertStep: 100000 }, { path: ['parent', 'child'], profitAlertStep: 100000 }];
+  let service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  await service.check('account-1');
+  assert.equal(store.state.notificationOutbox?.length || 0, 0);
+  await service.check('account-1');
+  const rows = service.status('account-1').subagents;
+  assert.equal(rows.find(r => r.name === 'parent').value, 250);
+  assert.equal(rows.find(r => r.name === 'parent').profitValue, -211448.76);
+  assert.equal(rows.find(r => r.name === 'child').profitValue, 123456.78);
+  const account = store.state.accounts[0];
+  assert.equal(account.alertHistory.agents[alertLedgerKey(['parent'], 100)].currentLevel, 2);
+  assert.equal(account.profitAlertHistory.agents[alertLedgerKey(['parent'], 100000)].currentLevel, -2);
+  const messages = store.state.notificationOutbox.filter(n => n.record.metric === PROFIT_METRIC);
+  assert.equal(messages.length, 2);
+  assert.ok(messages.every(n => n.text.includes('本周盈亏结果')));
+  const initial = store.state.notificationOutbox.length;
+  own.profitValue = null;
+  await service.check('account-1');
+  assert.equal(service.status('account-1').subagents.find(r => r.name === 'parent').profitValue, null);
+  assert.equal(store.state.notificationOutbox.length, initial);
+  own.profitValue = 4930.39;
+  await service.check('account-1');
+  assert.equal(store.state.notificationOutbox.length, initial);
+  await service.check('account-1');
+  assert.deepEqual(store.state.notificationOutbox.slice(initial).map(n => n.record.level), [-1, 0]);
+  assert.equal(account.alertHistory.agents[alertLedgerKey(['parent'], 100)].currentLevel, 2);
+  service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  const count = store.state.notificationOutbox.length;
+  await service.check('account-1'); await service.check('account-1');
+  assert.equal(store.state.notificationOutbox.length, count);
+});
+
+test('profit-only fourth-level settings schedule the own total without displaying fifth-level agents', async () => {
+  const { store, context, makeService } = fixture(); context.profitSupported = true;
+  context.descendants = new Map([
+    ['parent', { value: 0, profitValue: 1, agents: [{ name: 'child', value: 2 }] }],
+    ['parent/child', { value: 0, profitValue: 3, agents: [{ name: 'third', value: 4 }] }],
+    ['parent/child/third', { value: 0, profitValue: 5, agents: [{ name: 'fourth', value: 6 }] }],
+    ['parent/child/third/fourth', { value: 0, profitValue: -211448.76, agents: [{ name: 'fifth', value: 888 }] }],
+  ]);
+  store.state.accounts[0].subagentThresholds = [{ path: ['parent', 'child', 'third', 'fourth'], profitAlertStep: 100000 }];
+  const alerts = [];
+  const service = makeService(); service.sendTelegram = async (...args) => { alerts.push({ level: args[2], metric: args[9].metric }); };
+  await service.check('account-1');
+  assert.equal(service.status('account-1').subagents.length, 4);
+  assert.equal(service.status('account-1').subagents.at(-1).profitValue, -211448.76);
+  assert.ok(alerts.length && alerts.every(a => a.metric === 'weekly-agent-profit-v1'));
+  const reads = context.descendantReads;
+  await service.check('account-1');
+  assert.equal(context.descendantReads - reads, 4, 'daily priority includes exact deep profit target');
+});
+
+test('profit respects quiet hours and resets its own week without touching receivable history', async () => {
+  const { store, makeService } = fixture();
+  store.state.telegram = { mode: 'legacy', botToken: 'test', chatId: 'test' };
+  const service = makeService(); service.sendTelegram = MonitorService.prototype.sendTelegram;
+  const now = new Date(), minute = now.getHours() * 60 + now.getMinutes();
+  const time = n => `${String(Math.floor(((n + 1440) % 1440) / 60)).padStart(2, '0')}:${String((n + 1440) % 60).padStart(2, '0')}`;
+  store.state.alertPolicy = { quietStart: time(minute - 1), quietEnd: time(minute + 1) };
+  const account = store.state.accounts[0], status = service.status('account-1');
+  const period = { start: '2026-11-09', end: '2026-11-15' };
+  const batch = [{ name: 'parent', path: ['parent'], profitValue: -250, profitAlertStep: 100, profitStale: false }];
+  await service.processProfitBatch(account, status, period, 0, batch, []);
+  assert.equal(store.state.notificationOutbox?.length || 0, 0);
+  store.state.alertPolicy = {};
+  await service.processProfitBatch(account, status, period, 0, batch, []);
+  assert.equal(store.state.notificationOutbox.length, 1);
+  const primaryHistory = structuredClone(account.alertHistory);
+  await service.processProfitBatch(account, status, { start: '2026-11-16', end: '2026-11-22' }, 0, batch, []);
+  assert.equal(store.state.notificationOutbox.length, 2);
+  assert.deepEqual(account.alertHistory, primaryHistory);
+});
+
+test('unconfigured own profit adds queries only when due, while shared reports and manual refresh remain fresh', async () => {
+  const { store, context, makeService } = fixture(); context.profitSupported = true;
+  store.state.accounts[0].subagentThresholds = [];
+  context.descendants = new Map([
+    ['parent', { value: 0, profitValue: 10, agents: [{ name: 'child', value: 2 }] }],
+    ['parent/child', { value: 0, profitValue: 20, agents: [{ name: 'third', value: 4 }] }],
+    ['parent/child/third', { value: 0, profitValue: 30, agents: [{ name: 'fourth', value: 6 }] }],
+    ['parent/child/third/fourth', { value: 0, profitValue: 40, agents: [] }],
+  ]);
+  const service = makeService();
+  await service.check('account-1');
+  assert.equal(context.descendantReads, 4);
+  await service.check('account-1');
+  assert.equal(context.descendantReads, 5, 'only the first-level shared report is required');
+  let stats = service.status('account-1').phaseTimings.profit;
+  assert.deepEqual([stats.queries, stats.sharedQueries, stats.extraQueries], [1,1,0]);
+  const child = service.status('account-1').subagents.find(a => a.name === 'child');
+  assert.equal(child.profitValue, 20); assert.equal(child.profitIssue, 'not-refreshed');
+  assert.equal(child.profitStale, true);
+  for (const row of store.state.accounts[0].agentSnapshot.agents) row.profitCheckedAt = new Date(Date.now() - 600001).toISOString();
+  await service.check('account-1');
+  stats = service.status('account-1').phaseTimings.profit;
+  assert.deepEqual([stats.queries, stats.sharedQueries, stats.extraQueries], [4,1,3]);
+  assert.equal(service.status('account-1').subagents.length, 4);
+  await service.check('account-1', { manual: true });
+  assert.equal(service.status('account-1').phaseTimings.profit.queries, 4);
+});
+
+test('profit cost counts missing totals and failed attempts and retains specific field reasons', async () => {
+  const { store, context, makeService } = fixture(); context.profitSupported=true;
+  store.state.accounts[0].subagentThresholds=[];
+  context.descendants=new Map([['parent',{value:0,profitValue:null,profitIssue:'invalid-value',agents:[]}]]);
+  const service=makeService(); await service.check('account-1');
+  let status=service.status('account-1');
+  assert.equal(status.subagents[0].profitIssue,'invalid-value');
+  assert.equal(status.phaseTimings.profit.missing,1);
+  assert.equal(status.phaseTimings.profit.failures,0);
+  assert.deepEqual(status.phaseTimings.profit.slowest.path,['parent']);
+  context.childFailure=true; await service.check('account-1',{manual:true});
+  status=service.status('account-1');
+  assert.equal(status.phaseTimings.profit.failures,2);
+  assert.equal(status.subagents[0].profitIssue,'read-failed');
+  assert.equal(status.subagents[0].profitValue,null);
 });

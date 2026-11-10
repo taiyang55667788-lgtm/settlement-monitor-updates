@@ -85,12 +85,12 @@ function recordAlertLevel(entry, level, sentAt = '') {
   return result;
 }
 
-function resetChangedAlertStep(account, path, previousStep, nextStep, time = new Date().toISOString()) {
+function resetChangedAlertStep(account, path, previousStep, nextStep, time = new Date().toISOString(), field = 'alertHistory', metric = '') {
   if ((previousStep || null) === (nextStep || null)) return;
   const key = alertLedgerKey(path, nextStep);
-  if (account.alertHistory?.agents) delete account.alertHistory.agents[key];
+  if (account[field]?.agents) delete account[field].agents[key];
   account.alertSettingChanges = [...(account.alertSettingChanges || []), {
-    path: [...path], previousStep: previousStep || null, nextStep: nextStep || null, time,
+    path: [...path], previousStep: previousStep || null, nextStep: nextStep || null, time, ...(metric ? { metric } : {}),
   }].slice(-100);
 }
 

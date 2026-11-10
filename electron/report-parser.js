@@ -20,6 +20,9 @@ function splitReportRows(rows, minColumns = 9) {
     headerRows: source.slice(0, Math.max(1, firstData)),
     dataRows: source.slice(firstData)
       .filter((row) => row.length >= minColumns)
+      // This own-account summary contributes to the total, but is not a child.
+      .filter(row => !(row[0]?.section === 'Info_buhuo'
+        || (Number(row[0]?.colspan) > 1 && /[（(]补货[）)]$/.test(normalize(row[0]?.text)))))
       .map((row) => row.flatMap((cell) => {
         const values = [String(cell.text || '').trim()];
         const colspan = Math.max(1, Number(cell.colspan || 1));
@@ -73,13 +76,24 @@ function parseSettlementTable({ headerRows, dataRows }, metric) {
   const headers = flattenHeaders(headerRows || []);
   const label = String(metric?.columnLabel || '应收下线');
   const column = findMetricColumn(headers, metric);
+  // The member group has another 盈亏结果 column. Never select by leaf alone.
+  const profitColumns = headers.flatMap((header, index) => {
+    const parts = header.split('/').map(part => part.trim());
+    return parts.at(-1) === '盈亏结果' && parts.includes('代理输赢') ? [index] : [];
+  });
+  const profitColumn = profitColumns.length === 1 ? profitColumns[0] : -1;
+  const readProfit = row => {
+    if (profitColumn < 0 || row.length !== headers.length) return null;
+    const text = String(row[profitColumn] ?? '').replace(/,/g, '').trim();
+    return /^[+-]?\d+(?:\.\d+)?$/.test(text) && Number.isFinite(Number(text)) ? Number(text) : null;
+  };
   if (column >= totalRow.length) throw new Error(`“${label}”列与报表数据不对齐，已停止提醒`);
   const agents = dataRows
     .filter((row) => !normalize(row[0]).includes('合计'))
     .map((row) => {
       const name = String(row[0] || '').trim();
       if (!name || column >= row.length) throw new Error('代理账号或金额列不完整，无法确认本周数据');
-      return { name, value: numericValue(row[column]) };
+      return { name, value: numericValue(row[column]), ...(profitColumn >= 0 ? { profitRowValue: readProfit(row) } : {}) };
     });
   if (new Set(agents.map(agent => agent.name)).size !== agents.length) throw new Error('本周报表代理账号重复，无法确认完整数据');
   return {
@@ -88,6 +102,10 @@ function parseSettlementTable({ headerRows, dataRows }, metric) {
     column,
     header: headers[column],
     raw: totalRow[column],
+    profitValue: readProfit(totalRow),
+    profitSupported: profitColumn >= 0,
+    profitIssue: profitColumns.length === 0 ? 'missing-column' : profitColumns.length > 1 ? 'ambiguous-column'
+      : totalRow.length !== headers.length ? 'misaligned' : readProfit(totalRow) === null ? 'invalid-value' : '',
   };
 }
 
@@ -180,6 +198,7 @@ function applySubagentAlertSteps(agents, configurations) {
       path,
       remark: String(custom?.remark || '').trim(),
       alertStep: alertStepFromLegacy(custom),
+      profitAlertStep: Number.isFinite(custom?.profitAlertStep) && custom.profitAlertStep > 0 ? custom.profitAlertStep : null,
       ...(Number.isFinite(custom?.deltaAlertStep) && custom.deltaAlertStep > 0 ? { deltaAlertStep: custom.deltaAlertStep } : {}),
       customized: Boolean(custom),
     };

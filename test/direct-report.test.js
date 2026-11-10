@@ -86,3 +86,29 @@ test('templates expire without performing a network request', async () => {
   finally { Date.now=now; }
   assert.equal(s.attempts,0);
 });
+
+test('profit direct fields are learned only from unique grouped DOM amounts and missing mapping falls back without requesting', async () => {
+  const d = data(); d.sum.profitTotal = -211448.76; d.sum.SumList[0].agentProfit = -209852.65;
+  const shown = { value: 20, profitValue: -211448.76, agents: [{ name: 'child', value: 20, profitRowValue: -209852.65 }] };
+  const reader = new DirectReportReader({ fetch: async () => new Response(html(d)) }, 'https://example.test', stats(), 20);
+  assert.equal(reader.learn(['parent'], period, request(), d, shown, ['root', 'parent']), true);
+  assert.equal((await reader.read(['parent'], period, { requireProfit: true })).profitValue, -211448.76);
+  const missing = setup();
+  assert.equal(await missing.reader.read(['parent'], period, { requireProfit: true }), null);
+  assert.equal(missing.s.attempts, 0);
+  d.sum.otherTotal = -211448.76;
+  assert.equal(reader.learn(['parent'], period, request(), d, shown, ['root', 'parent']), true);
+  assert.equal(await reader.read(['parent'], period, { requireProfit: true }), null);
+});
+
+test('replenishment category records count toward completeness only when proven to belong to the current account', () => {
+  const d = data();
+  const own = { orgName: 'parent(补货)', orgId: 'parent-id', isBuHuo: 1, subResult: 0, totalResult: -100 };
+  d.sum.SumList_buhuo = [{ ...own }]; d.sum.A_buhuo = [{ ...own }]; d.sum.B_buhuo = [{ ...own }]; d.total = 4;
+  const parsed = validateData(d, period, ['root','parent']);
+  assert.equal(parsed.agents.length, 1);
+  for (const mutate of [x=>x.total=3, x=>x.sum.A=[], x=>x.sum.A_buhuo[0].orgId='wrong', x=>x.sum.SumList_buhuo[0].isBuHuo=0, x=>x.sum.B_buhuo[0].orgName='unrelated(补货)', x=>delete x.sum.SumList_buhuo, x=>x.sum.A_buhuo='invalid']) {
+    const changed = structuredClone(d); mutate(changed);
+    assert.throws(()=>validateData(changed, period, ['root','parent']));
+  }
+});

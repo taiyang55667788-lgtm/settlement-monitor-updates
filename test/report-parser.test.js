@@ -82,7 +82,7 @@ test('keeps the real colspan total row aligned with receivable-downline', () => 
   assert.equal(result.column, 9);
   assert.equal(result.header, '代理输赢 / 应收下线');
   assert.equal(result.value, -680217.25);
-  assert.deepEqual(result.agents, [{ name: 'agent01', value: 123.45 }]);
+  assert.deepEqual(result.agents, [{ name: 'agent01', value: 123.45, profitRowValue: 15 }]);
 });
 
 test('missing or ambiguous receivable-downline header blocks alerts instead of guessing', () => {
@@ -154,8 +154,8 @@ test('only configured subagents receive alert steps', () => {
     [{ name: 'agent-b', alertStep: 100 }],
   );
   assert.deepEqual(agents, [
-    { name: 'agent-a', value: 20, path: ['agent-a'], remark: '', alertStep: null, customized: false },
-    { name: 'agent-b', value: 30, path: ['agent-b'], remark: '', alertStep: 100, customized: true },
+    { name: 'agent-a', value: 20, path: ['agent-a'], remark: '', alertStep: null, profitAlertStep: null, customized: false },
+    { name: 'agent-b', value: 30, path: ['agent-b'], remark: '', alertStep: 100, profitAlertStep: null, customized: true },
   ]);
   assert.deepEqual(evaluateSubagentAlertLevels(agents).map((item) => item.level), [0, 0]);
 });
@@ -194,4 +194,52 @@ test('evaluates each subagent independently', () => {
   assert.deepEqual(evaluated.map(({ subagent, level }) => [subagent.name, level]), [
     ['agent-a', -2], ['agent-b', 0], ['agent-c', 3],
   ]);
+});
+
+test('profit uses the agent group and its own total, never the member group, and missing is not zero', () => {
+  const headers = [[{ text: '账号', rowspan: 2 }, { text: '会员输赢', colspan: 1 }, { text: '代理 输赢', colspan: 2 }], [{ text: '盈亏结果' }, { text: '应收下线' }, { text: '盈亏结果' }]];
+  const table = { headerRows: headers, dataRows: [['代理一', '999', '396285.41', '-209852.65'], ['代理二', '888', '100', '-1596.11'], ['合计：2行', '777', '396385.41', '-211448.76']] };
+  const result = parseSettlementTable(table);
+  assert.equal(result.profitValue, -211448.76);
+  assert.equal(result.agents[0].profitRowValue, -209852.65);
+  for (const value of ['', '未结算', '￥123', 'Infinity']) {
+    const changed = structuredClone(table); changed.dataRows.at(-1)[3] = value;
+    assert.equal(parseSettlementTable(changed).profitValue, null);
+  }
+  const zero = structuredClone(table); zero.dataRows.at(-1)[3] = '0';
+  assert.equal(parseSettlementTable(zero).profitValue, 0);
+  const absent = structuredClone(table); absent.headerRows[0][2].text = '其他';
+  assert.equal(parseSettlementTable(absent).profitValue, null);
+  const shifted = structuredClone(table); shifted.dataRows.at(-1).push('123');
+  assert.equal(parseSettlementTable(shifted).profitValue, null);
+  const duplicate = structuredClone(table); duplicate.headerRows[1][1].text = '盈亏结果';
+  assert.throws(() => parseSettlementTable(duplicate), /应收下线/);
+});
+
+test('own replenishment summary stays in the total but is never discovered as a child agent', () => {
+  const cell = (text, colspan = 1, rowspan = 1, section = '') => ({ text, colspan, rowspan, section });
+  const headers = [[...['代理账号', '名称', '低频余额', '高频余额', '笔数', '会员数', '下注金额', '有效金额'].map(t => cell(t,1,2)), cell('会员输赢',3), cell('代理 输赢',9), cell('上交货量',1,2), cell('上级交收',1,2)], ['输赢','退水','盈亏结果','应收下线','占成','实占金额','实占结果','实占退水','赚水','赚赔','占货比','盈亏结果'].map(t => cell(t))];
+  const ordinary = Array(22).fill('0'); ordinary[0]='agent'; ordinary[11]='100'; ordinary[19]='30';
+  const replenishment = [cell('SELF(补货)',4,1,'Info_buhuo'), ...Array.from({length:18},(_,i)=>cell(i===15?'-100':'0'))];
+  const total = [cell('合计：1行',4), ...Array.from({length:18},(_,i)=>cell(i===7?'100':i===15?'-70':'0'))];
+  const report = parseSettlementTable(splitReportRows([...headers, ordinary.map(t => cell(t)), replenishment, total]));
+  assert.deepEqual(report.agents, [{ name:'agent', value:100, profitRowValue:30 }]);
+  assert.equal(report.profitValue,-70);
+  const nameOnly = ordinary.map(t => cell(t)); nameOnly[0].text='代理(补货)';
+  assert.equal(parseSettlementTable(splitReportRows([...headers,nameOnly,total])).agents[0].name,'代理(补货)');
+  const noChildren = parseSettlementTable(splitReportRows([...headers,replenishment,total]));
+  assert.deepEqual(noChildren.agents,[]); assert.equal(noChildren.profitValue,-70);
+});
+
+test('profit unavailability reasons distinguish absent, ambiguous, shifted and malformed columns', () => {
+  const base = { headerRows: [[{text:'账号',rowspan:2},{text:'会员输赢',colspan:1},{text:'代理输赢',colspan:2}],[{text:'盈亏结果'},{text:'应收下线'},{text:'盈亏结果'}]], dataRows: [['a','10','20','-30'],['合计','10','20','-30']] };
+  assert.equal(parseSettlementTable(base).profitIssue, '');
+  const absent = structuredClone(base); absent.headerRows[0][2].text='其他';
+  assert.equal(parseSettlementTable(absent).profitIssue, 'missing-column');
+  const bad = structuredClone(base); bad.dataRows.at(-1)[3]='读取中';
+  assert.equal(parseSettlementTable(bad).profitIssue, 'invalid-value');
+  const shifted = structuredClone(base); shifted.dataRows.at(-1).push('0');
+  assert.equal(parseSettlementTable(shifted).profitIssue, 'misaligned');
+  const duplicate = structuredClone(base); duplicate.headerRows[0][2].colspan=3; duplicate.headerRows[1].push({text:'盈亏结果'}); duplicate.dataRows.forEach(r=>r.push('0'));
+  assert.equal(parseSettlementTable(duplicate).profitIssue, 'ambiguous-column');
 });

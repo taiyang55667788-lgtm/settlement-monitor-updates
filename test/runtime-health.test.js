@@ -83,3 +83,10 @@ test('updater saves once before installing and never installs when save fails', 
   await new Promise(resolve=>setImmediate(resolve));assert.equal(failed.engine.installed,undefined);
   failed.u.disableAutomaticInstall();assert.equal(failed.engine.autoInstallOnAppQuit,false);
 });
+
+test('profit operational cost summary retains only numbers, never the slowest agent name', () => {
+  const { profitReadSummary } = require('../electron/runtime-health');
+  const result = profitReadSummary({ queries:4, sharedQueries:1, extraQueries:3, durationMs:900, missing:1, failures:0, slowest:{path:['private-agent'],durationMs:500} });
+  assert.equal(result.slowestMs, 500); assert.equal(result.extraQueries, 3);
+  assert.equal(JSON.stringify(result).includes('private-agent'), false);
+});

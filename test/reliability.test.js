@@ -255,3 +255,15 @@ test('credential failures require manual action and are not repeatedly submitted
   assert.equal(calls, 1);
   service.stop();
 });
+
+test('profit and receivable delivery receipts do not overwrite each other', async () => {
+  const store = fixture(); store.state.accounts = [{ id: 'a' }];
+  const outbox = new NotificationOutbox(store, async () => {});
+  const common = { accountId: 'a', period: { start: '2026-11-09', end: '2026-11-15' }, agentPath: ['agent'], alertStep: 100, level: 2 };
+  outbox.enqueue('receivable', 'amount', { record: { ...common, metric: 'weekly-receivable-downline-v2' } });
+  outbox.enqueue('profit', 'amount', { record: { ...common, level: -3, metric: 'weekly-agent-profit-v1' } });
+  await outbox.flush();
+  const key = require('../electron/alert-ledger').alertLedgerKey(['agent'], 100);
+  assert.equal(store.state.accounts[0].deliveredAlertHistory.agents[key].currentLevel, 2);
+  assert.equal(store.state.accounts[0].profitDeliveredAlertHistory.agents[key].currentLevel, -3);
+});

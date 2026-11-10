@@ -31,6 +31,7 @@ function nextReadDescription(account) {
   return `${reason}${at ? ' · ' + new Date(at).toLocaleTimeString('zh-CN', { hour12: false }) : ''}`;
 }
 const thresholdDrafts = new Map();
+const expandedReminderSettings = new Set();
 // Expansion belongs to this UI session; old saved paths must not open the tree
 // automatically on startup. Background renders preserve explicit user choices.
 const expandedAgentPaths = new Set();
@@ -81,6 +82,11 @@ function refreshReadingDetails() {
     `最近数据更新：${account.lastDataUpdateAt ? new Date(account.lastDataUpdateAt).toLocaleString('zh-CN') : '尚无本次启动更新记录'}`,
     `上轮耗时：${Number.isFinite(account.durationMs) ? (account.durationMs / 1000).toFixed(1) + ' 秒' : '—'}`,
     `最近本周报表查询：${Number.isFinite(account.lastQueryMs) ? (account.lastQueryMs / 1000).toFixed(1) + ' 秒' : '—'}`,
+    ...(account.phaseTimings?.profit ? [
+      `本轮代理盈亏合计查询：${account.phaseTimings.profit.queries} 次；共用下级报表 ${account.phaseTimings.profit.sharedQueries} 次；专门补读 ${account.phaseTimings.profit.extraQueries} 次`,
+      `合计相关查询耗时：${(account.phaseTimings.profit.durationMs / 1000).toFixed(1)} 秒（与下级读取共用，不代表纯新增耗时）；失败 ${account.phaseTimings.profit.failures} 次；合计未取得 ${account.phaseTimings.profit.missing} 次`,
+      ...(account.phaseTimings.profit.slowest ? [`最慢合计查询：${account.phaseTimings.profit.slowest.path.join(' / ')} · ${(account.phaseTimings.profit.slowest.durationMs / 1000).toFixed(1)} 秒`] : []),
+    ] : []),
     ...(account.recoveryAction ? [`自动恢复：${account.recoveryAction}`] : []),
     ...(account.sessionRecoveryReason ? [`恢复原因：${account.sessionRecoveryReason}`] : []),
     ...(account.failureScenes?.[0] ? [formatFailureScene(account.failureScenes[0])] : []),
@@ -163,7 +169,8 @@ const pathKey = (path) => JSON.stringify(path);
 const thresholdDraftKey = (accountId, path) => `${accountId}\u0000${pathKey(path)}`;
 
 function isSubagentTriggered(subagent) {
-  return !subagent.stale && Number.isFinite(subagent.alertStep) && subagent.alertStep > 0 && Math.abs(subagent.value) >= subagent.alertStep;
+  return (!subagent.stale && Number.isFinite(subagent.alertStep) && subagent.alertStep > 0 && Math.abs(subagent.value) >= subagent.alertStep)
+    || (!subagent.profitStale && Number(subagent.profitAlertStep) > 0 && Number.isFinite(subagent.profitValue) && Math.abs(subagent.profitValue) >= subagent.profitAlertStep);
 }
 
 function notifiedRange(level, step, direction) {
@@ -207,6 +214,7 @@ function hasUnsavedThresholdChange(subagent, draft) {
   if (!draft) return false;
   return !sameOptionalThreshold(draft.alertStep, subagent.alertStep)
     || !sameOptionalThreshold(draft.deltaAlertStep, subagent.deltaAlertStep)
+    || (draft.profitAlertStep !== undefined && !sameOptionalThreshold(draft.profitAlertStep, subagent.profitAlertStep))
     || String(draft.remark ?? '') !== String(subagent.remark ?? '');
 }
 
@@ -216,7 +224,7 @@ function recentAlert(subagent) {
 }
 
 function hasReminder(agent) {
-  return Number(agent.alertStep) > 0 || Number(agent.deltaAlertStep) > 0;
+  return Number(agent.alertStep) > 0 || Number(agent.deltaAlertStep) > 0 || Number(agent.profitAlertStep) > 0;
 }
 
 function agentToolbar(account) {
@@ -226,8 +234,36 @@ function agentToolbar(account) {
   return `<div class="agent-toolbar"><button class="secondary" data-action="filter-reminders" aria-pressed="${only}">${only ? '显示全部代理' : '只看已设置提醒'}</button>${descendants ? '<button class="secondary" data-action="collapse-agents">收起全部</button><button class="secondary" data-action="full-scan" title="重新发现最多四级代理并刷新全部金额">全量扫描</button>' : ''}<small>${descendants ? `${escapeHtml(account.scanMode || '首次全量扫描')} · 日常读前两级及深层提醒分支` : ''}${only ? ' · 仅显示提醒代理及上级路径' : ''}</small></div>`;
 }
 
-function reminderSettings(name, alertStep, deltaAlertStep) {
-  return `<td class="reminder-settings"><label><span>金额档位</span><input data-field="alertStep" type="number" min="0.01" step="0.01" value="${alertStep}" placeholder="留空关闭" aria-label="${escapeHtml(name)}的金额档位提醒" /></label><label><span>变化阈值</span><input data-field="deltaAlertStep" type="number" min="0.01" step="0.01" value="${deltaAlertStep}" placeholder="留空关闭" aria-label="${escapeHtml(name)}的变化量提醒" /></label></td>`;
+function reminderSettings(name, alertStep, deltaAlertStep, profitAlertStep, open = false) {
+  const label = (field, text, value) => `<label><span>${text}</span><input data-field="${field}" type="number" min="0.01" step="0.01" value="${value}" placeholder="留空关闭" aria-label="${escapeHtml(name)}的${text}提醒" /></label>`;
+  const content = label('alertStep', profitAlertStep === undefined ? '金额档位' : '应收下线档位', alertStep)
+    + (profitAlertStep === undefined ? '' : label('profitAlertStep', '盈亏结果档位', profitAlertStep))
+    + label('deltaAlertStep', '变化阈值', deltaAlertStep);
+  return `<td class="reminder-settings">${profitAlertStep === undefined ? content : `<details class="agent-reminder-details" ${open ? 'open' : ''}><summary>设置提醒${alertStep || profitAlertStep || deltaAlertStep ? ' · 已设置' : ''}</summary>${content}<small>变化阈值仅用于应收下线；留空关闭对应提醒</small></details>`}</td>`;
+}
+
+function profitReadReason(agent) {
+  return ({
+    waiting: '等待下钻读取本级合计',
+    'not-refreshed': Number(agent.profitAlertStep) > 0 ? '本轮尚未刷新，等待提醒合计更新' : '本轮未刷新；无盈亏提醒约10分钟补读',
+    'missing-column': '报表没有代理盈亏结果列；不按0提醒',
+    'ambiguous-column': '代理盈亏结果列重复，无法唯一确认',
+    misaligned: '合计与表头列数不对齐，暂停盈亏提醒',
+    'invalid-value': '盈亏金额格式异常，未用于提醒',
+    'read-failed': '盈亏合计读取失败，保留上次金额',
+    'report-unavailable': '未能进入该代理的本级合计报表',
+    'retry-wait': '合计读取失败，等待分支重试',
+  })[agent.profitIssue] || (!Number.isFinite(agent.profitValue) ? '等待有效合计；未取得时不提醒' : '');
+}
+
+function profitAmount(agent) {
+  const available = Number.isFinite(agent.profitValue);
+  return `<div class="agent-profit"><small class="metric-label">盈亏结果 · 本级报表合计</small><strong class="${available ? agent.profitValue < 0 ? 'negative' : agent.profitValue > 0 ? 'positive' : 'zero' : 'muted'}">${available ? (agent.profitValue > 0 ? '+' : '') + money.format(agent.profitValue) : '未取得'}</strong>${agent.profitReadAt ? `<small>${new Date(agent.profitReadAt).toLocaleTimeString('zh-CN')} 更新${agent.profitStale ? '（旧数据）' : ''}</small>` : ''}${profitReadReason(agent) ? `<small class="profit-read-reason">${escapeHtml(profitReadReason(agent))}</small>` : ''}</div>`;
+}
+
+function profitAlertStatus(agent) {
+  const alert = agent.profitAlert || { alertStep: agent.profitAlertStep };
+  return `<div class="profit-alert-status"><small class="metric-label">盈亏结果</small><span class="tier-positive">🔵 ${escapeHtml(notifiedRange(alert.alertedPositiveLevel, agent.profitAlertStep, 1))}</span><span class="tier-negative">🔴 ${escapeHtml(notifiedRange(alert.alertedNegativeLevel, agent.profitAlertStep, -1))}</span><small>${Number.isFinite(agent.profitValue) ? escapeHtml(alertReason(alert)) : '盈亏合计未取得；不提醒'}</small>${Number.isFinite(agent.profitValue) ? thresholdProgress(alert) : ''}${recentAlert(alert)}</div>`;
 }
 
 function trendChart(trend, path) {
@@ -319,6 +355,7 @@ function subagentList(account) {
   if (!metric.usesSubagents) return totalSettlementList(account);
   const readsDescendants = metric.readsDescendants !== false;
   const hasTurnover = metric.hasTurnover === true;
+  const withProfit = account.systemType !== 'crown' && metric === monitorMetrics['receivable-downline'];
   const agentLabel = metric.agentLabel || '直属代理';
   if (!Number.isFinite(account.subagentCount)) {
     return '<div class="subagent-empty">登录并完成首次检查后，这里会显示最多四级下级代理。</div>';
@@ -348,6 +385,7 @@ function subagentList(account) {
     const draft = thresholdDrafts.get(thresholdDraftKey(account.id, path));
     const alertStep = draft ? draft.alertStep : (Number.isFinite(subagent.alertStep) ? subagent.alertStep : '');
     const deltaAlertStep = draft ? draft.deltaAlertStep : (Number.isFinite(subagent.deltaAlertStep) ? subagent.deltaAlertStep : '');
+    const profitStep = draft?.profitAlertStep ?? (Number.isFinite(subagent.profitAlertStep) ? subagent.profitAlertStep : '');
     const remark = draft ? draft.remark : (subagent.remark || '');
     const dirty = hasUnsavedThresholdChange(subagent, draft);
     const readAtFull = subagent.readAt ? new Date(subagent.readAt).toLocaleString('zh-CN') : '尚未成功读取';
@@ -357,16 +395,16 @@ function subagentList(account) {
     const lastAlert = subagent.lastAlertAt ? ` · 最近通知：${new Date(subagent.lastAlertAt).toLocaleString('zh-CN')}` : '';
     return `<tr class="subagent-row level-${depth} ${depth === 1 ? 'first-level' : 'nested-level'} ${subagent.stale ? 'stale' : ''} ${dirty ? 'has-unsaved' : ''}" data-subagent-index="${index}" data-agent-key="${escapeHtml(pathKey(path))}" data-depth="${depth}" style="--tree-depth:${depth}">
       <td><div class="subagent-name">${canExpand ? `<button type="button" class="tree-toggle" data-action="expand-subagent" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(subagent.name)} 的下级代理" aria-expanded="${expanded}">${expanded ? '▾' : '▸'}</button>` : (depth > 1 ? '<span class="tree-leaf" aria-hidden="true">↳</span>' : '<span class="tree-leaf" aria-hidden="true">◆</span>')}<div><strong title="${escapeHtml(path.join(' / '))}">${escapeHtml(subagent.name)}</strong><small>${readsDescendants ? `第${depth}级代理${depth > 1 ? ` · 上级 ${escapeHtml(path.at(-2))}` : ''}${Number.isFinite(subagent.childCount) ? ` · 下级 ${subagent.childCount} 个` : ''}` : `${agentLabel} · 提醒只按总代理结果`}</small><small class="read-time" title="${escapeHtml(readAtFull)}">最后成功读取：${escapeHtml(readAt)}</small>${dataAge(subagent)}${subagent.stale ? `<small class="child-error">${staleLabel(subagent)}</small>` : ''}${subagent.childError ? `<small class="child-error">下级读取失败：${escapeHtml(subagent.childError)}</small>` : ''}</div></div></td>
-      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${subagent.noData ? '本轮未确认（上次暂无数据）' : `${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}`}</td>
+      <td class="subagent-value ${subagent.value < 0 ? 'negative' : subagent.value > 0 ? 'positive' : 'zero'}">${withProfit ? '<small class="metric-label">应收下线</small>' : ''}${subagent.noData ? '本轮未确认（上次暂无数据）' : `${subagent.value > 0 ? '+' : ''}${money.format(subagent.value)}${trendChart(account.trend, path)}`}${withProfit ? profitAmount(subagent) : ''}</td>
       ${hasTurnover ? `<td class="subagent-turnover">${Number.isFinite(subagent.turnover) ? money.format(subagent.turnover) : '—'}</td>` : ''}
-      <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small>${thresholdProgress(subagent)}${recentAlert(subagent)}</td>
+      <td class="notified-tiers" title="正向：${escapeHtml(positiveRange)}；负向：${escapeHtml(negativeRange)}${escapeHtml(lastAlert)}"><span class="tier-positive">🔵 ${escapeHtml(positiveRange)}</span><span class="tier-negative">🔴 ${escapeHtml(negativeRange)}</span><small title="${escapeHtml(alertReason(subagent))}">${escapeHtml(alertReason(subagent))}</small>${thresholdProgress(subagent)}${recentAlert(subagent)}${withProfit ? profitAlertStatus(subagent) : ''}</td>
       <td><input data-field="remark" type="text" maxlength="100" value="${escapeHtml(remark)}" placeholder="备注同步到 Telegram" aria-label="${escapeHtml(subagent.name)} 的备注" /></td>
-      ${reminderSettings(subagent.name, alertStep, deltaAlertStep)}
+      ${reminderSettings(subagent.name, alertStep, deltaAlertStep, withProfit ? profitStep : undefined, dirty || expandedReminderSettings.has(thresholdDraftKey(account.id, path)))}
       <td><button class="secondary ${dirty ? 'has-unsaved' : ''}" data-action="save-subagent">${dirty ? '保存修改' : '保存'}</button><small class="unsaved-hint" ${dirty ? '' : 'hidden'}>未保存</small></td>
     </tr>`;
   };
   const columns = hasTurnover ? 7 : 6;
-  const header = `<thead><tr><th scope="col">${readsDescendants ? '代理层级' : agentLabel} / 最后成功读取</th><th scope="col">${metric.valueLabel}</th>${hasTurnover ? `<th scope="col">本周${metric.turnoverLabel}</th>` : ''}<th scope="col">提醒状态</th><th scope="col">备注（同步通知）</th><th scope="col">提醒设置</th><th scope="col">操作</th></tr></thead>`;
+  const header = `<thead><tr><th scope="col">${readsDescendants ? '代理层级' : agentLabel} / 最后成功读取</th><th scope="col">${withProfit ? '本周金额' : metric.valueLabel}</th>${hasTurnover ? `<th scope="col">本周${metric.turnoverLabel}</th>` : ''}<th scope="col">提醒状态</th><th scope="col">备注（同步通知）</th><th scope="col">提醒设置</th><th scope="col">操作</th></tr></thead>`;
   const tableClass = `agent-table${hasTurnover ? ' has-turnover' : ''}`;
   if (!readsDescendants) return `<div class="agent-table-scroll"><table class="${tableClass}">${header}<tbody>${indexed.filter(({ subagent }) => (subagent.path || [subagent.name]).length === 1).map((item) => renderRow(item, 0)).join('')}</tbody></table></div>`;
   const renderBranch = (item) => {
@@ -410,6 +448,7 @@ function captureThresholdDraft() {
     focusedField: active.dataset.field,
     alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
     deltaAlertStep: subagentRow.querySelector('[data-field="deltaAlertStep"]').value,
+    ...(subagentRow.querySelector('[data-field="profitAlertStep"]') ? { profitAlertStep: subagentRow.querySelector('[data-field="profitAlertStep"]').value } : {}),
     remark: subagentRow.querySelector('[data-field="remark"]').value,
   };
   const key = thresholdDraftKey(account.id, draft.path);
@@ -444,6 +483,7 @@ function restoreThresholdDraft(draft, state) {
   if (!subagentRow) return;
   subagentRow.querySelector('[data-field="alertStep"]').value = draft.alertStep;
   subagentRow.querySelector('[data-field="deltaAlertStep"]').value = draft.deltaAlertStep || '';
+  if (subagentRow.querySelector('[data-field="profitAlertStep"]')) subagentRow.querySelector('[data-field="profitAlertStep"]').value = draft.profitAlertStep ?? '';
   subagentRow.querySelector('[data-field="remark"]').value = draft.remark;
   subagentRow.querySelector(`[data-field="${draft.focusedField}"]`)?.focus();
 }
@@ -518,7 +558,7 @@ function render(state) {
   $('#alert-records').innerHTML = (state.alertRecords || []).map((record) => {
     const value = Number(record.value);
     const tier = Number(record.level) * Number(record.alertStep);
-    const agent = record.agentPath?.join(' / ') || record.agentName || '—';
+    const agent = (record.metric === 'weekly-agent-profit-v1' ? '盈亏结果 · ' : '') + (record.agentPath?.join(' / ') || record.agentName || '—');
     const trigger = record.trigger;
     const explanation = trigger ? [trigger.reason,
       `档位 ${trigger.previousLevel * record.alertStep} → ${trigger.level * record.alertStep}`,
@@ -672,6 +712,7 @@ $('#accounts').addEventListener('click', (event) => {
       remark: subagentRow.querySelector('[data-field="remark"]').value,
       alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
       deltaAlertStep: subagentRow.querySelector('[data-field="deltaAlertStep"]').value,
+    ...(subagentRow.querySelector('[data-field="profitAlertStep"]') ? { profitAlertStep: subagentRow.querySelector('[data-field="profitAlertStep"]').value } : {}),
     };
     action(async () => {
       await window.monitorApi.saveSubagentThreshold(settings);
@@ -740,6 +781,7 @@ $('#accounts').addEventListener('input', (event) => {
   const draft = {
     alertStep: subagentRow.querySelector('[data-field="alertStep"]').value,
     deltaAlertStep: subagentRow.querySelector('[data-field="deltaAlertStep"]').value,
+    ...(subagentRow.querySelector('[data-field="profitAlertStep"]') ? { profitAlertStep: subagentRow.querySelector('[data-field="profitAlertStep"]').value } : {}),
     remark: subagentRow.querySelector('[data-field="remark"]').value,
   };
   const key = thresholdDraftKey(account.id, subagent.path || [subagent.name]);
@@ -853,3 +895,14 @@ function renderAndConfirm(state) {
 }
 window.monitorApi.onState(renderAndConfirm);
 window.monitorApi.getState().then(renderAndConfirm).catch((error) => toast(error.message));
+
+
+$('#accounts').addEventListener('toggle', event => {
+  if (!event.target.matches('.agent-reminder-details')) return;
+  const row = event.target.closest('.subagent-row');
+  const account = appState.accounts.find(item => item.id === row?.closest('.account-row')?.dataset.id);
+  const agent = account?.subagents?.[Number(row?.dataset.subagentIndex)];
+  if (!agent) return;
+  const key = thresholdDraftKey(account.id, agent.path || [agent.name]);
+  if (event.target.open) expandedReminderSettings.add(key); else expandedReminderSettings.delete(key);
+}, true);

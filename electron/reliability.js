@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { alertLedgerKey, recordAlertLevel } = require('./alert-ledger');
 const { telegramFault } = require('./status-detail');
+const { historyFields, hasReminder } = require('./agent-profit');
 
 function recipientKey(telegram = {}) {
   const identity = telegram.mode === 'pairing' && telegram.pairing?.paired && telegram.pairing.token
@@ -30,7 +31,7 @@ function freezeAmountDots(data, item) {
 }
 
 function importantBranch(path, settings = []) {
-  return settings.some(item => (Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0)
+  return settings.some(item => hasReminder(item)
     && (item.path || [item.name]).length >= path.length
     && path.every((part, i) => part === (item.path || [item.name])[i]));
 }
@@ -57,10 +58,11 @@ function addNoDataTargets(agents, settings, refreshedParents, readAt) {
 
 function staleTargets(account, agents, since, now = Date.now()) {
   const limit = Math.max(5 * 60000, (Number(account.intervalMinutes) || 5) * 3 * 60000);
-  return (account.subagentThresholds || []).filter(item => Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0)
+  return (account.subagentThresholds || []).filter(hasReminder)
     .map(item => item.path || [item.name]).filter(path => {
       const agent = agents.find(item => JSON.stringify(item.path) === JSON.stringify(path));
-      const readAt = Date.parse(agent?.readAt || since);
+      const setting = account.subagentThresholds.find(item => JSON.stringify(item.path || [item.name]) === JSON.stringify(path));
+      const readAt = Math.min(Date.parse(agent?.readAt || since), Number(setting?.profitAlertStep) > 0 ? Date.parse(agent?.profitReadAt || since) : Infinity);
       return !Number.isFinite(readAt) || now - readAt >= limit;
     });
 }
@@ -188,11 +190,12 @@ class NotificationOutbox {
             }
             if (account && record?.period && record.alertType !== 'delta') {
               const period = `${record.period.start}/${record.period.end}`;
-              if (account.deliveredAlertHistory?.period !== period || account.deliveredAlertHistory?.metric !== record.metric) {
-                account.deliveredAlertHistory = { period, metric: record.metric, agents: {} };
+              const field = historyFields(record.metric).delivered;
+              if (account[field]?.period !== period || account[field]?.metric !== record.metric) {
+                account[field] = { period, metric: record.metric, agents: {} };
               }
               const key = alertLedgerKey(record.agentPath, record.alertStep);
-              account.deliveredAlertHistory.agents[key] = recordAlertLevel(account.deliveredAlertHistory.agents[key], record.level, new Date(this.now()).toISOString());
+              account[field].agents[key] = recordAlertLevel(account[field].agents[key], record.level, new Date(this.now()).toISOString());
             }
             if (record) data.alertRecords = [{ ...record, notificationId: item.id, originalNotificationId: item.originalNotificationId, relayReceipt: this.receipts?.get(item.id) || null, id: crypto.randomUUID(), time: new Date(this.now()).toISOString(), status: 'sent', queuedAt: item.createdAt }, ...(data.alertRecords || [])].slice(0, 500);
           });

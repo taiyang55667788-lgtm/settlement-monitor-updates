@@ -12,6 +12,7 @@ const { loadLoginPage } = require('./login-page-load');
 const { captureFailureScene, retainedScenes, sceneLoginReason } = require('./failure-scene');
 const { captchaImageScript, refreshLoadedCaptcha } = require('./captcha-refresh');
 const { guardSettlementDialogs, destroyMarketWindow, settlementDelay } = require('./settlement-dialog');
+const { PROFIT_METRIC, profitMetric, historyFields, hasReminder, profitReadDue } = require('./agent-profit');
 const { MAX_DESCENDANT_DEPTH } = require('./agent-depth');
 const { importantBranch, addNoDataTargets, staleTargets, boundedOperation, NotificationOutbox } = require('./reliability');
 const { CACHE_MS, scanState, branchHasTarget, priorityPaths, retryDelay, networkRecoveryDelay } = require('./continuous-monitor');
@@ -1178,6 +1179,7 @@ class SiteClient {
         text: cell.innerText,
         colspan: cell.colSpan,
         rowspan: cell.rowSpan,
+        section: row.parentElement?.id || '',
       })));
     })()`, Array.isArray);
     if (!rawRows) throw new Error('没有报表表格');
@@ -1200,6 +1202,7 @@ class SiteClient {
       throw Object.assign(new Error(this.status.settlementCheck.state), { code: 'SETTLEMENT_PENDING' });
     }
     const report = parseSettlementTable(splitReportRows(rawRows), this.metric);
+    if (!(this.currentReportPath || []).length) this.status.profitSupported = report.profitSupported;
     await this.learnDirectReport(report);
     return report;
   }
@@ -1235,7 +1238,7 @@ class SiteClient {
     // Only reuse templates while still on the origin where they were learned.
     if (new URL(this.window.webContents.getURL()).origin !== this.directReader.origin) return null;
     const period = settlementWeekRange();
-    const report = await this.directReader.read(path, period);
+    const report = await this.directReader.read(path, period, { requireProfit: this.requireProfitForRead ?? (this.status.profitSupported === true) });
     if (this.cancelled) throw Object.assign(new Error('读取已中断'), { code: 'READ_INTERRUPTED' });
     if (JSON.stringify(period) !== JSON.stringify(settlementWeekRange())) throw new Error('读取下级时本周日期范围发生变化，已停止读取');
     if (report) {
@@ -1345,7 +1348,7 @@ class SiteClient {
   }
 
   async readDescendantSettlement(path) {
-    if (path.length >= MAX_DESCENDANT_DEPTH) throw new Error('最多读取四级代理');
+    if (path.length > MAX_DESCENDANT_DEPTH) throw new Error('最多读取四级代理');
     const currentWeek = settlementWeekRange();
     if (this.directReader && this.reportPeriod && (this.reportPeriod.start !== currentWeek.start || this.reportPeriod.end !== currentWeek.end)) {
       throw new Error('读取下级时本周日期范围发生变化，已停止读取');
@@ -1811,15 +1814,17 @@ class MonitorService {
     return this.runtime.get(accountId);
   }
 
-  updateSubagentAlertStep(accountId, path, alertStep, remark = '', deltaAlertStep = null) {
+  updateSubagentAlertStep(accountId, path, alertStep, remark = '', deltaAlertStep = null, profitAlertStep = null) {
     const status = this.status(accountId);
     const key = agentPathKey(path);
     const subagent = status.subagents?.find((item) => agentPathKey(item.path) === key);
-    if (subagent) Object.assign(subagent, { alertStep, remark, deltaAlertStep, customized: true });
+    const changedBase = subagent?.alertStep !== alertStep;
+    const changedProfit = subagent?.profitAlertStep !== profitAlertStep;
+    if (subagent) Object.assign(subagent, { alertStep, remark, deltaAlertStep, profitAlertStep, customized: true });
     for (const candidateKey of Object.keys(status.alertCandidates || {})) {
       try {
         const [candidatePath] = JSON.parse(Buffer.from(candidateKey.split(':').at(-1), 'base64url').toString());
-        if (agentPathKey(candidatePath) === key) delete status.alertCandidates[candidateKey];
+        if (agentPathKey(candidatePath) === key && (candidateKey.includes(':' + PROFIT_METRIC + ':') ? changedProfit : changedBase)) delete status.alertCandidates[candidateKey];
       } catch { delete status.alertCandidates[candidateKey]; }
     }
     // Coalesce settings edits; never invalidate a healthy in-flight report.
@@ -2217,7 +2222,7 @@ class MonitorService {
     if (status.settlementWaiting) return;
     if (marketSchedule().closed || status.openingRecovery || status.status === 'market-waiting') return;
     const targets = staleTargets(account, status.subagents || [], status.freshnessSince);
-    status.targetHealth = (account.subagentThresholds || []).filter(item => Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0).map(item => {
+    status.targetHealth = (account.subagentThresholds || []).filter(hasReminder).map(item => {
       const path = item.path || [item.name];
       const agent = (status.subagents || []).find(row => agentPathKey(row.path) === agentPathKey(path));
       return { path, lastSuccessAt: agent?.readAt || '', stale: targets.some(target => agentPathKey(target) === agentPathKey(path)) };
@@ -2314,7 +2319,25 @@ class MonitorService {
     client.onProgress = this.onChange;
     client.onSettlement = () => this.noteSettlementDialog(accountId);
     client.reportReadTimeoutMs = this.rootReportTimeoutMs;
-    const branchRead = path => read(() => client.readBranchWithRecovery ? client.readBranchWithRecovery(path) : client.readDescendantSettlement(path));
+    client.requireProfitForRead = false;
+    const branchRead = async (path, { extra = false, forceProfit = status.profitSupported === true } = {}) => {
+      client.requireProfitForRead = forceProfit;
+      const stats = status.phaseTimings?.profit;
+      const started = Date.now();
+      if (stats) { stats.queries++; if (extra) stats.extraQueries++; else stats.sharedQueries++; }
+      try {
+        const report = await read(() => client.readBranchWithRecovery ? client.readBranchWithRecovery(path) : client.readDescendantSettlement(path));
+        if (stats && (forceProfit || Object.hasOwn(report, 'profitValue')) && !Number.isFinite(report.profitValue)) stats.missing++;
+        return forceProfit && !Object.hasOwn(report, 'profitValue') ? { ...report, profitValue: null, profitIssue: 'report-unavailable' } : report;
+      } catch (error) { if (stats) stats.failures++; throw error; }
+      finally {
+        if (stats) {
+          const durationMs = Math.max(0, Date.now() - started);
+          stats.durationMs += durationMs;
+          if (!stats.slowest || durationMs > stats.slowest.durationMs) stats.slowest = { path: [...path], durationMs };
+        }
+      }
+    };
     const controller = new AbortController();
     this.activeReads.set(accountId, controller);
     const guarded = operation => client.withDialogGuard ? client.withDialogGuard(operation) : operation();
@@ -2353,21 +2376,34 @@ class MonitorService {
       if (status.branchFailurePeriod !== periodKey) { status.branchFailures = {}; status.branchFailurePeriod = periodKey; }
       const cachedSnapshot = this.store.state.accounts.find((item) => item.id === accountId)?.agentSnapshot;
       const cachedAgents = cachedSnapshot?.metric === metric.id ? cachedSnapshot.agents || [] : [];
+      const profitEnabled = metric.id === 'receivable-downline' && (report.profitSupported === true || cachedSnapshot?.profitSupported === true);
+      const retainedProfit = (path, current) => {
+        const old = current || (cachedSnapshot?.period?.start === client.reportPeriod.start && cachedSnapshot?.period?.end === client.reportPeriod.end
+          ? cachedAgents.find(item => agentPathKey(item.path) === agentPathKey(path)) : null);
+        if (current && Date.parse(current.profitCheckedAt) >= checkStarted) return {
+          profitValue: current.profitValue, profitReadAt: current.profitReadAt, profitCheckedAt: current.profitCheckedAt,
+          profitStale: current.profitStale, profitIssue: current.profitIssue,
+        };
+        return metric.id === 'receivable-downline' ? {
+          profitValue: old?.profitValue ?? null, profitReadAt: old?.profitReadAt || '', profitCheckedAt: old?.profitCheckedAt || old?.profitReadAt || '', profitStale: true,
+          profitIssue: !profitEnabled ? report.profitIssue || 'missing-column' : old?.profitIssue && old.profitIssue !== 'waiting' ? old.profitIssue : old?.profitReadAt ? 'not-refreshed' : 'waiting',
+        } : {};
+      };
       const retryOnly = branchRetryOnly && !manual && !this.fullScanRequested.has(accountId)
         && cachedSnapshot?.period?.start === client.reportPeriod.start && cachedSnapshot?.period?.end === client.reportPeriod.end;
       status.branchRetryRound = retryOnly;
       const checkpoint = scanState(storedAccount.scanCheckpoint, metric.id, periodKey);
-      const fullScan = !retryOnly && (this.fullScanRequested.has(accountId) || Boolean(storedAccount.scanCheckpoint) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1);
+      const fullScan = !retryOnly && (this.fullScanRequested.has(accountId) || Boolean(storedAccount.scanCheckpoint) || cachedSnapshot?.metric !== metric.id || cachedSnapshot?.structureVersion !== 1 || (profitEnabled && cachedSnapshot?.profitScopeVersion !== 1));
       const leafCache = storedAccount.leafCache?.period === periodKey && storedAccount.leafCache.metric === metric.id
         ? structuredClone(storedAccount.leafCache) : { period: periodKey, metric: metric.id, paths: {} };
       status.scanMode = retryOnly ? '到期分支补读' : fullScan ? '全量扫描' : '按提醒读取';
       const agents = metric.usesSubagents
-        ? report.agents.map((agent) => ({ ...agent, path: [agent.name], readAt: rootReadAt }))
+        ? report.agents.map((agent) => ({ ...agent, ...retainedProfit([agent.name]), path: [agent.name], readAt: rootReadAt }))
         : [{ name: metric.label, path: [metric.label], value: report.value, readAt: rootReadAt }];
       const initialBatch = agents.slice();
       const freshPaths = new Set(initialBatch.map(agent => agentPathKey(agent.path)));
       if (retryOnly) for (const cached of cachedAgents) {
-        if (cached.path.length > 1 && report.agents.some(root => root.name === cached.path[0])) agents.push({ ...cached });
+        if (cached.path.length > 1 && report.agents.some(root => root.name === cached.path[0])) agents.push({ ...cached, ...retainedProfit(cached.path) });
       }
       let configuredSubagents = Array.isArray(account.subagentThresholds) ? account.subagentThresholds : [];
       const legacyStep = legacyAlertStep(account);
@@ -2383,12 +2419,12 @@ class MonitorService {
       let anyTriggered = false;
       const notificationFailures = [];
       status.failureKind = '';
-      status.phaseTimings = { loginAndRootMs: Date.now() - checkStarted, branches: [] };
+      status.phaseTimings = { loginAndRootMs: Date.now() - checkStarted, branches: [], ...(profitEnabled ? { profit: { queries: 0, sharedQueries: 0, extraQueries: 0, durationMs: 0, failures: 0, missing: 0, slowest: null } } : {}) };
       const publishBatch = async (fresh) => {
         if (!this.isCurrentCheck(accountId, revision)) return;
         for (const item of fresh) freshPaths.add(agentPathKey(item.path));
         configuredSubagents = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
-        const unread = cachedAgents.filter(old => !agents.some(item => agentPathKey(item.path) === agentPathKey(old.path))).map(old => ({ ...old, stale: true, staleReason: 'waiting' }));
+        const unread = cachedAgents.filter(old => !agents.some(item => agentPathKey(item.path) === agentPathKey(old.path))).map(old => ({ ...old, ...retainedProfit(old.path), stale: true, staleReason: 'waiting' }));
         status.subagents = applySubagentAlertSteps([...agents, ...unread], configuredSubagents);
         status.readProgress = { read: freshPaths.size };
         status.subagentCount = report.agents.length;
@@ -2407,24 +2443,43 @@ class MonitorService {
       const childErrors = [];
       const retryBranches = [];
       const retriedBranches = new Set();
-      const needsBranch = path => !retryOnly && (fullScan || path.length === 1 || configuredSubagents.some(setting => {
+      const publishProfit = async (path, ownReport) => {
+        if (!profitEnabled) return;
+        const parent = agents.find(item => agentPathKey(item.path) === agentPathKey(path));
+        if (!parent || !Object.hasOwn(ownReport, 'profitValue')) return;
+        parent.profitCheckedAt = new Date().toISOString();
+        parent.profitIssue = ownReport.profitIssue || (Number.isFinite(ownReport.profitValue) ? '' : 'missing-column');
+        parent.profitValue = Number.isFinite(ownReport.profitValue) ? ownReport.profitValue : null;
+        parent.profitReadAt = Number.isFinite(parent.profitValue) ? new Date().toISOString() : '';
+        parent.profitStale = !Number.isFinite(parent.profitValue);
+        configuredSubagents = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
+        const batch = applySubagentAlertSteps([parent], configuredSubagents);
+        anyTriggered = await this.processProfitBatch(account, status, client.reportPeriod, revision, batch, notificationFailures) || anyTriggered;
+        status.subagents = applySubagentAlertSteps(agents, configuredSubagents);
+        this.onChange();
+      };
+      const needsPrimaryBranch = path => path.length < MAX_DESCENDANT_DEPTH && (fullScan || path.length === 1 || configuredSubagents.some(setting => {
         const target = setting.path || [setting.name];
-        return (Number(setting.alertStep) > 0 || Number(setting.deltaAlertStep) > 0)
-          && target.length > path.length && path.every((part, index) => target[index] === part);
+        return hasReminder(setting) && target.length > path.length && path.every((part, index) => target[index] === part);
       }));
+      const profitDue = path => profitEnabled && (fullScan || manual || profitReadDue(
+        agents.find(agent => agentPathKey(agent.path) === agentPathKey(path)),
+        configuredSubagents.find(setting => agentPathKey(setting.path || [setting.name]) === agentPathKey(path))));
+      const needsBranch = path => !retryOnly && (needsPrimaryBranch(path) || profitDue(path));
       const branches = metric.readsDescendants !== false ? retryOnly
         ? Object.entries(status.branchFailures).filter(([, failure]) => failure.nextAt <= Date.now()).map(([key]) => JSON.parse(key))
         : report.agents.map((agent) => [agent.name]) : [];
       const mergeChildren = (path, children, freshRead = true) => {
         const parent = agents.find(item => agentPathKey(item.path) === agentPathKey(path));
         if (!parent) return [];
+        if (path.length >= MAX_DESCENDANT_DEPTH) return [];
         parent.childCount = children.length; delete parent.childError;
         // Remove vanished children together with their descendants.
         for (let i = agents.length - 1; i >= 0; i--) {
           const p = agents[i].path;
           if (p.length > path.length && path.every((part, j) => p[j] === part) && !children.some(child => child.name === p[path.length])) agents.splice(i, 1);
         }
-        const fresh = children.map(child => ({ ...child, path: [...path, child.name],
+        const fresh = children.map(child => ({ ...child, ...retainedProfit([...path, child.name], agents.find(agent => agentPathKey(agent.path) === agentPathKey([...path, child.name]))), path: [...path, child.name],
           ...(freshRead ? { readAt: new Date().toISOString(), stale: false, staleReason: '' } : { stale: true, staleReason: 'checkpoint' }) }));
         for (const item of fresh) {
           const existing = agents.find(agent => agentPathKey(agent.path) === agentPathKey(item.path));
@@ -2446,8 +2501,9 @@ class MonitorService {
       let lastPriorityAt = Date.now();
       const refreshPriority = async () => {
         const settings = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
-        if (!settings.some(item => Number(item.alertStep) > 0 || Number(item.deltaAlertStep) > 0)) return;
+        if (!settings.some(hasReminder)) return;
         status.stage = '全量扫描中，优先更新提醒代理'; this.onChange();
+        client.requireProfitForRead = false;
         const root = await read(() => client.readThisWeekSettlement());
         if (`${client.reportPeriod.start}/${client.reportPeriod.end}` !== periodKey) throw new Error('扫描过程中结算周已切换，等待下一轮重新读取');
         const rootFresh = root.agents.map(item => ({ ...item, path: [item.name], readAt: new Date().toISOString(), stale: false }));
@@ -2463,12 +2519,13 @@ class MonitorService {
           if (!agents.some(item => agentPathKey(item.path) === agentPathKey(path))) continue;
           if (!bypassBranchBackoff && status.branchFailures[agentPathKey(path)]?.nextAt > Date.now()) continue;
           try {
-            const result = await branchRead(path);
+            const result = await branchRead(path, { forceProfit: profitDue(path) });
+            await publishProfit(path, result);
             const fresh = mergeChildren(path, result.agents);
             delete status.branchFailures[agentPathKey(path)];
             saveBranch(path, fresh); await publishBatch(fresh);
           } catch (error) {
-            if (error.code === 'READ_INTERRUPTED' || error.code === 'READ_WATCHDOG' || ['登录状态','验证码','账号凭据'].includes(failureKind(error))) throw error;
+            if (['READ_INTERRUPTED', 'READ_WATCHDOG', 'SETTLEMENT_DIALOG_PENDING'].includes(error.code) || ['登录状态','验证码','账号凭据'].includes(failureKind(error))) throw error;
             client.currentReportPath = null;
             this.store.addEvent('error', `${account.name}：此重点分支插读失败，继续其他分支：${path.join(' / ')}`, accountId);
           }
@@ -2491,7 +2548,7 @@ class MonitorService {
         const priority = path => (recovering || status.sessionLostThisRound) && branchHasTarget(path, configuredSubagents) ? 2 : Number(importantBranch(path, configuredSubagents));
         branches.sort((a, b) => priority(a) - priority(b));
         const path = branches.pop();
-        if (path.length >= MAX_DESCENDANT_DEPTH) continue;
+        if (path.length > MAX_DESCENDANT_DEPTH || (path.length === MAX_DESCENDANT_DEPTH && !profitEnabled)) continue;
         if (!this.isCurrentCheck(accountId, revision)) return;
         const parent = agents.find((agent) => agentPathKey(agent.path) === agentPathKey(path));
         if (!parent) continue;
@@ -2499,6 +2556,11 @@ class MonitorService {
         const hasTarget = branchHasTarget(path, configuredSubagents);
         const delayed = status.branchFailures[key];
         if (!bypassBranchBackoff && delayed?.nextAt > Date.now()) {
+          if (profitEnabled) {
+            parent.profitStale = true;
+            parent.profitIssue = 'retry-wait';
+            await this.processProfitBatch(account, status, client.reportPeriod, revision, applySubagentAlertSteps([{ ...parent, profitValue: null }], configuredSubagents), notificationFailures);
+          }
           parent.childError = `此分支连续失败 ${delayed.failures} 轮，延后至 ${new Date(delayed.nextAt).toLocaleTimeString('zh-CN')} 重试`;
           childErrors.push(`${path.join(' / ')}：${parent.childError}`);
           status.phaseTimings.branches.push({ path: [...path], durationMs: 0, error: parent.childError, deferred: true });
@@ -2507,30 +2569,36 @@ class MonitorService {
           }
           continue;
         }
-        const remembered = fullScan && path.length > 1 && !hasTarget ? checkpoint.completed[key] : null;
+        const remembered = fullScan && path.length > 1 && !hasTarget && !profitEnabled ? checkpoint.completed[key] : null;
         if (remembered) {
           const old = mergeChildren(path, remembered, false);
           for (const item of old) if (item.path.length < MAX_DESCENDANT_DEPTH) branches.push(item.path);
           continue;
         }
-        if (!fullScan && !hasTarget && Date.now() - Number(leafCache.paths[key] || 0) < CACHE_MS) {
+        if (!fullScan && !hasTarget && !profitDue(path) && Date.now() - Number(leafCache.paths[key] || 0) < CACHE_MS) {
           parent.childCount = 0; continue;
         }
         status.readProgress = { read: agents.filter(a => !a.stale).length, pendingBranches: branches.length + retryBranches.length + 1 };
-        status.stage = `已读取 ${status.readProgress.read} 个代理；正在读取第 ${path.length + 1} 级：${path.join(' / ')}`;
+        status.stage = `已读取 ${status.readProgress.read} 个代理；正在读取 ${path.join(' / ')} 的${profitEnabled ? '合计与下级' : '下级'}`;
         this.onChange();
         const branchStarted = Date.now();
         let branchError = '';
         try {
-          const childReport = await branchRead(path);
+          const childReport = await branchRead(path, { extra: !needsPrimaryBranch(path), forceProfit: profitDue(path) });
           if (!this.isCurrentCheck(accountId, revision)) return;
+          await publishProfit(path, childReport);
           const fresh = mergeChildren(path, childReport.agents);
           delete status.branchFailures[key];
           saveBranch(path, fresh);
-          for (const child of fresh) if (child.path.length < MAX_DESCENDANT_DEPTH && needsBranch(child.path)) branches.push(child.path);
+          for (const child of fresh) if ((child.path.length < MAX_DESCENDANT_DEPTH || profitEnabled) && needsBranch(child.path)) branches.push(child.path);
           await publishBatch(fresh);
         } catch (error) {
           if (['READ_INTERRUPTED', 'READ_WATCHDOG', 'SETTLEMENT_DIALOG_PENDING'].includes(error.code)) throw error;
+          if (profitEnabled) {
+            parent.profitStale = true;
+            parent.profitIssue = 'read-failed';
+            await this.processProfitBatch(account, status, client.reportPeriod, revision, applySubagentAlertSteps([{ ...parent, profitValue: null }], configuredSubagents), notificationFailures);
+          }
           branchError = error.message || String(error);
           const kind = failureKind(error);
           if (['登录状态', '验证码', '账号凭据'].includes(kind)) {
@@ -2567,7 +2635,8 @@ class MonitorService {
         // An absent sample interrupts consecutive confirmations without resetting the ledger.
         for (const agent of agents.filter(item => item.noData)) {
           for (const key of Object.keys(status.alertCandidates || {})) {
-            if (key.endsWith(':' + alertLedgerKey(agent.path, applySubagentAlertSteps([agent], configuredSubagents)[0].alertStep))) delete status.alertCandidates[key];
+            const configured = applySubagentAlertSteps([agent], configuredSubagents)[0];
+            if ([configured.alertStep, configured.profitAlertStep].some(step => key.endsWith(':' + alertLedgerKey(agent.path, step)))) delete status.alertCandidates[key];
           }
         }
       }
@@ -2582,7 +2651,7 @@ class MonitorService {
           if (agents.some(item => item.noData && parentPath.length >= item.path.length && item.path.every((part, index) => parentPath[index] === part))) continue;
           if (refreshedParents.has(agentPathKey(parentPath))) continue;
           if (parentPath.length && !agents.some(item => agentPathKey(item.path) === agentPathKey(parentPath))) continue;
-          agents.push({ ...cached, stale: true, notRefreshed: true, staleReason: 'on-demand' });
+          agents.push({ ...cached, ...retainedProfit(cached.path), stale: true, notRefreshed: true, staleReason: 'on-demand' });
         }
       }
       for (const key of Object.keys(status.branchFailures || {})) {
@@ -2603,7 +2672,9 @@ class MonitorService {
             structureVersion: fullScan && !childErrors.length ? 1 : cachedSnapshot?.structureVersion,
             period: client.reportPeriod,
             metric: metric.id,
-            agents: agents.map(({ name, path, value, noData, turnover, readAt, childCount, stale, notRefreshed, staleReason }) => ({ name, path, value, noData: Boolean(noData), stale: Boolean(stale), staleReason, notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
+            profitSupported: profitEnabled,
+            profitScopeVersion: profitEnabled && fullScan && !childErrors.length ? 1 : cachedSnapshot?.profitScopeVersion,
+            agents: agents.map(({ name, path, value, noData, turnover, readAt, childCount, stale, notRefreshed, staleReason, profitValue, profitReadAt, profitStale, profitIssue, profitCheckedAt }) => ({ name, path, value, profitValue, profitReadAt, profitStale, profitIssue, profitCheckedAt, noData: Boolean(noData), stale: Boolean(stale), staleReason, notRefreshed: Boolean(notRefreshed), ...(Number.isFinite(turnover) ? { turnover } : {}), readAt, ...(Number.isFinite(childCount) ? { childCount } : {}) })),
           };
           if (fullScan && !childErrors.length) delete current.scanCheckpoint;
           const point = { time: status.lastCheckedAt, metric: metric.id, agents: agents.filter((item) => !item.stale && Date.parse(item.readAt) >= checkStarted && Number.isFinite(item.value)).map(({ path, value }) => ({ path, value })) };
@@ -2782,37 +2853,49 @@ class MonitorService {
     }
   }
 
+  async processProfitBatch(account, status, period, revision, agents, failures) {
+    const batch = agents.map(agent => ({ ...agent, value: agent.profitValue, alertStep: agent.profitAlertStep, stale: agent.profitStale, deltaAlertStep: null }));
+    for (const agent of batch.filter(item => !Number.isFinite(item.value))) {
+      const key = alertLedgerKey(agent.path, agent.alertStep);
+      for (const candidate of Object.keys(status.alertCandidates || {})) {
+        if (candidate.includes(':' + PROFIT_METRIC + ':') && candidate.endsWith(':' + key)) delete status.alertCandidates[candidate];
+      }
+    }
+    return this.processFreshBatch(account, status, period, profitMetric, revision, batch, failures);
+  }
+
   async processFreshBatch(account, status, period, metric, revision, batch, notificationFailures) {
     if (this.stopped || marketSchedule().closed) return;
     const accountId = account.id;
     const periodKey = `${period.start}/${period.end}`;
     const persistedAccount = this.store.state.accounts.find((item) => item.id === accountId);
     const alertMetric = metric.alertMetric || ALERT_METRIC;
-    if (alertHistoryForPeriod(persistedAccount?.alertHistory, periodKey, alertMetric, persistedAccount?.alertMetricVersion === alertMetric) !== persistedAccount?.alertHistory) {
+    const field = historyFields(alertMetric).history;
+    if (alertHistoryForPeriod(persistedAccount?.[field], periodKey, alertMetric, persistedAccount?.alertMetricVersion === alertMetric) !== persistedAccount?.[field]) {
       this.store.update((data) => {
         const current = data.accounts.find((item) => item.id === accountId);
         if (!current) return;
-        if (current.alertHistory?.period && current.alertHistory.metric !== alertMetric) {
+        if (current[field]?.period && current[field].metric !== alertMetric) {
           current.alertHistoryArchive = [...(current.alertHistoryArchive || []), {
-            ...current.alertHistory,
-            metric: current.alertHistory.metric || 'upper-level-settlement-v1',
+            ...current[field],
+            metric: current[field].metric || 'upper-level-settlement-v1',
             archivedAt: new Date().toISOString(),
           }].slice(-12);
         }
-        current.alertHistory = alertHistoryForPeriod(current.alertHistory, periodKey, alertMetric, current.alertMetricVersion === alertMetric);
+        current[field] = alertHistoryForPeriod(current[field], periodKey, alertMetric, current.alertMetricVersion === alertMetric);
       });
     }
-    const currentHistory = this.store.state.accounts.find(item => item.id === accountId)?.alertHistory;
+    const currentHistory = this.store.state.accounts.find(item => item.id === accountId)?.[field];
     if (currentHistory && currentHistory.nonzeroRetention !== 1) this.store.update(data => {
       const current = data.accounts.find(item => item.id === accountId);
-      current.alertHistory = migrateZeroTierHistory(current.alertHistory, current.tierTransitions);
+      current[field] = migrateZeroTierHistory(current[field], current.tierTransitions);
     });
     let anyTriggered = false;
-    if (persistedAccount && !persistedAccount.notificationLedgerVersion) {
+    if (field === 'alertHistory' && persistedAccount && !persistedAccount.notificationLedgerVersion) {
       this.store.update(data => {
         const current = data.accounts.find(item => item.id === accountId);
         if (!current) return;
-        current.deliveredAlertHistory = structuredClone(current.alertHistory);
+        current.deliveredAlertHistory = structuredClone(current[field]);
         current.notificationLedgerVersion = 1;
       });
     }
@@ -2822,7 +2905,7 @@ class MonitorService {
     for (const { subagent } of evaluateSubagentAlertLevels(batch.filter((agent) => !agent.stale && Number.isFinite(agent.value) && Number.isFinite(agent.alertStep) && agent.alertStep > 0))) {
       if (!this.isCurrentCheck(accountId, revision)) return;
       const alertKey = alertLedgerKey(subagent.path, subagent.alertStep);
-      const history = this.store.state.accounts.find((item) => item.id === accountId)?.alertHistory;
+      const history = this.store.state.accounts.find((item) => item.id === accountId)?.[field];
       const level = bufferedAlertLevel(subagent.value, subagent.alertStep, history?.agents?.[alertKey]);
       status.alertCandidates ||= {};
       const candidateKey = `${periodKey}:${alertMetric}:${alertKey}`;
@@ -2838,11 +2921,11 @@ class MonitorService {
       for (const notification of pending) {
         if (!this.isCurrentCheck(accountId, revision)) return;
         try {
-          const receipt = await this.sendTelegram(account, subagent.value, notification.level, notification.previousLevel, subagent.name, subagent.alertStep, subagent.remark, subagent.path, period, notification);
+          const receipt = await this.sendTelegram(account, subagent.value, notification.level, notification.previousLevel, subagent.name, subagent.alertStep, subagent.remark, subagent.path, period, { ...notification, metric: alertMetric });
           if (!receipt?.queued) this.store.update((data) => {
             const current = data.accounts.find((item) => item.id === accountId);
-            if (!current || current.alertHistory?.period !== periodKey) throw new Error('提醒已发送，但报表周期记录发生变化；请检查运行记录');
-            current.alertHistory.agents[alertKey] = recordAlertLevel(current.alertHistory.agents[alertKey], notification.level, new Date().toISOString());
+            if (!current || current[field]?.period !== periodKey) throw new Error('提醒已发送，但报表周期记录发生变化；请检查运行记录');
+            current[field].agents[alertKey] = recordAlertLevel(current[field].agents[alertKey], notification.level, new Date().toISOString());
           });
           this.recordAlertAttempt({
             status: 'sent', accountId: account.id, accountName: account.name,
@@ -2862,22 +2945,22 @@ class MonitorService {
             status: 'failed', accountId: account.id, accountName: account.name,
             agentName: subagent.name, agentPath: subagent.path, value: subagent.value,
             level: notification.level, alertStep: subagent.alertStep, remark: subagent.remark,
-            error: subagent.alertError, period,
+            error: subagent.alertError, period, metric: alertMetric,
           });
           this.store.addEvent('error', `${account.name} / ${message}`, account.id);
           break;
         }
       }
-      if (confirmed && !quiet && !notificationFailed && (this.store.state.accounts.find(item => item.id === accountId)?.alertHistory?.agents?.[alertKey]?.currentLevel ?? 0) !== level) {
+      if (confirmed && !quiet && !notificationFailed && (this.store.state.accounts.find(item => item.id === accountId)?.[field]?.agents?.[alertKey]?.currentLevel ?? 0) !== level) {
         this.store.update((data) => {
           const current = data.accounts.find((item) => item.id === accountId);
-          if (current?.alertHistory?.period === periodKey) {
-            this.recordTierTransition(current, alertKey, level, subagent.value);
+          if (current?.[field]?.period === periodKey) {
+            this.recordTierTransition(current, alertKey, level, subagent.value, '', field);
           }
         });
       }
     }
-    await this.processDeltaAlerts(account, { ...status, subagents: batch }, period, metric, quiet, notificationFailures);
+    if (field === 'alertHistory') await this.processDeltaAlerts(account, { ...status, subagents: batch }, period, metric, quiet, notificationFailures);
     return anyTriggered;
   }
 
@@ -2886,28 +2969,29 @@ class MonitorService {
     if (typeof this.store.addAlertRecord === 'function') this.store.addAlertRecord(record);
   }
 
-  recordTierTransition(account, key, level, value, sentAt = '') {
-    const entry = account.alertHistory.agents[key];
+  recordTierTransition(account, key, level, value, sentAt = '', field = 'alertHistory') {
+    const entry = account[field].agents[key];
     account.tierTransitions = [...(account.tierTransitions || []), {
-      key, period: account.alertHistory.period, metric: account.alertHistory.metric,
+      key, period: account[field].period, metric: account[field].metric,
       from: entry?.currentLevel ?? 0, to: level, value, time: new Date().toISOString(),
       processStartedAt: this.processStartedAt,
     }].slice(-100);
-    account.alertHistory.agents[key] = recordAlertLevel(entry, level, sentAt);
+    account[field].agents[key] = recordAlertLevel(entry, level, sentAt);
   }
 
   async sendTelegram(account, value, level, previousLevel, subagentName, alertStep, remark = '', path = [subagentName], period = null, notification = {}) {
     const { botToken, chatId, mode, pairing } = this.store.state.telegram;
     if (mode === 'pairing' && !pairing?.paired) throw new Error('Telegram 配对尚未完成');
     if (mode !== 'pairing' && (!botToken || !chatId || mode !== 'legacy')) throw new Error('请先绑定 Telegram');
-    const metric = metricForAccount(account);
+    const metric = notification.metric === PROFIT_METRIC ? profitMetric : metricForAccount(account);
+    const field = historyFields(metric.alertMetric).history;
     if (!subagentName || !Number.isFinite(alertStep) || alertStep <= 0) throw new Error(`${metric.label}提醒资料不完整`);
     const milestone = level * alertStep;
     const previousMilestone = previousLevel * alertStep;
     const crossedCount = Math.abs(level - previousLevel);
     const firstNewMilestone = (previousLevel + Math.sign(level - previousLevel || level)) * alertStep;
     const returnedFromZero = previousLevel === 0 && this.store.state.accounts.find(item => item.id === account.id)
-      ?.alertHistory?.agents?.[alertLedgerKey(path, alertStep)]?.zeroConfirmed === true;
+      ?.[field]?.agents?.[alertLedgerKey(path, alertStep)]?.zeroConfirmed === true;
     const direction = (value < 0 ? '🔴' : '🔵')
       + ((previousLevel !== 0 || returnedFromZero) && level !== previousLevel ? level > previousLevel ? '🔵' : '🔴' : '');
     const signedValue = `${value > 0 ? '+' : ''}${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -2928,7 +3012,7 @@ class MonitorService {
     const ledgerKey = alertLedgerKey(path, alertStep);
     const priorTransition = (persisted?.tierTransitions || []).findLast(item => item.key === ledgerKey
       && item.period === `${period?.start}/${period?.end}` && item.metric === metricId);
-    const settingChange = (persisted?.alertSettingChanges || []).findLast(item => agentPathKey(item.path) === agentPathKey(path));
+    const settingChange = (persisted?.alertSettingChanges || []).findLast(item => agentPathKey(item.path) === agentPathKey(path) && (item.metric || metricForAccount(account).alertMetric || ALERT_METRIC) === metricId);
     const settingsReset = previousLevel === 0 && settingChange?.nextStep === alertStep && !settingChange.activatedAt;
     const trigger = {
       reason: settingsReset ? '修改间隔后按新档位提醒' : returnedFromZero ? '从零档重新进入非零档位' : previousLevel === 0 ? '本周首次进入非零档位'
@@ -2948,12 +3032,12 @@ class MonitorService {
     return this.enqueueNotification(text, 'amount', { record, commit: data => {
       if (!account.id) return; // Standalone message formatting/test calls have no monitored account.
       const current = data.accounts.find(item => item.id === account.id);
-      if (!current || current.alertHistory?.period !== `${period.start}/${period.end}` || current.alertHistory.metric !== metricId) {
+      if (!current || current[field]?.period !== `${period.start}/${period.end}` || current[field].metric !== metricId) {
         throw new Error('报表周期已变化，未接受此通知');
       }
-      this.recordTierTransition(current, alertLedgerKey(path, alertStep), level, value, new Date().toISOString());
+      this.recordTierTransition(current, alertLedgerKey(path, alertStep), level, value, new Date().toISOString(), field);
       if (settingsReset) {
-        const change = (current.alertSettingChanges || []).findLast(item => agentPathKey(item.path) === agentPathKey(path));
+        const change = (current.alertSettingChanges || []).findLast(item => agentPathKey(item.path) === agentPathKey(path) && (item.metric || metricForAccount(account).alertMetric || ALERT_METRIC) === metricId);
         if (change && change.time === settingChange.time) change.activatedAt = new Date().toISOString();
       }
     } });

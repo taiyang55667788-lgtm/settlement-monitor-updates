@@ -20,6 +20,8 @@ function pruneDeepAgents(account) {
   };
   pruneKeys(account.alertCandidates, true);
   pruneKeys(account.alertHistory?.agents, true);
+  pruneKeys(account.profitAlertHistory?.agents, true);
+  pruneKeys(account.profitDeliveredAlertHistory?.agents, true);
   pruneKeys(account.deltaHistory?.agents, false);
   for (const history of account.alertHistoryArchive || []) pruneKeys(history.agents, true);
   return account;

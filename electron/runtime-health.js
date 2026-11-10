@@ -34,6 +34,13 @@ function failedBranch(previous, intervalMinutes, now = Date.now()) {
   return { failures, nextAt: now + Math.min(Math.max(base, 1800000), base * 2 ** Math.min(failures - 1, 5)) };
 }
 
+function profitReadSummary(stats) {
+  if (!stats) return null;
+  const numeric = value => Number.isFinite(value) && value >= 0 ? value : 0;
+  return { queries: numeric(stats.queries), sharedQueries: numeric(stats.sharedQueries), extraQueries: numeric(stats.extraQueries),
+    durationMs: numeric(stats.durationMs), failures: numeric(stats.failures), missing: numeric(stats.missing), slowestMs: numeric(stats.slowest?.durationMs) };
+}
+
 // Deliberate allowlist: automatic files contain only operational aggregates.
 function operationalDiagnostic(accounts, runtime, version, platform, now = Date.now()) {
   return { format: 'settlement-monitor-operational-diagnostics-v1', exportedAt: new Date(now).toISOString(),
@@ -48,10 +55,11 @@ function operationalDiagnostic(accounts, runtime, version, platform, now = Date.
           fallbacks: x.direct.fallbacks, totalMs: x.direct.totalMs, learned: x.direct.learned } : null,
       }));
       return { account: index + 1, enabled: Boolean(account.enabled), status: live.status || 'waiting',
+        profitReads: profitReadSummary(live.phaseTimings?.profit),
         failureScenes: retainedScenes(account.failureScenes, now),
         intervalMinutes: account.intervalMinutes, lastSuccessAt: live.lastSuccessAt || '',
         summary: readSummary(samples, now), readSamples: samples };
     }) };
 }
 
-module.exports = { readSummary, failureCategory, failedBranch, operationalDiagnostic };
+module.exports = { readSummary, failureCategory, failedBranch, operationalDiagnostic, profitReadSummary };

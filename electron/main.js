@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { PROFIT_METRIC } = require('./agent-profit');
 const { app, BrowserWindow, Menu, ipcMain, shell, dialog, clipboard, powerMonitor, net, session } = require('electron');
 const { DesktopHealth } = require('./desktop-health');
 const { AppExit } = require('./app-exit');
@@ -343,8 +344,10 @@ if (hasInstanceLock) app.whenReady().then(() => {
   ipcMain.handle('subagent-threshold:save', (_event, input) => {
     const alertStep = optionalAmount(input.alertStep);
     const deltaAlertStep = optionalAmount(input.deltaAlertStep);
+    const profitAlertStep = optionalAmount(input.profitAlertStep);
     if (Number.isNaN(alertStep) || (alertStep !== null && alertStep <= 0)) throw new Error('提醒间隔必须是大于 0 的金额，留空表示关闭');
     if (Number.isNaN(deltaAlertStep) || (deltaAlertStep !== null && deltaAlertStep <= 0)) throw new Error('单次变动提醒必须是大于 0 的金额，留空表示关闭');
+    if (Number.isNaN(profitAlertStep) || (profitAlertStep !== null && profitAlertStep <= 0)) throw new Error('盈亏档位必须是大于0的金额，留空关闭');
     const path = Array.isArray(input.path) ? input.path.map((part) => String(part).trim()) : [String(input.name || '').trim()];
     if (!path.length || path.some((part) => !part) || path.length > MAX_DESCENDANT_DEPTH) throw new Error(`只支持前 ${MAX_DESCENDANT_DEPTH} 级代理`);
     const name = path.at(-1);
@@ -357,8 +360,11 @@ if (hasInstanceLock) app.whenReady().then(() => {
       if (!Array.isArray(account.subagentThresholds)) account.subagentThresholds = [];
       const existing = account.subagentThresholds.find((item) => agentPathKey(item.path || [item.name]) === agentPathKey(path));
       if ((existing?.deltaAlertStep || null) !== deltaAlertStep && account.deltaHistory?.agents) delete account.deltaHistory.agents[agentPathKey(path)];
-      const values = { name, path, remark, alertStep, deltaAlertStep };
+      const nextProfitStep = Object.hasOwn(input, 'profitAlertStep') ? profitAlertStep : existing?.profitAlertStep || null;
+      if (nextProfitStep && accountSystemId(account) !== 'system-166') throw new Error('当前系统不支持此盈亏结果列');
+      const values = { name, path, remark, alertStep, deltaAlertStep, profitAlertStep: nextProfitStep };
       resetChangedAlertStep(account, path, existing?.alertStep, alertStep);
+      resetChangedAlertStep(account, path, existing?.profitAlertStep, nextProfitStep, new Date().toISOString(), 'profitAlertHistory', PROFIT_METRIC);
       if (existing) {
         Object.assign(existing, values);
         delete existing.lowerThreshold;
@@ -366,7 +372,7 @@ if (hasInstanceLock) app.whenReady().then(() => {
       }
       else account.subagentThresholds.push(values);
     });
-    monitor.updateSubagentAlertStep(accountId, path, alertStep, remark, deltaAlertStep);
+    monitor.updateSubagentAlertStep(accountId, path, alertStep, remark, deltaAlertStep, store.state.accounts.find(item => item.id === accountId)?.subagentThresholds.find(item => agentPathKey(item.path) === agentPathKey(path))?.profitAlertStep);
     store.addEvent('success', `${path.join(' / ')}：备注和提醒设置已保存`, accountId);
     publish();
     return { ok: true };

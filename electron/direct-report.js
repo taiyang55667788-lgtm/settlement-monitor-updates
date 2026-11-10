@@ -53,8 +53,36 @@ function validateData(data, period, fullPath, expectedIdentity) {
     || categories.some(key => typeof key !== 'string' || !Object.hasOwn(data.sum, key) || !Array.isArray(data.sum[key]))) throw invalid();
   const categoryRows = categories.flatMap(key => data.sum[key]);
   const names = [...new Set(categoryRows.map(row => row.orgName))].sort();
-  if (categoryRows.length !== data.total || JSON.stringify(names) !== JSON.stringify(agents.map(x => x.name).sort())) throw invalid();
+  const owner = data.orgLevel.at(-1);
+  const ownReplenishment = row => row && row.isBuHuo === 1 && typeof row.orgName === 'string'
+    && row.orgId !== undefined && owner.orgId !== undefined
+    && /[（(]补货[）)]$/.test(row.orgName.trim())
+    && row.orgName.trim().replace(/[（(]补货[）)]$/, '').trim() === owner.loginId
+    && String(row.orgId) === String(owner.orgId);
+  const supplementary = data.sum.SumList_buhuo;
+  if (supplementary !== undefined && (!Array.isArray(supplementary) || supplementary.length > 1 || supplementary.some(row => !ownReplenishment(row)))) throw invalid();
+  const replenishmentRows = categories.flatMap(key => {
+    const rows = data.sum[key + '_buhuo'];
+    if (rows === undefined) return [];
+    if (!Array.isArray(rows) || rows.length > 1 || rows.some(row => !ownReplenishment(row))) throw invalid();
+    return rows;
+  });
+  if (replenishmentRows.length && (!supplementary?.length || replenishmentRows.some(row => row.orgName !== supplementary[0].orgName))) throw invalid();
+  if (supplementary?.length && !replenishmentRows.length) throw invalid();
+  if (categoryRows.length + replenishmentRows.length !== data.total || JSON.stringify(names) !== JSON.stringify(agents.map(x => x.name).sort())) throw invalid();
   return { value: data.sum.sumSubResult, agents, header: '应收下线' };
+}
+
+function learnProfitMapping(data, displayed) {
+  if (!Number.isFinite(displayed.profitValue) || !displayed.agents?.length) return null;
+  const totals = Object.keys(data.sum).filter(key => Number.isFinite(data.sum[key]) && data.sum[key] === displayed.profitValue);
+  const rows = data.sum.SumList;
+  const displayedByName = new Map(displayed.agents.map(row => [row.name, row.profitRowValue]));
+  if (rows.some(row => !Number.isFinite(displayedByName.get(row.orgName)))) return null;
+  const fields = Object.keys(rows[0]).filter(key => rows.every(row => Number.isFinite(row[key]) && row[key] === displayedByName.get(row.orgName)));
+  // Equal zero/same-valued fields are ambiguous. Stay on the validated DOM.
+  if (totals.length !== 1 || fields.length !== 1 || totals[0] === 'sumSubResult' || fields[0] === 'subResult') return null;
+  return { total: totals[0], row: fields[0] };
 }
 
 function requestTemplate(request, origin, period) {
@@ -95,14 +123,15 @@ class DirectReportReader {
       const cache = sessionCache(this.session);
       const key = this.key(path);
       cache.delete(key);
-      cache.set(key, { ...template, period: { ...period }, fullPath: [...fullPath], identity: identity(data), learnedAt: Date.now() });
+      cache.set(key, { ...template, profitMapping: learnProfitMapping(data, displayed), period: { ...period }, fullPath: [...fullPath], identity: identity(data), learnedAt: Date.now() });
       if (cache.size > MAX_TEMPLATES) cache.delete(cache.keys().next().value);
       return true;
     } catch { return false; }
   }
-  async read(path, period) {
+  async read(path, period, { requireProfit = false } = {}) {
     const cache = sessionCache(this.session); const key = this.key(path); const template = cache.get(key);
     if (!template) return null;
+    if (requireProfit && !template.profitMapping) return null;
     if (Date.now() - template.learnedAt > TTL || template.period.start !== period.start || template.period.end !== period.end) {
       cache.delete(key); return null;
     }
@@ -126,7 +155,14 @@ class DirectReportReader {
           chunks.push(Buffer.from(value));
         }
       } finally { await reader.cancel().catch(() => {}); }
-      const result = validateData(extractReportData(Buffer.concat(chunks).toString('utf8')), period, template.fullPath, template.identity);
+      const data = extractReportData(Buffer.concat(chunks).toString('utf8'));
+      const result = validateData(data, period, template.fullPath, template.identity);
+      if (template.profitMapping) {
+        const { total, row } = template.profitMapping;
+        if (!Number.isFinite(data.sum[total]) || data.sum.SumList.some(item => !Number.isFinite(item[row]))) throw invalid();
+        result.profitValue = data.sum[total]; result.profitSupported = true; result.profitIssue = '';
+        result.agents = result.agents.map((agent, index) => ({ ...agent, profitRowValue: data.sum.SumList[index][row] }));
+      }
       if (controller.signal.aborted) throw invalid();
       this.stats.successes++; this.stats.lastMs = Date.now() - started;
       this.stats.totalMs += this.stats.lastMs;
