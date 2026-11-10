@@ -2,11 +2,11 @@
 
 更新日期：2026-11-11。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
 
-## 待发布：本级合计与独立补货盈亏
+## v1.0.53 已发布：本级合计与独立补货盈亏
 
-用户明确本级盈亏取底部合计、补货取独立一行，并授权开干。上一版只展示下级、排除本级补货，本批补齐。根表直接生成登录本级盈亏项；补货行独立解析且不作为下钻路由，无应收/变化提醒设置；普通代理双指标不变。特殊项使用保留路径独立保存档位、账本及回执，消息转换为可读路径；四级补货只读取四级所属报表。直接字段学习增加补货DOM核对，不猜测字段；缺行不当0，真实0有效。复用既有查询，不加定时器。设计见 `ai-artifacts/plans/2026-11-11-own-replenishment-profit-design.md`。本地294项Node测试、8项Electron桌面流程、git diff --check通过；新增真实Electron解析补货空应收字段、专用行无应收/变化设置、独立档位保存及加密重启保留验证通过，1240宽截图已复核。Telegram报表/记录将内部键转为可读路径，专用项显示盈亏而非null。尚未做用户当前盘口现场核验、Windows构建或手机实收。用户已明确授权联合发布v1.0.53，正在验证构建，当前正式版仍v1.0.52。
+用户明确本级盈亏取底部合计、补货取独立一行，并授权开干。上一版只展示下级、排除本级补货，本批补齐。根表直接生成登录本级盈亏项；补货行独立解析且不作为下钻路由，无应收/变化提醒设置；普通代理双指标不变。特殊项使用保留路径独立保存档位、账本及回执，消息转换为可读路径；四级补货只读取四级所属报表。直接字段学习增加补货DOM核对，不猜测字段；缺行不当0，真实0有效。复用既有查询，不加定时器。设计见 `ai-artifacts/plans/2026-11-11-own-replenishment-profit-design.md`。本地294项Node测试、8项Electron桌面流程、git diff --check通过；新增真实Electron解析补货空应收字段、专用行无应收/变化设置、独立档位保存及加密重启保留验证通过，1240宽截图已复核。Telegram报表/记录将内部键转为可读路径，专用项显示盈亏而非null。Windows验证构建42903176527及正式发布42903793636成功；GitHub Release与R2清单均为v1.0.53，独立完整下载安装包大小及SHA-512一致。未做用户当前盘口现场核验、手机实收或服务器长期验收。本批仅更新客户端。
 
-## 待发布补充：按提醒设置决定盈亏查询
+## v1.0.53 同批：按提醒设置决定盈亏查询
 
 用户先提出当天无盈亏不必每10分钟补读，随后强调重点为设置了提醒的代理，并明确确认“已设置盈亏提醒正常读取；未设置不再专门补读，只随已有报表更新”。因此取消日常10分钟触发器，不实施按零金额/无列推断的整日负缓存。原应收/变化提醒及其上级路径照常查询；根本级/各级补货盈亏提醒按真实所属路径触发。未配置盈亏项目不强迫直接查询回退DOM。首次/显式全量、手动刷新仍可补齐，改变提醒设置下轮立即生效，失败退避和50%缓冲不变。界面删去“约10分钟补读”，明确“未设置盈亏提醒，仅随已有报表更新”。设计见 `ai-artifacts/plans/2026-11-11-profit-reminder-priority-design.md`。294项Node测试、8项Electron桌面流程及git diff --check通过；包含未配置不按旧缓存触发、配置/取消立即生效、四级补货归属查询、根表强制字段需求和省略字段时保留旧金额。用户已明确授权联合发布v1.0.53；本批仅更新客户端。
 
@@ -96,15 +96,15 @@ v1.0.45后续改动：Telegram金额消息增加第二方向圆点，比较同�
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.52，2026-11-11 发布 |
-| 发布源码/标签 | `b2f9c50f8c54a63e2400b31256515e7772ded4b4` / `v1.0.52` |
-| Windows 验证任务 | `42897909917`，成功 |
-| 正式发布任务 | `42898518192`，成功 |
-| 测试证据 | 289项 Node 测试、8项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117499186 |
-| SHA-512 | `sOewu3I/jTj6mYcafWsMA6AXB0jm9HTvoyY5IP69vcNA9EItymcPYyElnbrutSCfY3qj42Og8d+Qm+/pUeV2Rg==` |
+| 正式客户端 | v1.0.53，2026-11-11 发布 |
+| 发布源码/标签 | `0c1d3ceb59a5f2bb3beced8263d07f90b9608ee6` / `v1.0.53` |
+| Windows 验证任务 | `42903176527`，成功 |
+| 正式发布任务 | `42903793636`，成功 |
+| 测试证据 | 294项 Node 测试、8项桌面流程通过；Windows构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117500217 |
+| SHA-512 | `SyRPhUtsUAILynkNEKXYkTFuK/+Qoi9Q95DmSfVdZVQY1lYDu4j9cbQsU/lhszMO3fvOpsx2ebX9xC7LsOJyLA==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。v1.0.52仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.51](docs/history/RELEASE-1.0.51.md)、[v1.0.50](docs/history/RELEASE-1.0.50.md)、[v1.0.49](docs/history/RELEASE-1.0.49.md)、[v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
+发布证据是上述时间点的记录，不代表持续线上健康。v1.0.53仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.52](docs/history/RELEASE-1.0.52.md)、[v1.0.51](docs/history/RELEASE-1.0.51.md)、[v1.0.50](docs/history/RELEASE-1.0.50.md)、[v1.0.49](docs/history/RELEASE-1.0.49.md)、[v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
 - 正式发布：[v1.0.51](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.51)
