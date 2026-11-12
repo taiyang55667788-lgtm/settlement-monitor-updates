@@ -1,6 +1,10 @@
 # 交收监控维护上下文
 
-更新日期：2026-11-11。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+更新日期：2026-11-12。本文为当前维护入口，用户规则见 [README.md](README.md)。历史版本原文完整保存在 [维护历史归档](docs/history/MAINTENANCE_CONTEXT-2026-10-16.md) 与 [README 历史归档](docs/history/README-2026-10-16.md)，不应据旧段落改变现行行为。
+
+## v1.0.54 已发布，修复重点代理过期误报
+
+本级盈亏和下级应收的中间结果统一保留尚未读取的代理及其上次成功时间。回归测试在下级查询开始前检查过期状态，验证新鲜数据不触发通知、实际超时会告警，且成功刷新后发出一次恢复通知。线上安装包已独立下载校验，真实 Telegram 实收和长时间运行待观察。
 
 ## v1.0.53 已发布：本级合计与独立补货盈亏
 
@@ -96,15 +100,15 @@ v1.0.45后续改动：Telegram金额消息增加第二方向圆点，比较同�
 
 | 项目 | 当前记录 |
 | --- | --- |
-| 正式客户端 | v1.0.53，2026-11-11 发布 |
-| 发布源码/标签 | `0c1d3ceb59a5f2bb3beced8263d07f90b9608ee6` / `v1.0.53` |
-| Windows 验证任务 | `42903176527`，成功 |
-| 正式发布任务 | `42903793636`，成功 |
-| 测试证据 | 294项 Node 测试、8项桌面流程通过；Windows构建及线上完整安装包校验通过 |
-| 安装包字节数 | 117500217 |
-| SHA-512 | `SyRPhUtsUAILynkNEKXYkTFuK/+Qoi9Q95DmSfVdZVQY1lYDu4j9cbQsU/lhszMO3fvOpsx2ebX9xC7LsOJyLA==` |
+| 正式客户端 | v1.0.54，2026-11-12 发布 |
+| 发布源码/标签 | `16bee15693006d750c98038c84941af40c776c82` / `v1.0.54` |
+| Windows 验证任务 | `43212427642`，成功 |
+| 正式发布任务 | `43212887389`，成功 |
+| 测试证据 | 295 项 Node 测试和 8 项桌面流程通过，Windows 构建及线上完整安装包校验通过 |
+| 安装包字节数 | 117500382 |
+| SHA-512 | `ooiWUjuZqGMm4mrKkabd4eY+vrOsJda3tO3rKDmV2yfLyGqO1xHLZU3MzvwzqSauXVTRqFOdUwonda0HsteEkQ==` |
 
-发布证据是上述时间点的记录，不代表持续线上健康。v1.0.53仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.52](docs/history/RELEASE-1.0.52.md)、[v1.0.51](docs/history/RELEASE-1.0.51.md)、[v1.0.50](docs/history/RELEASE-1.0.50.md)、[v1.0.49](docs/history/RELEASE-1.0.49.md)、[v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
+发布证据是上述时间点的记录，不代表持续线上健康。v1.0.54仅更新客户端，未部署Worker/Pages或清理云端数据；已独立完整下载校验安装包。此前证据见 [v1.0.53](docs/history/RELEASE-1.0.53.md)、[v1.0.52](docs/history/RELEASE-1.0.52.md)、[v1.0.51](docs/history/RELEASE-1.0.51.md)、[v1.0.50](docs/history/RELEASE-1.0.50.md)、[v1.0.49](docs/history/RELEASE-1.0.49.md)、[v1.0.48](docs/history/RELEASE-1.0.48.md)、[v1.0.47](docs/history/RELEASE-1.0.47.md)、[v1.0.46](docs/history/RELEASE-1.0.46.md)、[v1.0.45](docs/history/RELEASE-1.0.45.md)、[v1.0.44](docs/history/RELEASE-1.0.44.md) 与 [v1.0.43](docs/history/RELEASE-1.0.43.md)。
 
 - 仓库：[settlement-monitor-updates](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates)
 - 正式发布：[v1.0.51](https://github.com/taiyang55667788-lgtm/settlement-monitor-updates/releases/tag/v1.0.51)
