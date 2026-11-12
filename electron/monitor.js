@@ -2420,12 +2420,18 @@ class MonitorService {
       const notificationFailures = [];
       status.failureKind = '';
       status.phaseTimings = { loginAndRootMs: Date.now() - checkStarted, branches: [], ...(profitEnabled ? { profit: { queries: 0, sharedQueries: 0, extraQueries: 0, durationMs: 0, failures: 0, missing: 0, slowest: null } } : {}) };
+      const publishPartialAgents = () => {
+        // Freshness checks can run while the next branch is still loading.
+        const readPaths = new Set(agents.map(item => agentPathKey(item.path)));
+        const unread = cachedAgents.filter(old => !readPaths.has(agentPathKey(old.path)))
+          .map(old => ({ ...old, ...retainedProfit(old.path), stale: true, staleReason: 'waiting' }));
+        status.subagents = applySubagentAlertSteps([...agents, ...unread], configuredSubagents);
+      };
       const publishBatch = async (fresh) => {
         if (!this.isCurrentCheck(accountId, revision)) return;
         for (const item of fresh) freshPaths.add(agentPathKey(item.path));
         configuredSubagents = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
-        const unread = cachedAgents.filter(old => !agents.some(item => agentPathKey(item.path) === agentPathKey(old.path))).map(old => ({ ...old, ...retainedProfit(old.path), stale: true, staleReason: 'waiting' }));
-        status.subagents = applySubagentAlertSteps([...agents, ...unread], configuredSubagents);
+        publishPartialAgents();
         status.readProgress = { read: freshPaths.size };
         status.subagentCount = report.agents.length;
         status.totalValue = report.value;
@@ -2481,7 +2487,8 @@ class MonitorService {
         configuredSubagents = this.store.state.accounts.find(item => item.id === accountId)?.subagentThresholds || [];
         const batch = applySubagentAlertSteps(fresh, configuredSubagents);
         anyTriggered = await this.processProfitBatch(account, status, client.reportPeriod, revision, batch, notificationFailures) || anyTriggered;
-        status.subagents = applySubagentAlertSteps(agents, configuredSubagents);
+        if (!this.isCurrentCheck(accountId, revision)) return;
+        publishPartialAgents();
         this.onChange();
       };
       await publishProfit([], report);

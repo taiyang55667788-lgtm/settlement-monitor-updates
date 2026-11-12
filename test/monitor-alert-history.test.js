@@ -59,6 +59,40 @@ function fixture(state) {
   return { alerts, deltaAlerts, context, store, makeService };
 }
 
+test('publishing own profit preserves descendant freshness until the branch is read', async () => {
+  const { context, store, deltaAlerts, makeService } = fixture();
+  context.profitSupported = true;
+  const account = store.state.accounts[0];
+  const service = makeService();
+  await service.check(account.id);
+  const status = service.status(account.id);
+  status.freshnessSince = new Date(Date.now() - 60 * 60000).toISOString();
+  const freshnessAlerts = () => deltaAlerts.filter(message => message.includes('重点代理数据'));
+  const observed = [];
+  context.beforeDescendant = async (path) => {
+    if (path.length !== 1) return;
+    await service.checkFreshness(account);
+    observed.push({
+      readAt: status.subagents.find(agent => agent.name === 'child')?.readAt,
+      staleTargets: status.staleTargets,
+    });
+  };
+
+  const recentRead = account.agentSnapshot.agents.find(agent => agent.name === 'child').readAt;
+  await service.check(account.id);
+  assert.deepEqual(observed, [{ readAt: recentRead, staleTargets: [] }]);
+  assert.deepEqual(freshnessAlerts(), []);
+
+  const expiredRead = new Date(Date.now() - 16 * 60000).toISOString();
+  account.agentSnapshot.agents.find(agent => agent.name === 'child').readAt = expiredRead;
+  await service.check(account.id);
+  assert.deepEqual(observed.at(-1), { readAt: expiredRead, staleTargets: [['parent', 'child']] });
+  assert.deepEqual(status.staleTargets, []);
+  assert.deepEqual(freshnessAlerts().map(message => message.split('\n')[0]), [
+    '⚠️ 重点代理数据过期', '✅ 重点代理数据已恢复更新',
+  ]);
+});
+
 test('successful empty branch stays fresh, preserves tiers and delta baseline, then resumes on data return', async () => {
   const { context, store, alerts, makeService } = fixture();
   const service = makeService();
